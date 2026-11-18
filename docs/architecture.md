@@ -134,6 +134,7 @@ File: `integrations/openwebui/doc_intel_pipe.py`, under 200 lines, no business l
 | Chat | `POST /v1/pipe/chat` with `messages` + `files[{openwebui_file_id, filename}]`; parse SSE |
 | Status | `status` events → `await __event_emitter__({"type": "status", "data": {"description": …, "done": …}})` |
 | Output | `delta` events → `yield content`; `error` → yield a readable message |
+| Backend reachability | ✅ verified in Phase 1: `docker compose exec open-webui curl http://host.docker.internal:8000/v1/health` → `200` while the backend binds `127.0.0.1:8000` |
 | Built-in RAG | disabled (`BYPASS_EMBEDDING_AND_RETRIEVAL=true` in compose env), so Open WebUI doesn't inject its own context. The setting name and behavior are verified in Phase 2 and recorded here. |
 
 ## 6. Memory budget (24 GB unified memory)
@@ -143,7 +144,7 @@ Peak at steady state (one mapping run active, Docker up, default 14B model, rera
 | Consumer | Resident (GB) | Notes |
 |---|---|---|
 | macOS + desktop apps | 5.0 | browser with Open WebUI tab included |
-| Docker VM (Open WebUI ~1.0, Postgres ~0.5, Qdrant ~0.5, VM overhead) | 3.0 | cap the VM at 3 GB in Docker Desktop |
+| Docker VM (Open WebUI ~1.0, Postgres ~0.5, Qdrant ~0.5, VM overhead) | 3.0 | cap the VM at 3 GB in Docker Desktop; compose `mem_limit`s: open-webui 1.5g, postgres 512m, qdrant 1g |
 | Ollama `qwen2.5:14b-instruct` Q4_K_M weights | 9.0 | `OLLAMA_KEEP_ALIVE=10m` |
 | Ollama KV cache (8k ctx, one slot) | 1.5 | `num_ctx=8192`, `OLLAMA_NUM_PARALLEL=1`: each extra parallel slot would add another 1.5 GB |
 | BGE-M3 fp16 (loaded at startup) | 1.5 | weights ~1.1 + activations |

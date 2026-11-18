@@ -4,7 +4,7 @@ A local-first, domain-agnostic RAG platform. You chat in **Open WebUI**: upload 
 
 > The repo name reflects the first use case (crisis-management slide decks). Nothing in the platform is domain-specific.
 
-**Status:** Phase 0 (architecture docs). No application code yet. See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
+**Status:** Phase 1 complete (foundation, infrastructure, database). See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
 
 ## How it works
 
@@ -32,7 +32,19 @@ Open WebUI chat ──Pipe Function──▶ FastAPI (native, MPS) ──▶ Pos
 - Start Ollama with `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_KEEP_ALIVE=10m`.
 - Full budget table: [docs/architecture.md § 6](docs/architecture.md#6-memory-budget-24-gb-unified-memory).
 
-Setup commands (`docker compose up -d`, `uv sync`, `uv run alembic upgrade head`, `uv run uvicorn …`) arrive in Phase 1. See [docs/development-guidelines.md](docs/development-guidelines.md).
+## Quick start (Phase 1)
+
+```bash
+cp .env.example .env          # set POSTGRES_PASSWORD (also in DATABASE_URL), PIPE_SHARED_SECRET, SIGNING_SECRET
+docker compose up -d          # Open WebUI :3000, Postgres :5432, Qdrant :6333 (localhost only)
+uv sync
+uv run alembic upgrade head
+uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000
+curl 127.0.0.1:8000/v1/health # {"status":"ok","postgres":"ok","qdrant":"ok",...}
+uv run pytest                 # integration tests use a throwaway doc_intel_test database
+```
+
+Conventions: [docs/development-guidelines.md](docs/development-guidelines.md).
 
 ## Documentation
 

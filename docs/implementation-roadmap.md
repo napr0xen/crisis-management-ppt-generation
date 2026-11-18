@@ -20,7 +20,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | Phase | Name | Status |
 |---|---|---|
 | 0 | Architecture & source-of-truth docs | **Complete** |
-| 1 | Foundation, infrastructure & database | pending |
+| 1 | Foundation, infrastructure & database | **Complete** |
 | 2 | Ingestion, storage & Open WebUI integration check | pending |
 | 3 | Embeddings & vector store | pending |
 | 4 | LLM gateway & grounded Q&A | pending |
@@ -53,7 +53,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 - **Deliverables:**
   - `pyproject.toml` (uv, Python 3.12, ruff, pytest, pytest-asyncio), `.gitignore` (`.env`, `data/`, `.venv/`, `.DS_Store`, `tests/eval/report.json`), `.env.example`;
   - `docker-compose.yml` (Open WebUI pinned tag, `postgres:16`, Qdrant pinned tag; volumes under `./data/`; Postgres and Qdrant bound to `127.0.0.1`);
-  - `core/` (`Settings`, JSON logging with redaction, `AppError` + handlers, bearer auth + `X-OWUI-User-Id` dependency, `TenantContext`, HMAC signing);
+  - `core/` (`Settings`, JSON logging with redaction, `AppError` + handlers, bearer auth + `X-OWUI-User-Id` dependency, HMAC signing). `TenantContext` moves to Phase 2, where the first child-table query needs it;
   - `db/` models for all 7 tables and the first Alembic migration;
   - `db/repo.py` tenant-scoped base queries;
   - `storage/` `StorageBackend` + `LocalStorage`;
@@ -69,6 +69,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 - **Entry:** Phase 1 done.
 - **Deliverables:**
   - `ingestion/` (Docling parser for pdf/docx/pptx with RapidOCR, native parsers for xlsx/csv/txt/md, structural chunker);
+  - `core/tenancy.py` `TenantContext` + project-scoped dependency (404 for non-owners);
   - `jobs/` worker (SKIP LOCKED claim, startup re-queue of all `running` jobs, progress, idempotent retries) and the `ingest_document` handler;
   - document endpoints (POST/GET/list/DELETE without the Qdrant step), `GET …/jobs/{job_id}`;
   - fixture corpus `tests/fixtures/sources/` with one file per format, including one scanned PDF;
@@ -76,7 +77,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
     1. how a Pipe reads uploaded file bytes from `__files__` (field names, storage API or path);
     2. whether `BYPASS_EMBEDDING_AND_RETRIEVAL=true` is the right setting name and actually stops Open WebUI injecting its own RAG context into Pipe requests;
     3. what `__files__` contains per turn (current message only, or the whole chat);
-    4. that the container reaches the native backend at `host.docker.internal:8000` while it binds `127.0.0.1`.
+    4. ~~that the container reaches the native backend at `host.docker.internal:8000` while it binds `127.0.0.1`~~ (verified in Phase 1, see architecture.md § 5).
 - **Exit:**
   - Chunker unit tests: metadata correct per format, tables as separate chunks, no chunk over 512 tokens, contiguous `chunk_index`;
   - integration test: upload → job `succeeded` → `parsed/{document_id}.json` exists;

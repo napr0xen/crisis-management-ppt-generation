@@ -12,6 +12,10 @@ Stores and ownership: see [ADR-008](DECISIONS.md#adr-008--persistence-boundaries
 - Enums are `text` + `CHECK` constraints: easier to migrate than PG enums.
 - **Tenant rule.** Every table except `projects` has `user_id` and `project_id` plus the composite FK `(project_id, user_id) REFERENCES projects(id, user_id) ON DELETE CASCADE`. Every repository query filters `WHERE user_id = :user_id AND project_id = :project_id`, with no exceptions. The one exception is the signed download, which looks up `artifacts.id` and then checks `user_id` through the HMAC.
 - Migrations: Alembic in `migrations/` (from Phase 1).
+- **Non-tenant FKs and deletes.**
+  - `templates.document_id` → `documents` and `template_irs.template_id` → `templates` are `ON DELETE CASCADE`.
+  - `mapping_runs.template_ir_id`, `mapping_runs.parent_run_id`, and `artifacts.mapping_run_id` have no `ON DELETE`. Deleting something that still has runs or artifacts fails, and the API maps that to `409`.
+  - Deleting a project removes everything through the composite tenant FKs.
 
 ## PostgreSQL 16 schema
 
@@ -195,10 +199,9 @@ data/
 │       ├── uploads/{document_id}/original.{ext}   # immutable, write-once
 │       ├── parsed/{document_id}.json              # parser output, derived, overwritable on retry
 │       └── artifacts/{artifact_id}.{ext}          # immutable rendered output
-├── postgres/                                  # PostgreSQL 16 volume
-├── qdrant/                                    # Qdrant volume
-└── openwebui/                                 # Open WebUI volume (its own DB + uploads)
 ```
+
+PostgreSQL, Qdrant, and Open WebUI data live in Docker **named volumes** (`pgdata`, `qdrant_data`, `openwebui_data` in `docker-compose.yml`), not under `./data/`. Bind mounts on macOS hit Postgres permission/fsync issues. `docker compose down -v` deletes them.
 
 - `{ext}` ∈ `pdf docx pptx xlsx txt csv md`.
 - `StorageBackend.put_bytes(key, data, overwrite=False)` refuses to overwrite an existing key. `uploads/` and `artifacts/` are always written with `overwrite=False`. `parsed/` is derived data and is written with `overwrite=True`, so a retried ingest job can rewrite it.

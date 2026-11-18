@@ -29,6 +29,7 @@
 | 401 | `unauthorized` |
 | 403 | `signature_invalid` (signed download only) |
 | 404 | `not_found` |
+| 405 | `method_not_allowed` |
 | 409 | `conflict` (e.g. invalid state transition) |
 | 410 | `link_expired` (signed download only) |
 | 413 | `payload_too_large` |
@@ -88,7 +89,9 @@ No auth. Returns `200` if the API is up, and reports each dependency.
 {"status": "ok", "postgres": "ok", "qdrant": "ok", "llm": "ok", "version": "0.1.0"}
 ```
 
-`status` is `"degraded"` if any dependency is not `"ok"`. The response code is still `200`, so the Pipe can report the problem to the user.
+- Each dependency is `"ok"` or `"unavailable"`.
+- `status` is `"degraded"` if any dependency is not `"ok"`. The response code is still `200`, so the Pipe can report the problem to the user.
+- `llm` (the active provider's reachability) is added in Phase 4 with the LLM gateway; until then the response has only `postgres` and `qdrant`.
 
 ---
 

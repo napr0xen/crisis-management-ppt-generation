@@ -6,7 +6,8 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 
 ```
 .
-├── CLAUDE.md  README.md  pyproject.toml  uv.lock  docker-compose.yml  .env.example  .gitignore
+├── CLAUDE.md  README.md  pyproject.toml  uv.lock  .python-version  alembic.ini
+├── docker-compose.yml  .env.example  .gitignore
 ├── docs/                         # source of truth (this folder)
 ├── migrations/                   # Alembic
 ├── integrations/openwebui/doc_intel_pipe.py
@@ -15,7 +16,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 │   ├── templates/ mapping/ writers/ chat/ jobs/ api/v1/
 │   └── main.py
 ├── tests/{unit,integration,security,eval,fixtures}/
-└── data/                         # git-ignored: storage/, postgres/, qdrant/, openwebui/
+└── data/                         # git-ignored: storage/ (DB/vector/UI data are Docker named volumes)
 ```
 
 ## 2. Tooling
@@ -43,6 +44,9 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 - CPU/GPU-bound work (Docling, BGE-M3, reranker, writers) runs via `await asyncio.to_thread(...)`. Never call it directly in the event loop.
 - One `httpx.AsyncClient`, DB engine, and Qdrant client per process, created in `main.py` lifespan and injected through dependencies.
 - No fire-and-forget `asyncio.create_task` outside `jobs/worker.py`. Long work goes into `jobs`.
+- **One transaction per request.**
+  - Routes take `Depends(get_session, scope="function")`: it commits when the handler returns, before the response is sent, and rolls back if the handler raises.
+  - `db/repo.py` functions `flush()` and never `commit()`, so multi-row writes (e.g. `documents` + `jobs`) are atomic.
 
 ## 5. Tenancy in code
 
@@ -56,6 +60,8 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 - Catch only what you can handle. In job handlers, any exception marks the job `failed` with an `error_code` and a safe `error_message`, then re-raises to the worker's logger. Never swallow silently.
 - Field-level LLM failures in mapping become `missing` (`llm_error`). They never fail the run (system-design § 7).
 - Never put document text, quotes, prompts, or filenames into exception messages that reach logs or responses.
+- Engines are created with `hide_parameters=True` (`db/session.py` `make_engine`), so DB errors never carry bound values.
+- `RequestIdMiddleware` turns unhandled errors into the 500 envelope and logs only `error_type`. It doesn't re-raise, so the server never prints the traceback.
 
 ## 7. Structured logging
 
@@ -65,6 +71,8 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 - LLM calls log `model`, `prompt_tokens`, `completion_tokens`, `duration_ms` only.
 
 ## 8. Configuration (`.env`, read by `core/config.py` `Settings` via pydantic-settings)
+
+`Settings` declares only the variables the code reads so far. Each phase adds its own fields and `.env.example` entries, using the names below.
 
 | Variable | Default | Purpose |
 |---|---|---|
