@@ -1,0 +1,206 @@
+# Data Model
+
+**This file is the source of truth for every table, column, Qdrant collection, payload key, and storage path.** Other docs link here instead of restating them. Change a name here first, then fix the docs that reference it in the same commit.
+
+Stores and ownership: see [ADR-008](DECISIONS.md#adr-008--persistence-boundaries-project--chat-versioned-jsonb-results).
+
+## Conventions
+
+- Primary keys: `id uuid DEFAULT gen_random_uuid()`.
+- `user_id text` holds the Open WebUI user id. It is validated against `^[A-Za-z0-9_-]{1,64}$` before use, because it also appears in storage paths.
+- Timestamps are `timestamptz NOT NULL DEFAULT now()`.
+- Enums are `text` + `CHECK` constraints: easier to migrate than PG enums.
+- **Tenant rule.** Every table except `projects` has `user_id` and `project_id` plus the composite FK `(project_id, user_id) REFERENCES projects(id, user_id) ON DELETE CASCADE`. Every repository query filters `WHERE user_id = :user_id AND project_id = :project_id`, with no exceptions. The one exception is the signed download, which looks up `artifacts.id` and then checks `user_id` through the HMAC.
+- Migrations: Alembic in `migrations/` (from Phase 1).
+
+## PostgreSQL 16 schema
+
+### `projects`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `user_id` | text NOT NULL | |
+| `openwebui_chat_id` | text NULL | NULL for projects created via `POST /v1/projects` |
+| `name` | text NOT NULL | chat id or user-supplied name |
+| `created_at` | timestamptz | |
+| `updated_at` | timestamptz | |
+
+Constraints and indexes: `UNIQUE (id, user_id)` (target of the composite FKs); `UNIQUE (user_id, openwebui_chat_id)`; index `(user_id, created_at DESC)`.
+
+### `documents`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `user_id`, `project_id` | text, uuid NOT NULL | tenant keys |
+| `role` | text NOT NULL DEFAULT `'source'` | `source` \| `template` |
+| `filename` | text NOT NULL | original name, display only, never used in paths |
+| `mime_type` | text NOT NULL | |
+| `size_bytes` | bigint NOT NULL | |
+| `sha256` | char(64) NOT NULL | |
+| `storage_key` | text NOT NULL | see Storage layout |
+| `openwebui_file_ids` | text[] NOT NULL DEFAULT `'{}'` | every Open WebUI file id that uploaded this content (re-attaching a file creates a new id) |
+| `status` | text NOT NULL | `uploaded` \| `parsing` \| `indexed` \| `failed` |
+| `page_count` | int NULL | |
+| `chunk_count` | int NULL | |
+| `error_code` | text NULL | machine code only, no document text |
+| `created_at`, `updated_at` | timestamptz | |
+
+Constraints and indexes:
+- `UNIQUE (project_id, sha256)`: re-uploading the same file is deduplicated. A duplicate upload appends its Open WebUI file id to `openwebui_file_ids` of the existing row.
+- Index `(user_id, project_id, created_at DESC)`.
+- Lookup by Open WebUI file id: `WHERE user_id = :u AND project_id = :p AND :file_id = ANY(openwebui_file_ids)`. `shortcut: no GIN index, add one if a project exceeds a few hundred documents.`
+
+Every upload starts as `role = 'source'` and is indexed. Marking a document as a template sets `role = 'template'` and deletes its points from `doc_chunks`, because template placeholders must never be returned as evidence.
+
+### `jobs`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `user_id`, `project_id` | tenant keys | |
+| `kind` | text NOT NULL | `ingest_document` \| `extract_template` \| `run_mapping` \| `render_artifact` |
+| `status` | text NOT NULL DEFAULT `'queued'` | `queued` \| `running` \| `succeeded` \| `failed` |
+| `payload` | jsonb NOT NULL | input ids, e.g. `{"document_id": "…"}` |
+| `progress` | jsonb NOT NULL DEFAULT `'{}'` | `{"stage": "embedding", "done": 12, "total": 40}` |
+| `result` | jsonb NULL | output ids, e.g. `{"template_id": "…"}` |
+| `error_code` | text NULL | |
+| `error_message` | text NULL | safe text only, no document content |
+| `attempts` | int NOT NULL DEFAULT 0 | the worker fails a job once `attempts` reaches 3 (constant `MAX_JOB_ATTEMPTS` in `jobs/worker.py`) |
+| `locked_at` | timestamptz NULL | set when claimed |
+| `created_at`, `started_at`, `finished_at` | timestamptz | `started_at`/`finished_at` nullable |
+
+Indexes: partial `(created_at) WHERE status = 'queued'`; `(user_id, project_id, created_at DESC)`.
+
+Payload/result per kind:
+
+| `kind` | `payload` | `result` |
+|---|---|---|
+| `ingest_document` | `{document_id}` | `{chunk_count, page_count}` |
+| `extract_template` | `{document_id}` | `{template_id, template_ir_id, ir_version}` |
+| `run_mapping` | `{mapping_run_id}` | `{mapping_run_id, artifact_id}` |
+| `render_artifact` | `{mapping_run_id}` | `{artifact_id}` |
+
+### `templates`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `user_id`, `project_id` | tenant keys | |
+| `document_id` | uuid NOT NULL UNIQUE | FK `documents(id)`; that document has `role = 'template'` |
+| `format` | text NOT NULL | `pptx` \| `docx` \| `xlsx` |
+| `anchor_map` | jsonb NOT NULL | `AnchorMap` ([system-design.md](system-design.md#4-anchormap)) |
+| `anchor_count` | int NOT NULL | |
+| `created_at` | timestamptz | |
+
+The row is written when `extract_template` succeeds. Before that, the job is the only handle. If a row already exists for the `document_id` (e.g. the user asks to fill the same template again), `extract_template` reuses it and its latest IR and does not insert anything.
+
+### `template_irs`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `user_id`, `project_id` | tenant keys | |
+| `template_id` | uuid NOT NULL | FK `templates(id)` |
+| `version` | int NOT NULL | starts at 1 |
+| `ir` | jsonb NOT NULL | `TemplateIR` ([system-design.md](system-design.md#5-templateir)) |
+| `created_at` | timestamptz | |
+
+`UNIQUE (template_id, version)`. Rows are immutable. `shortcut: v1 flows only ever create version 1 (extract_template reuses the latest IR); add an explicit re-extract action that inserts max(version) + 1 when users need to regenerate an IR.`
+
+### `mapping_runs`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `user_id`, `project_id` | tenant keys | |
+| `template_ir_id` | uuid NOT NULL | FK `template_irs(id)` |
+| `parent_run_id` | uuid NULL | FK `mapping_runs(id)`; set for `trigger = 'edit'` |
+| `version` | int NOT NULL | `max(version) + 1` over all runs with the same `template_ir_id` (1 for the first), for both triggers; on a `UNIQUE` violation the insert is retried once |
+| `trigger` | text NOT NULL | `initial` \| `edit` |
+| `status` | text NOT NULL | `queued` \| `retrieving` \| `extracting` \| `verifying` \| `rendering` \| `completed` \| `failed` |
+| `document_ids` | uuid[] NOT NULL | source documents in scope (snapshot at run start) |
+| `results` | jsonb NOT NULL DEFAULT `'{}'` | `{ "<field_id>": FieldMappingResult }` |
+| `summary` | jsonb NOT NULL DEFAULT `'{}'` | `{"populated": n, "partial": n, "missing": n, "conflict": n, "warnings": [..]}` |
+| `edits` | jsonb NULL | the edit ops applied, for `trigger = 'edit'` |
+| `created_at`, `finished_at` | timestamptz | `finished_at` nullable |
+
+Constraints and indexes: `UNIQUE (template_ir_id, version)`; index `(user_id, project_id, created_at DESC)`. Rows are immutable once `completed`.
+
+### `artifacts`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `user_id`, `project_id` | tenant keys | |
+| `mapping_run_id` | uuid NOT NULL UNIQUE | FK `mapping_runs(id)`; one artifact per run |
+| `format` | text NOT NULL | `pptx` \| `docx` \| `xlsx` |
+| `filename` | text NOT NULL | download name: `{template stem}_v{mapping_runs.version}.{ext}` |
+| `storage_key` | text NOT NULL | |
+| `sha256` | char(64) NOT NULL | |
+| `size_bytes` | bigint NOT NULL | |
+| `created_at` | timestamptz | |
+
+Index `(user_id, project_id, created_at DESC)`.
+
+### JSONB payload shapes
+
+| Column | Shape | Defined in |
+|---|---|---|
+| `templates.anchor_map` | `AnchorMap` | [system-design.md § AnchorMap](system-design.md#4-anchormap) |
+| `template_irs.ir` | `TemplateIR` | [system-design.md § TemplateIR](system-design.md#5-templateir) |
+| `mapping_runs.results` | object of `FieldMappingResult` keyed by `field_id` | [system-design.md § FieldMappingResult](system-design.md#6-fieldmappingresult) |
+| `mapping_runs.edits` | array of `EditOp` | [api-specification.md § Edits](api-specification.md#post-v1projectsproject_idmapping-runsrun_idedits) |
+
+## Qdrant
+
+Accessed only through `src/doc_intel/vector/qdrant_store.py`.
+
+**Collection `doc_chunks`.**
+
+| Setting | Value |
+|---|---|
+| Named dense vector | `dense`: size 1024, distance Cosine |
+| Named sparse vector | `sparse`: BGE-M3 lexical weights (no IDF modifier) |
+| Point id | `chunk_id` = `uuid5(CHUNK_NAMESPACE, f"{document_id}:{chunk_index}")` |
+
+**Payload.**
+
+| Key | Type | Indexed |
+|---|---|---|
+| `user_id` | keyword | yes, `is_tenant: true` |
+| `project_id` | keyword | yes |
+| `document_id` | keyword | yes |
+| `element_type` | keyword (`text` \| `table`) | yes |
+| `filename` | string | no |
+| `page_number` | integer \| null | no |
+| `section_heading` | string \| null | no |
+| `chunk_index` | integer | no |
+| `text` | string | no (chunk text, used by the verifier) |
+
+**Isolation rules.**
+- Every search, scroll, retrieve, and delete has a `must` filter on `user_id` **and** `project_id`, optionally narrowed with `document_id` `match.any`.
+- `qdrant_store` methods take a required `TenantContext` and build the filter themselves. Callers can't pass raw filters.
+- Retrieving by id (for verification) also applies the tenant filter: an id from another tenant returns nothing.
+
+## Storage layout (`StorageBackend`, local root `./data/storage/`)
+
+`storage_key` is the path relative to `STORAGE_ROOT`. Keys are built only from validated ids, never from user filenames.
+
+```
+data/
+├── storage/                                   # STORAGE_ROOT
+│   └── users/{user_id}/projects/{project_id}/
+│       ├── uploads/{document_id}/original.{ext}   # immutable, write-once
+│       ├── parsed/{document_id}.json              # parser output, derived, overwritable on retry
+│       └── artifacts/{artifact_id}.{ext}          # immutable rendered output
+├── postgres/                                  # PostgreSQL 16 volume
+├── qdrant/                                    # Qdrant volume
+└── openwebui/                                 # Open WebUI volume (its own DB + uploads)
+```
+
+- `{ext}` ∈ `pdf docx pptx xlsx txt csv md`.
+- `StorageBackend.put_bytes(key, data, overwrite=False)` refuses to overwrite an existing key. `uploads/` and `artifacts/` are always written with `overwrite=False`. `parsed/` is derived data and is written with `overwrite=True`, so a retried ingest job can rewrite it.
+- `delete` is used only when a document or project is deleted.
+- `data/` is git-ignored.
