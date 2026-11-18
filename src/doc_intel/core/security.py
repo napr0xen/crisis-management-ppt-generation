@@ -4,9 +4,10 @@ import hashlib
 import hmac
 import re
 import time
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import Header, Request
+from fastapi import Depends, Header, Request
 
 from doc_intel.core.config import get_settings
 from doc_intel.core.errors import LinkExpired, SignatureInvalid, Unauthorized, ValidationFailed
@@ -46,3 +47,6 @@ def verify_artifact_signature(
         raise SignatureInvalid()
     if int(now if now is not None else time.time()) > exp:
         raise LinkExpired()
+
+
+UserId = Annotated[str, Depends(require_user)]

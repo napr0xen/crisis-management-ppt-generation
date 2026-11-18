@@ -35,6 +35,15 @@ Stack: Python 3.12 via `uv`, lint/format with `ruff`, Docker Compose for Open We
 
 Work **only** on the current phase in `docs/implementation-roadmap.md`. Don't build later-phase code early.
 
+**Git branching (mandatory):**
+- Each phase is developed on its own branch `phase-<N>-<slug>` (`phase-0-docs`, `phase-1-foundation`, `phase-2-ingestion`, `phase-3-embeddings-qdrant`, …).
+- Remote: `https://github.com/napr0xen/crisis-management-ppt-generation.git`.
+- When the phase gate passes (pytest, ruff, `/ponytail-review`, `/ecc:quality-gate`):
+  1. mark the phase complete in the roadmap;
+  2. commit and push `origin phase-<N>-<slug>`;
+  3. fast-forward `main` to it (`git merge --ff-only`) and push `origin main`.
+- Phase branches are never deleted. Details: `docs/development-guidelines.md` § 11.
+
 **ECC sequence (mandatory):**
 1. `/ecc:plan`, then wait for approval;
 2. `/ecc:tdd` (failing test first; if not installed, use the `ecc:tdd-workflow` skill), then implement;

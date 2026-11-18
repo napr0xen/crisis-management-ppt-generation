@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from doc_intel.core.errors import NotFound
+from doc_intel.core.tenancy import TenantContext
 from doc_intel.db import repo
 from doc_intel.db.models import Document, Job
 
@@ -62,3 +63,57 @@ async def test_project_delete_cascades_to_children(session, user_a):
 async def test_unknown_project_id_is_not_found(session, user_a):
     with pytest.raises(NotFound):
         await repo.get_project(session, user_a, uuid.uuid4())
+
+
+async def _project_with_document_and_job(session, user_id):
+    project = await repo.create_project(session, user_id, "A")
+    ctx = TenantContext(user_id, project.id)
+    document = await repo.create_document(
+        session,
+        ctx,
+        uuid.uuid4(),
+        filename="f.pdf",
+        mime_type="application/pdf",
+        size_bytes=1,
+        sha256="a" * 64,
+        storage_key="k",
+    )
+    job = await repo.create_job(session, ctx, "ingest_document", {"document_id": str(document.id)})
+    return ctx, document, job
+
+
+@pytest.mark.parametrize("mismatch", ["user_id", "project_id"])
+async def test_document_and_job_functions_are_tenant_scoped(session, user_a, user_b, mismatch):
+    ctx, document, job = await _project_with_document_and_job(session, user_a)
+    other_project = await repo.create_project(session, user_a, "A2")
+    wrong = (
+        TenantContext(user_b, ctx.project_id)
+        if mismatch == "user_id"
+        else TenantContext(user_a, other_project.id)
+    )
+
+    assert await repo.list_documents(session, wrong, 50) == []
+    assert await repo.find_document_by_sha256(session, wrong, document.sha256) is None
+    for call in (
+        repo.get_document(session, wrong, document.id),
+        repo.update_document(session, wrong, document.id, status="failed"),
+        repo.delete_document(session, wrong, document.id),
+        repo.get_job(session, wrong, job.id),
+        repo.update_job(session, wrong, job.id, status="failed"),
+    ):
+        with pytest.raises(NotFound):
+            await call
+
+    # the right tenant still sees both, unchanged
+    assert (await repo.get_document(session, ctx, document.id)).status == "uploaded"
+    assert (await repo.get_job(session, ctx, job.id)).status == "queued"
+    assert [d.id for d in await repo.list_documents(session, ctx, 50)] == [document.id]
+    assert (await repo.find_document_by_sha256(session, ctx, document.sha256)).id == document.id
+
+
+async def test_ensure_project_is_user_scoped(session, user_a, user_b):
+    project = await repo.create_project(session, user_a, "A")
+    await repo.ensure_project(session, user_a, project.id)
+    for user_id, project_id in ((user_b, project.id), (user_a, uuid.uuid4())):
+        with pytest.raises(NotFound):
+            await repo.ensure_project(session, user_id, project_id)

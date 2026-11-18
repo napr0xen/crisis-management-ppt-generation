@@ -10,7 +10,9 @@ Stores and ownership: see [ADR-008](DECISIONS.md#adr-008--persistence-boundaries
 - `user_id text` holds the Open WebUI user id. It is validated against `^[A-Za-z0-9_-]{1,64}$` before use, because it also appears in storage paths.
 - Timestamps are `timestamptz NOT NULL DEFAULT now()`.
 - Enums are `text` + `CHECK` constraints: easier to migrate than PG enums.
-- **Tenant rule.** Every table except `projects` has `user_id` and `project_id` plus the composite FK `(project_id, user_id) REFERENCES projects(id, user_id) ON DELETE CASCADE`. Every repository query filters `WHERE user_id = :user_id AND project_id = :project_id`, with no exceptions. The one exception is the signed download, which looks up `artifacts.id` and then checks `user_id` through the HMAC.
+- **Tenant rule.** Every table except `projects` has `user_id` and `project_id` plus the composite FK `(project_id, user_id) REFERENCES projects(id, user_id) ON DELETE CASCADE`. Every repository query filters `WHERE user_id = :user_id AND project_id = :project_id`, with two named exceptions:
+  1. the signed download looks up `artifacts.id`, then checks `user_id` through the HMAC;
+  2. the job queue (`jobs/worker.py`): claiming the next job and startup recovery span all tenants, and touch only queue state. Everything after the claim uses the job's `user_id`/`project_id`.
 - Migrations: Alembic in `migrations/` (from Phase 1).
 - **Non-tenant FKs and deletes.**
   - `templates.document_id` → `documents` and `template_irs.template_id` → `templates` are `ON DELETE CASCADE`.
@@ -52,7 +54,7 @@ Constraints and indexes: `UNIQUE (id, user_id)` (target of the composite FKs); `
 | `created_at`, `updated_at` | timestamptz | |
 
 Constraints and indexes:
-- `UNIQUE (project_id, sha256)`: re-uploading the same file is deduplicated. A duplicate upload appends its Open WebUI file id to `openwebui_file_ids` of the existing row.
+- `UNIQUE (project_id, sha256)`: re-uploading the same file is deduplicated. Re-uploading a `failed` document resets it to `uploaded` and queues a fresh ingest job. A duplicate upload appends its Open WebUI file id to `openwebui_file_ids` of the existing row.
 - Index `(user_id, project_id, created_at DESC)`.
 - Lookup by Open WebUI file id: `WHERE user_id = :u AND project_id = :p AND :file_id = ANY(openwebui_file_ids)`. `shortcut: no GIN index, add one if a project exceeds a few hundred documents.`
 
@@ -69,7 +71,7 @@ Every upload starts as `role = 'source'` and is indexed. Marking a document as a
 | `payload` | jsonb NOT NULL | input ids, e.g. `{"document_id": "…"}` |
 | `progress` | jsonb NOT NULL DEFAULT `'{}'` | `{"stage": "embedding", "done": 12, "total": 40}` |
 | `result` | jsonb NULL | output ids, e.g. `{"template_id": "…"}` |
-| `error_code` | text NULL | |
+| `error_code` | text NULL | the failing exception's `code` (e.g. `parse_error`), `internal` otherwise, `interrupted` if the backend restarted during the last attempt |
 | `error_message` | text NULL | safe text only, no document content |
 | `attempts` | int NOT NULL DEFAULT 0 | the worker fails a job once `attempts` reaches 3 (constant `MAX_JOB_ATTEMPTS` in `jobs/worker.py`) |
 | `locked_at` | timestamptz NULL | set when claimed |

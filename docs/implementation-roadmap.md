@@ -21,7 +21,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 |---|---|---|
 | 0 | Architecture & source-of-truth docs | **Complete** |
 | 1 | Foundation, infrastructure & database | **Complete** |
-| 2 | Ingestion, storage & Open WebUI integration check | pending |
+| 2 | Ingestion, storage & Open WebUI integration check | **Complete** |
 | 3 | Embeddings & vector store | pending |
 | 4 | LLM gateway & grounded Q&A | pending |
 | 5 | Template intelligence (Anchor Map + IR) | pending |
@@ -72,8 +72,8 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - `core/tenancy.py` `TenantContext` + project-scoped dependency (404 for non-owners);
   - `jobs/` worker (SKIP LOCKED claim, startup re-queue of all `running` jobs, progress, idempotent retries) and the `ingest_document` handler;
   - document endpoints (POST/GET/list/DELETE without the Qdrant step), `GET …/jobs/{job_id}`;
-  - fixture corpus `tests/fixtures/sources/` with one file per format, including one scanned PDF;
-  - **Open WebUI integration check** against the pinned Open WebUI image (manual, using a throwaway Pipe in Open WebUI's function editor; no Pipe code is committed before Phase 8):
+  - fixture corpus `tests/fixtures/sources.py`: builds one file per format at test time (incl. an image-only PDF for OCR), so no binary fixtures are committed;
+  - ✅ **Open WebUI integration check** (done; results in [architecture.md § 5](architecture.md#5-open-webui-pipe-design)) against the pinned Open WebUI image (manual, using a throwaway Pipe in Open WebUI's function editor; no Pipe code is committed before Phase 8):
     1. how a Pipe reads uploaded file bytes from `__files__` (field names, storage API or path);
     2. whether `BYPASS_EMBEDDING_AND_RETRIEVAL=true` is the right setting name and actually stops Open WebUI injecting its own RAG context into Pipe requests;
     3. what `__files__` contains per turn (current message only, or the whole chat);
@@ -154,7 +154,8 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - `POST /v1/pipe/files`, `POST /v1/pipe/chat` (SSE);
   - `chat/router.py`, `chat/summary.py`;
   - template confirmation flow;
-  - compose env to bypass Open WebUI RAG, using the setting verified in Phase 2.
+  - disable Open WebUI's built-in RAG for the Pipe model during setup: create the model override with capabilities `file_context: false` and `builtin_tools: false` (Phase 2 finding: `BYPASS_EMBEDDING_AND_RETRIEVAL=true` only skips embedding, still injects file text, and is persisted config that later env changes don't override);
+  - Pipe skips task calls via `__metadata__["task"]` first; the `### Task:` prefix check is safe only while file context is off (Open WebUI's RAG template also starts with `### Task:`).
 - **Exit:**
   - Pipe unit tests (task-call skip, SSE → event_emitter mapping, file upload once per file);
   - API tests for the SSE event sequence;

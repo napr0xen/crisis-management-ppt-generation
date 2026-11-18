@@ -71,7 +71,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `test_qdrant_isolation.py` | search / retrieve-by-id / delete scoped to B never see or remove A's points (same `project_id` value under a different `user_id` included) |
 | `test_qdrant_access.py` | no module outside `vector/qdrant_store.py` imports `qdrant_client` |
 | `test_signed_urls.py` | valid → 200; altered `sig`/`exp`/`artifact_id` → 403; expired → 410 |
-| `test_upload_safety.py` | extension/magic mismatch → 415; oversize → 413; malicious filenames never reach disk paths |
+| `tests/unit/test_upload.py` | extension/magic mismatch → 415; oversize → 413; storage keys built from ids only, so malicious filenames never reach disk paths |
 | `test_log_redaction.py` | run ingest + Q&A + mapping with sentinel strings in documents and prompts; assert sentinels never appear in captured logs |
 
 ## 5. RAG & mapping evaluation (`tests/eval/`, marker `llm`)

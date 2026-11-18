@@ -4,7 +4,10 @@ Unit tests need no services. Integration/security tests that touch the DB use a 
 `doc_intel_test` database on the Compose Postgres, migrated with Alembic, so dev data is untouched.
 """
 
+import atexit
 import os
+import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -36,6 +39,11 @@ TEST_DB_NAME = "doc_intel_test"
 TEST_DATABASE_URL = DEV_DATABASE_URL.rsplit("/", 1)[0] + f"/{TEST_DB_NAME}"
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("QDRANT_URL", DEV_ENV.get("QDRANT_URL", "http://127.0.0.1:6333"))
+# Tests never write into ./data.
+# Tests drive jobs with `run_one`; a background worker would race them for queued jobs.
+os.environ["JOB_CONCURRENCY"] = "0"
+os.environ["STORAGE_ROOT"] = tempfile.mkdtemp(prefix="doc_intel_test_storage_")
+atexit.register(shutil.rmtree, os.environ["STORAGE_ROOT"], ignore_errors=True)
 
 AUTH = {"Authorization": "Bearer test-pipe-secret"}
 
@@ -104,3 +112,23 @@ def client(migrated_db):
 
     with TestClient(create_app()) as c:
         yield c
+
+
+@pytest.fixture
+def project(client, user_a) -> str:
+    """A project owned by `user_a`; returns its id."""
+    return client.post("/v1/projects", json={"name": "P"}, headers=headers(user_a)).json()["id"]
+
+
+@pytest.fixture
+async def empty_queue(migrated_db):
+    """The worker claims any tenant's oldest job: worker-driven tests start from an empty queue."""
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from doc_intel.db.models import Job
+
+    engine = create_async_engine(migrated_db)
+    async with engine.begin() as conn:
+        await conn.execute(delete(Job))
+    await engine.dispose()

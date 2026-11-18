@@ -3,10 +3,11 @@
 import pytest
 from sqlalchemy import select
 
-from doc_intel.api.v1.projects import Session, UserId
 from doc_intel.core.errors import NotFound
+from doc_intel.core.security import UserId
 from doc_intel.db import repo
 from doc_intel.db.models import Project
+from doc_intel.db.session import Session
 from tests.conftest import headers
 
 pytestmark = pytest.mark.integration

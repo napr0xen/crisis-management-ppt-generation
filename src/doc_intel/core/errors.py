@@ -38,6 +38,18 @@ class ValidationFailed(AppError):
     code, http_status, message = "validation_error", 422, "Validation failed."
 
 
+class Conflict(AppError):
+    code, http_status, message = "conflict", 409, "Conflict."
+
+
+class PayloadTooLarge(AppError):
+    code, http_status, message = "payload_too_large", 413, "Upload exceeds the size limit."
+
+
+class UnsupportedMediaType(AppError):
+    code, http_status, message = "unsupported_media_type", 415, "Unsupported file type."
+
+
 def _request_id() -> str | None:
     return structlog.contextvars.get_contextvars().get("request_id")
 

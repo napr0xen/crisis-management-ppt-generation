@@ -94,7 +94,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | |
 | `CHUNK_MAX_TOKENS` | `512` | |
 | `MAX_UPLOAD_MB` | `100` | |
-| `JOB_CONCURRENCY` | `1` | keep at 1 on 24 GB |
+| `JOB_CONCURRENCY` | `1` | `0` disables the in-process worker (tests set it, then drive jobs with `run_one`); max 1 on 24 GB |
 | `MISSING_MARKER` | `[MISSING: {label}]` | |
 | `CONFLICT_MARKER` | `[CONFLICT: See Chat Summary]` | |
 | `LOG_LEVEL` | `INFO` | |
@@ -115,7 +115,15 @@ Docker Compose has its own variables in the same `.env`: `POSTGRES_USER`, `POSTG
 
 ## 11. Git hygiene
 
-- Branch per phase: `phase-<n>-<slug>`. Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
+- Remote: `origin` = `https://github.com/napr0xen/crisis-management-ppt-generation.git`.
+- **One branch per phase**, named `phase-<N>-<slug>` with the slug from the roadmap phase name: `phase-0-docs`, `phase-1-foundation`, `phase-2-ingestion`, `phase-3-embeddings-qdrant`, … through Phase 10.
+- Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
+- **End of every phase**, only after `uv run pytest`, `uv run ruff check .`, `uv run ruff format --check .`, `/ponytail-review` and `/ecc:quality-gate` pass:
+  1. mark the phase complete in `docs/implementation-roadmap.md`;
+  2. commit the phase work on `phase-<N>-<slug>` and `git push origin phase-<N>-<slug>`;
+  3. `git checkout main && git merge --ff-only phase-<N>-<slug> && git push origin main`.
+
+  `main` always tracks the latest verified phase. Phase branches are never deleted, so every phase stays preserved on GitHub.
 - Never commit `.env`, `data/`, `.venv/`, model weights, or real customer documents. Test fixtures are synthetic.
 - Each commit keeps code and docs consistent. If a commit changes a name, it updates `docs/` too.
 - Merge a phase only after its exit gate passes, with the command output in the PR description.

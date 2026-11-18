@@ -9,7 +9,7 @@ Table, column, and path names come from [data-model.md](data-model.md); endpoint
 | `core/` | settings, logging, errors, auth, tenant context, URL signing | `config.py` (`Settings`), `logging.py`, `errors.py` (`AppError`), `security.py` (bearer check, HMAC signing), `tenancy.py` (`TenantContext(user_id, project_id)`) |
 | `db/` | async SQLAlchemy 2.0 models and tenant-scoped repositories | `session.py`, `models.py`, `repo.py` |
 | `storage/` | `StorageBackend` protocol + local implementation | `base.py`, `local.py` |
-| `ingestion/` | parse → chunk | `docling_parser.py`, `native_parsers.py`, `chunker.py`, `pipeline.py` |
+| `ingestion/` | upload validation, parse → chunk | `schemas.py` (`ParsedElement`, `ParsedDocument`, `ChunkPayload`), `upload.py` (format/magic/size checks, sha256, storage keys), `docling_parser.py`, `native_parsers.py`, `chunker.py`, `pipeline.py` |
 | `embeddings/` | BGE-M3 dense+sparse, optional reranker | `bge_m3.py`, `reranker.py` |
 | `vector/` | **only** Qdrant access point | `qdrant_store.py` |
 | `llm/` | provider-agnostic gateway, prompts | `gateway.py`, `prompts/*.md` |
@@ -46,6 +46,7 @@ Outside the package: `integrations/openwebui/doc_intel_pipe.py` (the Pipe Functi
 | md | plain text, split on `#` headings | null | heading text |
 
 3. Write the parser output to `parsed/{document_id}.json` with `overwrite=True`, so a retry after a crash can rewrite it.
+   Headings (Docling section headers/titles, Markdown `#` lines) set `section_heading` **and** are emitted as text, because the layout model sometimes labels body text as a header.
 4. **Chunker** (`chunker.py`):
    - text items under the same heading are packed up to `CHUNK_MAX_TOKENS=512` BGE-M3 tokens (target ~400) and never cross a section boundary;
    - each table is its own chunk (`element_type = 'table'`), serialized as Markdown; tables longer than 512 tokens are split by rows, with the header row repeated;

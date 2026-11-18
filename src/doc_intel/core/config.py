@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     signing_secret: SecretStr
     signed_url_ttl_s: int = 900
     log_level: str = "INFO"
+    max_upload_mb: int = 100
+    chunk_max_tokens: int = 512
+    embedding_model: str = "BAAI/bge-m3"
+    # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
+    # RAM budget fits one Docling/LLM job at a time (ADR-010); revisit with more memory.
+    job_concurrency: int = Field(default=1, ge=0, le=1)
 
 
 @lru_cache

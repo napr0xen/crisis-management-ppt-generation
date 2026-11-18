@@ -7,11 +7,14 @@ import structlog
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from doc_intel.api.v1 import health, projects
+from doc_intel.api.v1 import documents, health, jobs, projects
 from doc_intel.core.config import Settings, get_settings
 from doc_intel.core.errors import AppError, error_response, install_error_handlers
 from doc_intel.core.logging import configure_logging
 from doc_intel.db.session import make_engine
+from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
+from doc_intel.jobs.worker import start_worker
+from doc_intel.storage.local import LocalStorage
 
 log = structlog.get_logger()
 
@@ -64,9 +67,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         app.state.engine = make_engine(settings.database_url)
         app.state.sessionmaker = async_sessionmaker(app.state.engine, expire_on_commit=False)
+        app.state.storage = LocalStorage(settings.storage_root)
         async with httpx.AsyncClient() as http:
             app.state.http = http
-            yield
+            stop_worker = (
+                await start_worker(
+                    app.state.sessionmaker,
+                    make_handlers(app.state.sessionmaker, app.state.storage, settings),
+                    make_failure_hooks(app.state.sessionmaker),
+                )
+                if settings.job_concurrency
+                else None
+            )
+            try:
+                yield
+            finally:
+                if stop_worker:
+                    await stop_worker()
         await app.state.engine.dispose()
 
     app = FastAPI(title="doc_intel", version="0.1.0", lifespan=lifespan)
@@ -74,6 +91,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handlers(app)
     app.include_router(health.router, prefix="/v1")
     app.include_router(projects.router, prefix="/v1")
+    app.include_router(documents.router, prefix="/v1")
+    app.include_router(jobs.router, prefix="/v1")
     return app
 
 

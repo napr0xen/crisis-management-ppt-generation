@@ -2,20 +2,15 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from doc_intel.core.security import require_user
+from doc_intel.core.security import UserId
 from doc_intel.db import repo
 from doc_intel.db.models import Project
-from doc_intel.db.session import get_session
+from doc_intel.db.session import Session
 
 router = APIRouter(prefix="/projects")
-
-UserId = Annotated[str, Depends(require_user)]
-# scope='function': the request's transaction commits before the response is sent.
-Session = Annotated[AsyncSession, Depends(get_session, scope="function")]
 
 
 class ProjectCreate(BaseModel):

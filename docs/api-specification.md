@@ -111,7 +111,7 @@ No auth. Returns `200` if the API is up, and reports each dependency.
 {"project_id": "uuid", "document_id": "uuid", "job_id": "uuid|null", "deduplicated": false}
 ```
 
-`job_id` is null when the upload was deduplicated. Errors: `413`, `415`.
+`job_id` is null when the upload was deduplicated, unless the existing document had `failed`: it is then reset to `uploaded` and a fresh `ingest_document` job is queued (`deduplicated: true` with that `job_id`). Errors: `413`, `415`.
 
 ### `POST /v1/pipe/chat`
 
@@ -161,7 +161,7 @@ Returns `Project`:
 
 ### `POST /v1/projects/{project_id}/documents`
 
-`multipart/form-data`: `file`. Behaves like `/v1/pipe/files` without the chat. Returns `201` with `{"document_id", "job_id", "deduplicated"}`.
+`multipart/form-data`: `file`. Behaves like `/v1/pipe/files` without the chat, including the retry of a `failed` duplicate. Returns `201` with `{"document_id", "job_id", "deduplicated"}`.
 
 ### `GET /v1/projects/{project_id}/documents`
 

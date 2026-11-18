@@ -33,7 +33,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
   2. Upload any new chat files to `POST /v1/pipe/files`.
   3. Forward `user_id`, `chat_id`, `messages`, and file references to `POST /v1/pipe/chat`.
   4. Relay backend SSE `status` events to `__event_emitter__` and yield `delta` text.
-- Turn off Open WebUI's built-in RAG for these files (`BYPASS_EMBEDDING_AND_RETRIEVAL=true`). The exact setting and the Pipe's file-reading API are verified against the pinned Open WebUI version in Phase 2 and recorded in [architecture.md § 5](architecture.md#5-open-webui-pipe-design).
+- Turn off Open WebUI's built-in RAG for these files by setting the Pipe model's capabilities `file_context: false` and `builtin_tools: false`. `BYPASS_EMBEDDING_AND_RETRIEVAL=true` only skips embedding: Open WebUI still injects the full file text when file context is on. Verified against Open WebUI v0.13.4 in Phase 2; details and the file-reading API are in [architecture.md § 5](architecture.md#5-open-webui-pipe-design).
 - The Pipe holds no business logic.
 
 **Trade-offs.** The Pipe depends on Open WebUI's function API (`__user__`, `__metadata__`, `__files__`, `__event_emitter__`), which can change between versions. Mitigation: pin the Open WebUI image tag and keep the Pipe under 200 lines.
@@ -166,7 +166,9 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
   - Qdrant upserts use deterministic point ids;
   - `parsed/` is overwritable;
   - rendering reuses an existing `artifacts` row for the run;
-  - `extract_template` reuses an existing `templates` row.
+  - `extract_template` reuses an existing `templates` row;
+  - a job whose row was deleted meanwhile (e.g. the document) finishes without retrying and removes any output it wrote.
+- When a job fails for good (last attempt, or interrupted at startup), the worker calls that kind's failure hook so the row it owns (e.g. the document) is marked `failed` too, never left in progress.
 - Progress is written to `jobs.progress`; `/v1/pipe/chat` polls it to emit SSE `status` events.
 
 **Trade-offs.** No Redis/Celery to run. Jobs stop while the API is down and resume on restart. `shortcut: single in-process worker, move to a separate worker process if API latency suffers during ingestion.`

@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
+from typing import Annotated
 
-from fastapi import Request
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 
@@ -17,3 +18,7 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     """
     async with request.app.state.sessionmaker.begin() as session:
         yield session
+
+
+# scope='function': the request's transaction commits before the response is sent.
+Session = Annotated[AsyncSession, Depends(get_session, scope="function")]
