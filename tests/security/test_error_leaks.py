@@ -36,6 +36,26 @@ def test_unhandled_error_returns_envelope_and_is_not_reraised(capsys):
     assert "RuntimeError" in out.out  # the error type is still logged
 
 
+def test_upstream_errors_are_logged_by_cause_type_only(capsys):
+    from doc_intel.core.errors import UpstreamUnavailable
+
+    app = create_app(
+        Settings(_env_file=None, database_url="postgresql+asyncpg://x:x@127.0.0.1:1/x")
+    )
+
+    async def llm_down():
+        raise UpstreamUnavailable() from TimeoutError(SENTINEL)
+
+    app.add_api_route("/v1/llm-down", llm_down)
+    with TestClient(app) as client:
+        r = client.get("/v1/llm-down")
+    assert r.status_code == 503
+    out = capsys.readouterr()
+    assert '"upstream_unavailable"' in out.out
+    assert '"TimeoutError"' in out.out  # the operator can tell a timeout from bad JSON
+    assert SENTINEL not in out.out + out.err
+
+
 @pytest.mark.integration
 async def test_db_errors_hide_bound_parameters(migrated_db, user_a, user_b):
     engine = make_engine(migrated_db)

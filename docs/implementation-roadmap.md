@@ -23,7 +23,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 1 | Foundation, infrastructure & database | **Complete** |
 | 2 | Ingestion, storage & Open WebUI integration check | **Complete** |
 | 3 | Embeddings & vector store | **Complete** |
-| 4 | LLM gateway & grounded Q&A | pending |
+| 4 | LLM gateway & grounded Q&A | **Complete** |
 | 5 | Template intelligence (Anchor Map + IR) | pending |
 | 6 | Mapping engine | pending |
 | 7 | Surgical writers & artifacts | pending |
@@ -102,13 +102,14 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 
 - **Entry:** Phase 3 done.
 - **Deliverables:**
-  - `llm/gateway.py` (`OpenAICompatClient`, `AnthropicClient`, JSON-schema output + 1 retry);
+  - `llm/gateway.py` (`OllamaClient` on native `/api/chat`, `OpenAICompatClient`, JSON-schema output + 1 retry; `AnthropicClient` planned, ADR-005);
   - `mapping/verifier.py` (normalize, quote check, typed-value check);
   - `chat/qa.py`;
   - `POST /v1/projects/{project_id}/query`.
 - **Exit:**
   - Verifier unit tests (exact, whitespace/quote normalization, wrong chunk, cross-tenant chunk, too-short quote, typed value absent);
   - `uv run pytest tests/eval -m llm -k qa` passes: 0 unverified citations returned, and "not found" for every unanswerable question in the set.
+- **Status:** Complete. Eval with `qwen3:14b` on 15 questions: 0 fabricated citations, 5/5 unanswerable → not found, 10/10 answerable answered with the expected source cited, no `<think>` leaked.
 
 ## Phase 5: Template intelligence (Stages 1–2)
 

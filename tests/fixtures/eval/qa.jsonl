@@ -1,0 +1,15 @@
+{"question": "How high did the river get?", "answerable": true, "expected_answer_contains": "7.2", "expected_sources": [{"filename": "sitrep_00.txt", "page_number": null}]}
+{"question": "How many customers were affected by the outage?", "answerable": true, "expected_answer_contains": "12,000", "expected_sources": [{"filename": "sitrep_01.txt", "page_number": null}]}
+{"question": "When was the emergency operations centre activated?", "answerable": true, "expected_answer_contains": "06:00", "expected_sources": [{"filename": "sitrep_02.txt", "page_number": null}]}
+{"question": "Where can displaced residents find shelter?", "answerable": true, "expected_answer_contains": "high school", "expected_sources": [{"filename": "sitrep_03.txt", "page_number": null}]}
+{"question": "How much drinking water does each household get per day?", "answerable": true, "expected_answer_contains": "10", "expected_sources": [{"filename": "sitrep_04.txt", "page_number": null}]}
+{"question": "When is the mayor's press conference?", "answerable": true, "expected_answer_contains": "15:00", "expected_sources": [{"filename": "sitrep_05.txt", "page_number": null}]}
+{"question": "Which road is closed and why?", "answerable": true, "expected_answer_contains": "Highway 9", "expected_sources": [{"filename": "sitrep_06.txt", "page_number": null}]}
+{"question": "How much money did the board approve for recovery?", "answerable": true, "expected_answer_contains": "2.5 million", "expected_sources": [{"filename": "sitrep_07.txt", "page_number": null}]}
+{"question": "What is the current hospital capacity?", "answerable": true, "expected_answer_contains": "87", "expected_sources": [{"filename": "sitrep_08.txt", "page_number": null}]}
+{"question": "How do volunteers sign up?", "answerable": true, "expected_answer_contains": "online", "expected_sources": [{"filename": "sitrep_09.txt", "page_number": null}]}
+{"question": "Who is the fire chief?", "answerable": false, "expected_answer_contains": null, "expected_sources": []}
+{"question": "How many people died in the flood?", "answerable": false, "expected_answer_contains": null, "expected_sources": []}
+{"question": "When will power be restored to the affected customers?", "answerable": false, "expected_answer_contains": null, "expected_sources": []}
+{"question": "What is the population of the city?", "answerable": false, "expected_answer_contains": null, "expected_sources": []}
+{"question": "Which company operates the substation?", "answerable": false, "expected_answer_contains": null, "expected_sources": []}

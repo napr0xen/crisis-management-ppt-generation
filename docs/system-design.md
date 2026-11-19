@@ -431,9 +431,10 @@ Common rules:
      `shortcut: stateless confirmation via chat history, add projects.pending_action if routing proves unreliable.`
    - `edit` → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
 5. **Q&A** (`qa.py`):
-   1. Retrieve.
-   2. Make one LLM call with JSON output `{"answer_markdown": "… [1] …", "citations": [{"marker": 1, "chunk_id": "…", "quote": "…"}]}`.
-   3. Verify the citations. Remove unverified markers. If no verified citations remain, the answer is "I could not find this in the uploaded documents."
+   1. Retrieve. No hits → the "not found" answer below, without an LLM call. A search failure → `503 upstream_unavailable`.
+   2. Make one LLM call (prompt `llm/prompts/qa.md`) with JSON output `{"answer_markdown": "… [1] …", "citations": [{"marker": 1, "chunk_id": "…", "quote": "…"}]}`. Each hit is shown as `[chunk_id | filename | p.N | section]` followed by its text.
+   3. Verify the citations (`mapping/verifier.py`; metadata copied from the hit). Remove unverified markers. If no verified citations remain, the answer is "I could not find this in the uploaded documents."
+      `shortcut: a sentence whose only marker failed verification stays uncited, drop such sentences if the eval shows unsupported claims surviving.`
    4. Stream the **verified** answer as `delta` events, followed by a source list (`filename p.N`).
    Generation isn't token-streamed, because the answer has to be verified before the user sees it.
 6. **Summary** (`summary.py`):

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +28,14 @@ class Settings(BaseSettings):
     reranker_device: str = "mps"  # mps | cpu, for the optional local reranker
     reranker_enabled: bool = False
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    # anthropic is planned (FR-17), not built: an unknown provider fails at startup.
+    llm_provider: Literal["ollama", "openai"] = "ollama"
+    llm_base_url: str = "http://127.0.0.1:11434"  # ollama: native API root; openai: the /v1 root
+    llm_model: str = "qwen3:14b"
+    llm_api_key: SecretStr = SecretStr("")
+    llm_num_ctx: int = 8192  # ollama only; 8 chunks x 512 tokens + prompt + answer fit
+    llm_timeout_seconds: float = 120.0  # local 14B inference plus a cold model load
+    llm_enable_thinking: bool = False
     qdrant_collection: str = "doc_chunks"  # tests use their own collection
     # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
     # RAM budget fits one Docling/LLM job at a time (ADR-010); revisit with more memory.

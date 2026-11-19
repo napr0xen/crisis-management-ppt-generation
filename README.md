@@ -27,7 +27,7 @@ Open WebUI chat ──Pipe Function──▶ FastAPI (native, MPS) ──▶ Pos
 
 - ML runs natively because Docker on macOS has no Metal/MPS access.
 - Cap Docker Desktop's VM memory at **3 GB**.
-- Default LLM: `qwen2.5:14b-instruct` (Q4_K_M, ~9 GB). Use `qwen2.5:7b-instruct` if you enable the reranker or memory is tight.
+- Default LLM: `qwen3:14b` (Q4_K_M, 10 GB resident at 8k context): `ollama pull qwen3:14b`. Use `qwen3:4b` (3.9 GB) if memory is tight.
 - Jobs run one at a time (`JOB_CONCURRENCY=1`). Docling and the reranker load lazily.
 - Start Ollama with `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_KEEP_ALIVE=10m`.
 - Full budget table: [docs/architecture.md § 6](docs/architecture.md#6-memory-budget-24-gb-unified-memory).

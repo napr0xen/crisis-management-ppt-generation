@@ -7,14 +7,17 @@ import structlog
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from doc_intel.api.v1 import documents, health, jobs, projects
+from doc_intel.api.v1 import documents, health, jobs, projects, query
 from doc_intel.core.config import Settings, get_settings
 from doc_intel.core.errors import AppError, error_response, install_error_handlers
 from doc_intel.core.logging import configure_logging
 from doc_intel.db.session import make_engine
 from doc_intel.embeddings.ollama import OllamaQwen3Embedder
+from doc_intel.embeddings.reranker import BGEReranker
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import start_worker
+from doc_intel.llm.gateway import make_llm_client
+from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.local import LocalStorage
 from doc_intel.vector.qdrant_store import QdrantStore
 
@@ -88,6 +91,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 settings.embedding_model,
                 settings.embedding_dimensions,
             )
+            reranker = (
+                BGEReranker(settings.reranker_model, settings.reranker_device)
+                if settings.reranker_enabled
+                else None
+            )
+            app.state.retriever = Retriever(app.state.embedder, store, reranker)
+            app.state.llm = make_llm_client(settings, http)
             stop_worker = (
                 await start_worker(
                     app.state.sessionmaker,
@@ -118,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(projects.router, prefix="/v1")
     app.include_router(documents.router, prefix="/v1")
     app.include_router(jobs.router, prefix="/v1")
+    app.include_router(query.router, prefix="/v1")
     return app
 
 

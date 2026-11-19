@@ -39,3 +39,17 @@ class FakeEmbedder:
     async def embed_query(self, text: str) -> Embedding:
         self.calls.append([text])
         return _embed(text)
+
+
+class FakeLLM:
+    """Scripted `LLMClient`: returns the queued replies in order and records every call."""
+
+    def __init__(self, *replies: str) -> None:
+        self.replies = list(replies)
+        self.calls: list[tuple[list[dict[str, str]], dict | None]] = []
+
+    async def complete(
+        self, messages: list[dict[str, str]], json_schema: dict | None = None
+    ) -> str:
+        self.calls.append((list(messages), json_schema))
+        return self.replies.pop(0)

@@ -24,7 +24,7 @@ Names: [data-model.md](data-model.md), [api-specification.md](api-specification.
 | FR-14 | Users can edit results in chat (set a value, choose a conflict candidate, clear a field). Each edit creates a new versioned run and artifact; earlier versions are kept. |
 | FR-15 | Artifacts download via signed, user-scoped, expiring URLs (default 15 min). |
 | FR-16 | Users can delete a document; its vectors and stored files are removed. |
-| FR-17 | The LLM provider is swappable via `.env` (`ollama` default, `openai`, `anthropic`) with no code change. |
+| FR-17 | The LLM provider is swappable via `.env` (`ollama` default, `openai` = any OpenAI-compatible endpoint) with no code change. `anthropic` is planned, not built (ADR-005). |
 
 ## 2. Supported formats
 

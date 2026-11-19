@@ -6,6 +6,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+log = structlog.get_logger()
+
 
 class AppError(Exception):
     code = "internal"
@@ -70,6 +72,10 @@ def error_response(status: int, code: str, message: str) -> JSONResponse:
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:
+        if exc.http_status >= 500:
+            # Type name only: a cause's message may carry document text or a keyed URL.
+            cause = type(exc.__cause__).__name__ if exc.__cause__ else None
+            log.warning("app_error", code=exc.code, cause=cause)
         return error_response(exc.http_status, exc.code, exc.message)
 
     @app.exception_handler(RequestValidationError)

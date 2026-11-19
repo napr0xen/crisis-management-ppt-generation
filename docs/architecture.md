@@ -27,11 +27,11 @@ Why each choice was made: [DECISIONS.md](DECISIONS.md). Names: [data-model.md](d
 │  vector/qdrant_store.py (only Qdrant access)         writers/ (pptx, docx, xlsx)     │
 │  storage/ (StorageBackend → ./data/storage/)         llm/gateway ──────────┐         │
 └────────────────────────────────────────────────────────────────────────────┼─────────┘
-                                                                             │ OpenAI-compatible HTTP
+                                                                             │ native /api/chat (ADR-005)
                                                      ┌───────────────────────▼─────────┐
                                                      │ Ollama (native, Metal)          │
                                                      │ 127.0.0.1:11434                 │
-                                                     │ swappable: OpenAI / Anthropic   │
+                                                     │ swappable: OpenAI-compatible    │
                                                      └─────────────────────────────────┘
 ```
 
@@ -146,14 +146,13 @@ Peak at steady state (one mapping run active, Docker up, default 14B model, rera
 |---|---|---|
 | macOS + desktop apps | 5.0 | browser with Open WebUI tab included |
 | Docker VM (Open WebUI ~1.0, Postgres ~0.5, Qdrant ~0.5, VM overhead) | 3.0 | cap the VM at 3 GB in Docker Desktop; compose `mem_limit`s: open-webui 1.5g, postgres 512m, qdrant 1g |
-| Ollama `qwen2.5:14b-instruct` Q4_K_M weights | 9.0 | `OLLAMA_KEEP_ALIVE=10m` |
-| Ollama KV cache (8k ctx, one slot) | 1.5 | `num_ctx=8192`, `OLLAMA_NUM_PARALLEL=1`: each extra parallel slot would add another 1.5 GB |
+| Ollama `qwen3:14b` Q4_K_M, weights + KV cache (8k ctx, one slot) | 10.0 | measured with `ollama ps` at `num_ctx=8192`; `OLLAMA_KEEP_ALIVE=10m`, `OLLAMA_NUM_PARALLEL=1`: each extra parallel slot adds its own KV cache |
 | Ollama `qwen3-embedding:0.6b` (`num_ctx=1024`) | 0.8 | measured: 0.81 GB (1.24 GB at the default context); unloaded after `OLLAMA_KEEP_ALIVE` when idle. Ollama must be allowed ≥ 2 loaded models (LLM + embedder; its default allows more) |
 | FastAPI process (Python, Docling idle) | 0.5 | |
-| **Subtotal (mapping)** | **19.8** | ~4.2 GB headroom |
+| **Subtotal (mapping)** | **19.3** | ~4.7 GB headroom |
 | + Docling layout/TableFormer/RapidOCR (only during ingestion) | +2.0 | loaded lazily, worker concurrency 1 |
 | + BGE reranker v2-m3 (only if `RERANKER_ENABLED=true`) | +1.5 | lazy-loaded |
-| **Worst case (ingest + LLM + reranker)** | **23.3** | near the limit: switch to `qwen2.5:7b-instruct` (−4 GB) |
+| **Worst case (ingest + LLM + reranker)** | **22.8** | near the limit: switch to `qwen3:4b` (measured 3.9 GB, −6.1 GB) |
 
 Rules this budget implies:
 - `JOB_CONCURRENCY=1` and `OLLAMA_NUM_PARALLEL=1` (chat Q&A and a running job then queue at Ollama instead of each reserving their own KV cache);

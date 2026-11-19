@@ -13,9 +13,34 @@ def offline_client():
         _env_file=None,
         database_url="postgresql+asyncpg://x:x@127.0.0.1:1/x",
         qdrant_url="http://127.0.0.1:1",
+        llm_base_url="http://127.0.0.1:1",
     )
     with TestClient(create_app(settings)) as c:
         yield c
+
+
+def test_health_probes_an_openai_compatible_llm_with_its_key():
+    import httpx
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200 if request.url.path == "/v1/models" else 503)
+
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql+asyncpg://x:x@127.0.0.1:1/x",
+        llm_provider="openai",
+        llm_base_url="https://llm.example.com/v1",
+        llm_api_key="sk-test",
+    )
+    with TestClient(create_app(settings)) as c:
+        c.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        body = c.get("/v1/health").json()
+    assert (body["llm"], body["llm_provider"]) == ("ok", "openai")  # NFR-1
+    [probe] = [r for r in seen if r.url.host == "llm.example.com"]
+    assert probe.headers["authorization"] == "Bearer sk-test"
 
 
 def test_health_is_public_and_reports_degraded(offline_client):
@@ -25,6 +50,7 @@ def test_health_is_public_and_reports_degraded(offline_client):
     assert body["status"] == "degraded"
     assert body["postgres"] != "ok"
     assert body["qdrant"] != "ok"
+    assert body["llm"] == "unavailable"
     assert body["version"] == "0.1.0"
 
 

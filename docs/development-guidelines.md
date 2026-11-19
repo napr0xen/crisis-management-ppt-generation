@@ -84,11 +84,13 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `SIGNING_SECRET` | — (required) | HMAC key for download URLs |
 | `SIGNED_URL_TTL_S` | `900` | |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | prefix for `download_url` |
-| `LLM_PROVIDER` | `ollama` | `ollama` \| `openai` \| `anthropic` |
-| `LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | ignored for `anthropic` |
-| `LLM_MODEL` | `qwen2.5:14b-instruct` | |
-| `LLM_API_KEY` | empty | required for `openai`/`anthropic` |
-| `LLM_NUM_CTX` | `8192` | Ollama context window |
+| `LLM_PROVIDER` | `ollama` | `ollama` \| `openai` (any OpenAI-compatible endpoint); `anthropic` planned (ADR-005) |
+| `LLM_BASE_URL` | `http://127.0.0.1:11434` | `ollama`: the native API root (not `/v1`); `openai`: the `/v1` root |
+| `LLM_MODEL` | `qwen3:14b` | low-RAM fallback `qwen3:4b` |
+| `LLM_API_KEY` | empty | bearer key for `openai`; never logged |
+| `LLM_NUM_CTX` | `8192` | Ollama context window (`ollama` only) |
+| `LLM_TIMEOUT_SECONDS` | `120` | per LLM request; covers a cold model load |
+| `LLM_ENABLE_THINKING` | `false` | Ollama `think`; `<think>` blocks are stripped either way |
 | `EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama |
 | `EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | any Ollama embedding model; changing it needs a re-ingest |
 | `EMBEDDING_DIMENSIONS` | `1024` | sent to Ollama (Matryoshka); must match the Qdrant collection |

@@ -86,12 +86,12 @@ Lists return `{"items": [...]}`, newest first, with `?limit=` (default 50, max 2
 No auth. Returns `200` if the API is up, and reports each dependency.
 
 ```json
-{"status": "ok", "postgres": "ok", "qdrant": "ok", "llm": "ok", "version": "0.1.0"}
+{"status": "ok", "postgres": "ok", "qdrant": "ok", "llm": "ok", "llm_provider": "ollama", "version": "0.1.0"}
 ```
 
 - Each dependency is `"ok"` or `"unavailable"`.
 - `status` is `"degraded"` if any dependency is not `"ok"`. The response code is still `200`, so the Pipe can report the problem to the user.
-- `llm` (the active provider's reachability) is added in Phase 4 with the LLM gateway; until then the response has only `postgres` and `qdrant`.
+- `llm` is the active provider's reachability (Ollama `GET /api/version`, OpenAI-compatible `GET /models`; no generation). `llm_provider` names the active provider (NFR-1), so a cloud provider is always visible.
 
 ---
 
@@ -210,6 +210,10 @@ Non-streaming grounded Q&A, used by the eval suite and direct clients.
 ```
 
 Every returned citation has passed the verifier. `found: false` means no verified citation, and `answer_markdown` then says so.
+
+- `question`: 1–2,000 characters (keeps the prompt within `LLM_NUM_CTX`), else `422`. Unknown body fields are `422`.
+- No search hits → `found: false` without an LLM call.
+- `503 upstream_unavailable` if the embedder, Qdrant or the LLM is down, or the LLM returns invalid JSON twice.
 
 ---
 

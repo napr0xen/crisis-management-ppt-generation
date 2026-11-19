@@ -73,10 +73,15 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 **Status:** Accepted
 
 **Decision.**
-- `src/doc_intel/llm/gateway.py` defines an `LLMClient` protocol with two methods: `complete(messages, json_schema | None) -> str` and `stream(messages) -> AsyncIterator[str]`.
-- Two implementations: `OpenAICompatClient` (Ollama at `http://localhost:11434/v1`, OpenAI) and `AnthropicClient`. The provider is chosen by `LLM_PROVIDER` in `.env`.
-- Default model: `qwen2.5:14b-instruct` (Q4_K_M, ~9 GB). Fallback: `qwen2.5:7b-instruct` (~5 GB) when memory is tight.
-- Structured outputs (Template IR, field extraction, intent routing) always use JSON-schema-constrained output and are validated with Pydantic. Invalid output gets 1 retry, then the step fails.
+- `src/doc_intel/llm/gateway.py` defines an `LLMClient` protocol with one method: `complete(messages, json_schema | None) -> str`. A `stream()` method is added only when a phase needs token streaming (Q&A isn't token-streamed: answers are verified first).
+- Implementations, chosen by `LLM_PROVIDER` in `.env`:
+  - `ollama` (default) → `OllamaClient` on Ollama's **native** `POST /api/chat` with `think`, `format` (the JSON schema) and `options.num_ctx`. Not Ollama's OpenAI-compatible `/v1`: measured in Phase 4, `/v1` ignores `num_ctx` and runs at 4096 tokens, which would silently cut the start (the instructions) of a Q&A prompt.
+  - `openai` → `OpenAICompatClient` on `{LLM_BASE_URL}/chat/completions` with `response_format: json_schema` and a bearer `LLM_API_KEY`; any OpenAI-compatible endpoint works.
+  - `anthropic` is planned (FR-17), not built; an unknown provider fails at startup.
+- Default model: `qwen3:14b` (Q4_K_M, measured 10.0 GB resident at `num_ctx = 8192`). Low-RAM fallback: `qwen3:4b` (measured 3.9 GB at `num_ctx = 8192`).
+- Thinking is off by default (`LLM_ENABLE_THINKING=false` sends `think: false`). A leading `<think>…</think>` block is still removed before JSON parsing or citation checks; a `</think>` quoted from a document further on is kept.
+- Structured outputs (Q&A, Template IR, field extraction, intent routing) always use JSON-schema-constrained output and are validated with Pydantic (`complete_json`). Invalid output gets 1 retry with a corrective message, then the step fails (`LLMError` → `503 upstream_unavailable`).
+- Temperature is 0 for every call.
 
 **Trade-offs.** No LangChain/LlamaIndex: the adapter is roughly 150 lines and we control every prompt. Cloud providers send document text off-machine, so they need explicit opt-in through `.env` (see requirements NFR-1).
 

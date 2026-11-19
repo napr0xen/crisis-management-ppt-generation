@@ -35,6 +35,7 @@ def test_route_discovery_finds_the_project_routes():
         ("GET", "/v1/projects"),
         ("POST", "/v1/projects"),
         ("GET", "/v1/projects/{id}"),
+        ("POST", "/v1/projects/{id}/query"),
     } <= paths
 
 
