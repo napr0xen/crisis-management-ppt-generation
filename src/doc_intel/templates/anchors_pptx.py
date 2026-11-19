@@ -1,20 +1,23 @@
+from collections.abc import Iterable, Iterator
 from io import BytesIO
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.shapes.base import BaseShape
+from pptx.slide import Slide
 
 from doc_intel.templates.anchors import find_tokens
 from doc_intel.templates.schemas import Anchor, TableRef
 
 
-def _shapes(shapes):
+def _shapes(shapes: Iterable[BaseShape]) -> Iterator[BaseShape]:
     for shape in shapes:
         yield shape
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             yield from _shapes(shape.shapes)
 
 
-def _layout_text(slide, shape) -> str:
+def _layout_text(slide: Slide, shape: BaseShape) -> str:
     for ph in slide.slide_layout.placeholders:
         if ph.placeholder_format.idx == shape.placeholder_format.idx and ph.has_text_frame:
             return ph.text_frame.text

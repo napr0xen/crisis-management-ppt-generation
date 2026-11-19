@@ -13,7 +13,8 @@ from doc_intel.templates.schemas import MAX_ANCHORS, Anchor, AnchorMap, Template
 log = structlog.get_logger()
 
 MAX_TEMPLATE_PARTS = 5000
-MAX_TEMPLATE_XML_BYTES = 32 * 1024 * 1024
+MAX_TEMPLATE_PART_BYTES = 32 * 1024 * 1024
+MAX_TEMPLATE_BYTES = 128 * 1024 * 1024
 
 # Bounded inner lengths and no nested quantifiers keep matching linear.
 _TOKEN = re.compile(
@@ -43,11 +44,11 @@ def _check_zip(data: bytes) -> None:
         raise ValidationFailed(
             f"The template has too many parts; the limit is {MAX_TEMPLATE_PARTS}."
         )
-    if any(
-        i.file_size > MAX_TEMPLATE_XML_BYTES and i.filename.endswith((".xml", ".rels"))
-        for i in infos
-    ):
+    # Every part, whatever its name: [Content_Types].xml decides what gets parsed as XML.
+    if any(i.file_size > MAX_TEMPLATE_PART_BYTES for i in infos):
         raise ValidationFailed("The template has a part that is too large.")
+    if sum(i.file_size for i in infos) > MAX_TEMPLATE_BYTES:
+        raise ValidationFailed("The template is too large once unzipped.")
 
 
 def build_anchor_map(fmt: TemplateFormat, data: bytes) -> AnchorMap:

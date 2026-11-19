@@ -118,3 +118,24 @@ def test_oversized_xml_part_rejected_before_parsing(monkeypatch):
         z.writestr("word/document.xml", b"<a><!--" + b"x" * (33 * 1024 * 1024) + b"--></a>")
     with pytest.raises(ValidationFailed, match="too large"):
         build_anchor_map("docx", out.getvalue())
+
+
+@pytest.mark.parametrize("name", ["ppt/slides/slide1.png", "word/DOCUMENT.XML"])
+def test_part_cap_ignores_part_name(monkeypatch, name):
+    # [Content_Types].xml, not the extension, decides what python-pptx/docx parse as XML.
+    monkeypatch.setattr("doc_intel.templates.anchors_docx.extract", _never_called)
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(name, b"x" * (33 * 1024 * 1024))
+    with pytest.raises(ValidationFailed, match="too large"):
+        build_anchor_map("docx", out.getvalue())
+
+
+def test_template_total_size_capped(monkeypatch):
+    monkeypatch.setattr("doc_intel.templates.anchors_docx.extract", _never_called)
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for i in range(5):  # 5 x 30 MB: every part under the part cap, total over 128 MB
+            z.writestr(f"word/p{i}.xml", b"x" * (30 * 1024 * 1024))
+    with pytest.raises(ValidationFailed, match="too large"):
+        build_anchor_map("docx", out.getvalue())

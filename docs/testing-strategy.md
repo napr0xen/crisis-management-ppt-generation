@@ -38,8 +38,8 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `core/security` | bearer constant-time compare; `user_id` regex; HMAC sign/verify, tamper, expiry |
 | `storage/local` | write-once refusal without `overwrite=True`; key built only from ids; path traversal attempts rejected |
 | `ingestion/chunker` | per-format metadata; tables separate; ≤ `CHUNK_MAX_TOKENS`; contiguous `chunk_index`; no cross-section chunks |
-| `templates/anchors_*` | golden AnchorMap per fixture template; `anchor_id` grammar; formula cells excluded |
-| `templates/ir_builder.validate` | unknown/duplicate anchor; invalid `write_mode` for kind; `replace_token` without matching token |
+| `templates/anchors_*` | golden AnchorMap per fixture template; `anchor_id` grammar; formula cells excluded; vertical merges counted once; token false positives (`[1]`, `XXXL`, `___`) not anchored; `MAX_ANCHORS` boundary (400 passes, 401 and 0 anchors fail) |
+| `templates/ir_builder.validate` | unknown/duplicate anchor; invalid `write_mode` for kind; `replace_token` without matching token; `sheet_cell` allows only `fill_cell`; `fill_table_rows` only at row 1, col 0; no second field on a `fill_table_rows` table |
 | `mapping/verifier` | exact; whitespace/curly-quote/dash normalization; quote of a Markdown table row without the `|` separators; chunk not in hits; < 8 chars; typed value absent from quote; number/date canonicalization |
 | `mapping/engine` status rules | 0 → missing (each `missing_reason`); 1 → populated; incomplete → partial; ≥ 2 distinct → conflict; equal values merged; `llm_error` doesn't fail run; evidence metadata copied from hits, not LLM |
 | `mapping/schemas` | `FieldMappingResult` invariants reject: populated(rag) without evidence, missing with value, conflict with < 2 candidates |
@@ -74,6 +74,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `test_signed_urls.py` | valid → 200; altered `sig`/`exp`/`artifact_id` → 403; expired → 410 |
 | `tests/unit/test_upload.py` | extension/magic mismatch → 415; oversize → 413; storage keys built from ids only, so malicious filenames never reach disk paths |
 | `test_log_redaction.py` | run ingest + Q&A + mapping with sentinel strings in documents and prompts; assert sentinels never appear in captured logs |
+| `test_template_files.py` | XXE and entity expansion in docx/pptx/xlsx never leak file content or expand; understated zip entry sizes fail; more than 5000 parts, any part over 32 MB (any name) or over 128 MB in total are rejected before parsing |
 
 ## 5. RAG & mapping evaluation (`tests/eval/`, marker `llm`)
 

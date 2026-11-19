@@ -62,6 +62,7 @@ Max upload: `MAX_UPLOAD_MB=100`. Legacy binary formats (`.doc`, `.ppt`, `.xls`) 
 7. Signed download URLs bind `artifact_id`, owner `user_id`, and expiry with HMAC-SHA256.
 8. Secrets live only in `.env` (git-ignored). `.env.example` contains no real values.
 9. Citations are verified deterministically. The system never presents an unverified quote as evidence.
+10. Template packages are checked for part count, per-part size (32 MB) and total size (128 MB) before parsing. XML is parsed without entity resolution (python-docx/python-pptx) or through defusedxml (openpyxl).
 
 ## 5. Out of scope (v1)
 

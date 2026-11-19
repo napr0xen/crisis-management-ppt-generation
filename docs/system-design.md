@@ -87,7 +87,7 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
       "path": ["Slide 5", "Stakeholders", "Table 3"],
       "text": "",
       "tokens": [],
-      "is_placeholder": false,
+      "is_placeholder": true,
       "table": {"row": 1, "col": 2, "header": "Owner"}
     }
   ]
@@ -102,7 +102,16 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
 | docx | `paragraph`, `table_cell`, `header_paragraph`, `footer_paragraph`, `content_control` | `docx:body:p{i}`, `docx:body:t{t}:r{row}c{col}`, `docx:sec{s}:header:p{i}`, `docx:sec{s}:footer:p{i}`, `docx:sdt:{tag}` |
 | xlsx | `sheet_cell` | `xlsx:{sheet_name}!{cell_ref}` (split on the **last** `!`) |
 
-`tokens` lists placeholder tokens found in the text: `{{…}}`, `[…]`, `<…>`, `XXX`/`TBD`. XLSX anchors include only cells that are empty, hold a token, or sit next to a label cell. Formula cells are never anchors.
+**Selection rules.** Indexes are positions in the library's native collection, not counts of emitted anchors, so writers resolve them directly: `docx:body:p{i}` is `document.paragraphs[i]`, `t{t}` is `document.tables[t]`, and pptx uses `shape.shape_id`. Paragraph indexes are 0-based.
+- pptx: every shape with a text frame (group shapes are recursed) and every non-spanned table cell. An empty placeholder carries its layout prompt text as `text`.
+- docx: headings are not anchors (they form `path`). A body paragraph is an anchor if it has text, or is empty directly under a heading. Table cells are deduplicated across merges (one anchor at the merge origin). Header and footer paragraphs with text count only for sections not linked to the previous one (first-page and even-page headers are skipped). Tagged `w:sdt` content controls in the body are anchors; untagged ones are skipped, and the first of a duplicate tag is kept. An inline content control overlaps its paragraph's anchor.
+- xlsx: candidates are non-formula cells holding a token, plus empty right and below neighbours of text label cells. Merged non-origin cells are never anchors.
+
+`is_placeholder` means unfilled: tokens present, own text empty, or a content control.
+
+`tokens` lists placeholder tokens found in the text: `{{…}}`, `[…]` and `<…>` (the last two start with a letter), `XXX` and `TBD` as whole words, and blanks of 4+ underscores (`____`). Each token is at most 100 characters inside its brackets.
+
+**Limits.** `MAX_ANCHORS = 400`: more fails extraction with `validation_error`, never truncated; zero anchors also fails with `validation_error`. Before parsing, a package with more than 5000 zip parts, any part over 32 MB declared (whatever its name: `[Content_Types].xml` decides what is parsed as XML), or over 128 MB declared in total, fails with `validation_error`. An unreadable package fails with `parse_error`.
 
 ## 5. TemplateIR
 
@@ -111,16 +120,20 @@ Stage 2. The LLM proposes fields from the AnchorMap, and `ir_builder.validate()`
 - no `anchor_id` is used twice;
 - `field_id`s are unique;
 - `write_mode` is allowed for the anchor kind (table below);
-- `replace_token` fields have `constraints.token` present in the anchor's `tokens`.
+- `replace_token` fields have `constraints.token` present in the anchor's `tokens`;
+- `fill_table_rows` anchors on table row 1, col 0;
+- a table filled by `fill_table_rows` has no other field on its cells.
 
-Invalid output gets 1 LLM retry, with the validation errors fed back. If it fails again, the `extract_template` job fails with `ir_invalid`.
+Invalid output gets 1 LLM retry, with the validation errors fed back. If it fails again, the `extract_template` job fails with `ir_invalid`. The fed-back errors name only field ids, anchor ids, write modes and anchor kinds, never document text.
 
 | `write_mode` | Allowed anchor kinds | Behavior |
 |---|---|---|
 | `replace_text` | `shape_text`, `paragraph`, `header_paragraph`, `footer_paragraph`, `content_control`, `table_cell` | replace all text in the anchor |
-| `replace_token` | any text kind with non-empty `tokens` | replace `constraints.token` only |
+| `replace_token` | any text kind (not `sheet_cell`) with non-empty `tokens` | replace `constraints.token` only |
 | `fill_cell` | `table_cell`, `sheet_cell` | write one cell value (typed for xlsx) |
-| `fill_table_rows` | `table_cell` (the first body cell of a table) | write rows into **existing** empty body rows |
+| `fill_table_rows` | `table_cell` at row 1, col 0 (the first body cell of a table) | write rows into **existing** empty body rows |
+
+`sheet_cell` allows only `fill_cell`.
 
 **JSON Schema** (`templates/schemas.py` mirrors it as Pydantic v2 models):
 

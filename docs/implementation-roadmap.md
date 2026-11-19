@@ -118,7 +118,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - `templates/anchors_{pptx,docx,xlsx}.py`, `templates/ir_builder.py` (LLM + validator), `templates/schemas.py`;
   - the `extract_template` job;
   - template endpoints;
-  - fixture templates `tests/fixtures/templates/` (pptx with tables, docx with header/footer + content controls, xlsx with formulas).
+  - fixture templates are built in code by `tests/fixtures/templates/__init__.py` (pptx with tables, docx with header/footer + content controls, xlsx with formulas), with golden AnchorMaps in `tests/fixtures/templates/*.anchors.json` (no binary fixtures are committed).
 - **Exit:**
   - Golden Anchor Map tests per fixture;
   - validator rejects unknown/duplicate anchors and invalid `write_mode`;

@@ -1,12 +1,13 @@
 from io import BytesIO
 
 from docx import Document
+from docx.document import Document as DocumentObject
 from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from doc_intel.templates.anchors import find_tokens
-from doc_intel.templates.schemas import Anchor, TableRef
+from doc_intel.templates.schemas import Anchor, AnchorKind, TableRef
 
 
 def _heading_level(par: Paragraph) -> int | None:
@@ -19,7 +20,9 @@ def _heading_level(par: Paragraph) -> int | None:
     return None
 
 
-def _anchor(anchor_id, kind, path, text, table=None) -> Anchor:
+def _anchor(
+    anchor_id: str, kind: AnchorKind, path: list[str], text: str, table: TableRef | None = None
+) -> Anchor:
     tokens = find_tokens(text)
     return Anchor(
         anchor_id=anchor_id,
@@ -33,7 +36,7 @@ def _anchor(anchor_id, kind, path, text, table=None) -> Anchor:
     )
 
 
-def _body(doc) -> list[Anchor]:
+def _body(doc: DocumentObject) -> list[Anchor]:
     anchors: list[Anchor] = []
     trail: dict[int, str] = {}
     p_idx = t_idx = 0
@@ -72,7 +75,7 @@ def _body(doc) -> list[Anchor]:
     return anchors
 
 
-def _headers_footers(doc) -> list[Anchor]:
+def _headers_footers(doc: DocumentObject) -> list[Anchor]:
     anchors: list[Anchor] = []
     for s, section in enumerate(doc.sections, start=1):
         # shortcut: first-page and even-page headers/footers are skipped, upgrade on demand.
@@ -92,7 +95,7 @@ def _headers_footers(doc) -> list[Anchor]:
     return anchors
 
 
-def _content_controls(doc) -> list[Anchor]:
+def _content_controls(doc: DocumentObject) -> list[Anchor]:
     anchors: list[Anchor] = []
     # An inline sdt overlaps its paragraph's anchor; Phase 7 writers must handle that.
     # shortcut: content controls in headers/footers are not scanned, and paragraphs inside a

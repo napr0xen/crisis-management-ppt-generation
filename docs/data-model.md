@@ -54,11 +54,11 @@ Constraints and indexes: `UNIQUE (id, user_id)` (target of the composite FKs); `
 | `created_at`, `updated_at` | timestamptz | |
 
 Constraints and indexes:
-- `UNIQUE (project_id, sha256)`: re-uploading the same file is deduplicated. Re-uploading a `failed` document resets it to `uploaded` and queues a fresh ingest job. A duplicate upload appends its Open WebUI file id to `openwebui_file_ids` of the existing row.
+- `UNIQUE (project_id, sha256)`: re-uploading the same file is deduplicated. Re-uploading a `failed` `role = 'source'` document resets it to `uploaded` and queues a fresh ingest job. A duplicate upload appends its Open WebUI file id to `openwebui_file_ids` of the existing row.
 - Index `(user_id, project_id, created_at DESC)`.
 - Lookup by Open WebUI file id: `WHERE user_id = :u AND project_id = :p AND :file_id = ANY(openwebui_file_ids)`. `shortcut: no GIN index, add one if a project exceeds a few hundred documents.`
 
-Every upload starts as `role = 'source'` and is indexed. Marking a document as a template sets `role = 'template'` and deletes its points from `doc_chunks`, because template placeholders must never be returned as evidence.
+Every upload starts as `role = 'source'` and is indexed. Marking a document as a template sets `role = 'template'` and deletes its points from `doc_chunks`, because template placeholders must never be returned as evidence. A `role = 'template'` document is never re-ingested or indexed, so a failed duplicate upload of it is not retried. `POST …/templates` refuses documents still `uploaded` or `parsing`.
 
 ### `jobs`
 
@@ -71,7 +71,7 @@ Every upload starts as `role = 'source'` and is indexed. Marking a document as a
 | `payload` | jsonb NOT NULL | input ids, e.g. `{"document_id": "…"}` |
 | `progress` | jsonb NOT NULL DEFAULT `'{}'` | `{"stage": "embedding", "done": 12, "total": 40}` |
 | `result` | jsonb NULL | output ids, e.g. `{"template_id": "…"}` |
-| `error_code` | text NULL | the failing exception's `code` (e.g. `parse_error`), `internal` otherwise, `interrupted` if the backend restarted during the last attempt |
+| `error_code` | text NULL | the failing exception's `code` (e.g. `parse_error`), `internal` otherwise, `interrupted` if the backend restarted during the last attempt; `ir_invalid` (TemplateIR still invalid after its retry); `validation_error` (template over a limit, see [system-design.md § 4](system-design.md#4-anchormap)) |
 | `error_message` | text NULL | safe text only, no document content |
 | `attempts` | int NOT NULL DEFAULT 0 | the worker fails a job once `attempts` reaches 3 (constant `MAX_JOB_ATTEMPTS` in `jobs/worker.py`), or after the first attempt for an error marked `retry = False` (`parse_error`) |
 | `locked_at` | timestamptz NULL | set when claimed |
@@ -101,6 +101,8 @@ Payload/result per kind:
 | `created_at` | timestamptz | |
 
 The row is written when `extract_template` succeeds. Before that, the job is the only handle. If a row already exists for the `document_id` (e.g. the user asks to fill the same template again), `extract_template` reuses it and its latest IR and does not insert anything.
+
+`extract_template` has no failure hook. On failure the job keeps its `error_code`, and the document keeps `role = 'template'` (its points are already purged). The recovery is to POST again.
 
 ### `template_irs`
 

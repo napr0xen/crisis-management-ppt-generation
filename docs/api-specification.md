@@ -111,7 +111,7 @@ No auth. Returns `200` if the API is up, and reports each dependency.
 {"project_id": "uuid", "document_id": "uuid", "job_id": "uuid|null", "deduplicated": false}
 ```
 
-`job_id` is null when the upload was deduplicated, unless the existing document had `failed`: it is then reset to `uploaded` and a fresh `ingest_document` job is queued (`deduplicated: true` with that `job_id`). Errors: `413`, `415`.
+`job_id` is null when the upload was deduplicated, unless the existing document is a `role='source'` document that had `failed`: it is then reset to `uploaded` and a fresh `ingest_document` job is queued (`deduplicated: true` with that `job_id`). Errors: `413`, `415`.
 
 ### `POST /v1/pipe/chat`
 
@@ -222,7 +222,7 @@ Every returned citation has passed the verifier. `found: false` means no verifie
 ### `POST /v1/projects/{project_id}/templates`
 
 Body: `{"document_id": "uuid"}`.
-- The document must be `pptx|docx|xlsx`, otherwise `415`.
+- Errors: `404` unknown document or another tenant's; `409 conflict` if the document is still `uploaded` or `parsing`; `415` not `pptx|docx|xlsx`; `422` invalid body; `503 upstream_unavailable` if the Qdrant purge fails (nothing changes).
 - Sets `role='template'`, deletes its points, and enqueues `extract_template`. If the document already has a `templates` row, the job reuses it and its latest IR.
 - Returns `202` with `{"job_id": "uuid"}`; `job.result` will hold `{template_id, template_ir_id, ir_version}`.
 
@@ -233,9 +233,11 @@ Body: `{"document_id": "uuid"}`.
  "latest_ir_version": 1, "anchor_map": { "…": "AnchorMap" }}
 ```
 
+`404` unknown template.
+
 ### `GET /v1/projects/{project_id}/templates/{template_id}/irs/{version}`
 
-`200`: `{"id": "uuid", "version": 1, "ir": { "…": "TemplateIR" }, "created_at": "…"}`.
+`200`: `{"id": "uuid", "version": 1, "ir": { "…": "TemplateIR" }, "created_at": "…"}`. Errors: `404` unknown template or version; `422` `version` < 1.
 
 ---
 

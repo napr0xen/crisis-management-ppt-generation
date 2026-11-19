@@ -1,7 +1,7 @@
 from io import BytesIO
 
 from openpyxl import load_workbook
-from openpyxl.cell.cell import MergedCell
+from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula
 
@@ -11,7 +11,7 @@ from doc_intel.templates.schemas import MAX_ANCHORS, Anchor
 _SCAN = 100  # shortcut: path context looks at most 100 cells left/up, upgrade if labels sit farther
 
 
-def _is_formula(cell) -> bool:
+def _is_formula(cell: Cell | MergedCell) -> bool:
     v = cell.value
     return (
         cell.data_type == "f"
@@ -24,7 +24,7 @@ def _text(cell) -> str:
     return "" if cell is None or cell.value is None else str(cell.value)
 
 
-def _is_string(cell) -> bool:
+def _is_string(cell: Cell | MergedCell | None) -> bool:
     return (
         cell is not None
         and not isinstance(cell, MergedCell)
