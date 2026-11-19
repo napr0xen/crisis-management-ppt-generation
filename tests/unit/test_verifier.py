@@ -1,11 +1,18 @@
 """Deterministic quote and typed-value verification (system-design § 7, roadmap Phase 4 exit)."""
 
 import uuid
+from decimal import Decimal
 
 import pytest
 
 from doc_intel.embeddings.schemas import Hit
-from doc_intel.mapping.verifier import normalize, value_in_quotes, verify_quote
+from doc_intel.mapping.verifier import (
+    _numbers,
+    canonical_value,
+    normalize,
+    value_in_quotes,
+    verify_quote,
+)
 
 
 def _hit(text: str) -> Hit:
@@ -81,7 +88,10 @@ def test_normalize():
     [
         ("12,000", "number", "approximately 12000 customers"),
         (12000, "number", "approximately 12,000 customers"),
-        ("$2.5", "currency", "a budget of 2.5 million dollars"),
+        ("$2.5 million", "currency", "a budget of 2.5 million dollars"),
+        ("2,500,000", "currency", "a budget of $2.5 million"),
+        ("-5", "number", "fell by \u22125 points"),  # Unicode minus
+        ("-5", "number", "fell by -5 points"),
         ("87%", "percent", "capacity stands at 87 percent"),
         ("2026-03-04", "date", "on 4 March 2026 the river crested"),
         ("March 4, 2026", "date", "dated 2026-03-04"),
@@ -99,7 +109,54 @@ def test_typed_value_present_in_a_quote(value, value_type, quote):
         ("12,000", "number", []),
         ("about a dozen", "number", ["approximately 12 customers"]),  # value has no number
         ("4 Marchy 2026", "date", ["on 4 March 2026"]),  # a lookalike, not a date
+        ("$2.5", "currency", ["a budget of 2.5 million dollars"]),  # under-scaled
+        ("-5", "number", ["5 degrees"]),  # sign dropped
+        ("5", "number", ["fell by -5 degrees"]),  # sign invented
+        ("5", "number", ["COVID-19 case 19"]),  # hyphen is not a sign
+        ("5 and 6", "number", ["5 and 6 people"]),  # value states two numbers
     ],
 )
 def test_typed_value_absent_from_quotes(value, value_type, quotes):
     assert not value_in_quotes(value, value_type, quotes)
+
+
+@pytest.mark.parametrize(
+    "value, value_type, expected",
+    [
+        ("12,000", "number", 12000),
+        (12000.0, "number", 12000),
+        ("$2.5 million", "currency", 2500000),
+        ("2.5", "number", 2.5),
+        ("87%", "percent", 87),
+        ("\u22125", "number", -5),
+        ("(-5)", "number", -5),
+        ("10-12", "number", None),
+        ("3,4,5", "number", None),
+        ("ids 12,34", "number", None),
+        ("1,234,567.5", "number", 1234567.5),
+        ("$-5", "currency", 5),
+        ("5%-10%", "percent", None),
+        ("none", "number", None),
+        ("4 March 2026", "date", "2026-03-04"),
+        ("2026-03-04", "date", "2026-03-04"),
+        ("4 March 2026 or 5 March 2026", "date", None),
+        ("soon", "date", None),
+    ],
+)
+def test_canonical_value(value, value_type, expected):
+    assert canonical_value(value, value_type) == expected
+
+
+@pytest.mark.parametrize(
+    "text, numbers",
+    [
+        ("3,4,5", {3, 4, 5}),
+        ("ids 12,34", {12, 34}),
+        ("12,000", {12000}),
+        ("1,234,567.5", {1234567.5}),
+        ("5%-10%", {5, 10}),
+        ("$-5", {5}),
+    ],
+)
+def test_number_grouping_and_sign_rules(text, numbers):
+    assert _numbers(text) == {Decimal(str(n)) for n in numbers}

@@ -16,11 +16,16 @@ from doc_intel.core.errors import UpstreamUnavailable
 
 Messages = list[dict[str, str]]
 _THINK = re.compile(r"\A\s*<think>.*?</think>", re.DOTALL)
+RETRY_ECHO_CHARS = 1500  # a failed reply is echoed truncated, so a retry never outgrows num_ctx
 RETRY_PROMPT = "That reply was not valid JSON for the required schema. Reply with only the JSON."
 
 
 class LLMError(UpstreamUnavailable):
     message = "The language model is unavailable or returned invalid output."
+
+
+class LLMInvalidOutput(LLMError):
+    """The model replied twice with invalid output (transport failures stay plain `LLMError`)."""
 
 
 class LLMClient(Protocol):
@@ -131,16 +136,18 @@ def strip_think(text: str) -> str:
 
 
 async def complete_json[M: BaseModel](llm: LLMClient, messages: Messages, model: type[M]) -> M:
-    """Schema-constrained call validated by `model`; one corrective retry, then `LLMError`."""
+    """Schema-constrained call validated by `model`; one retry, then `LLMInvalidOutput`."""
     schema = model.model_json_schema()
+    attempt = messages
     for _ in range(2):
-        reply = strip_think(await llm.complete(messages, schema))
+        reply = strip_think(await llm.complete(attempt, schema))
         try:
             return model.model_validate_json(reply)
         except ValidationError:
-            messages = [
+            # Rebuilt from the original messages: failed attempts never stack up.
+            attempt = [
                 *messages,
-                {"role": "assistant", "content": reply},
+                {"role": "assistant", "content": reply[:RETRY_ECHO_CHARS]},
                 {"role": "user", "content": RETRY_PROMPT},
             ]
-    raise LLMError("The language model returned invalid output twice.")
+    raise LLMInvalidOutput("The language model returned invalid output twice.")

@@ -12,6 +12,7 @@ from doc_intel.db.models import Document, Job, Template, TemplateIRVersion
 from doc_intel.db.session import make_engine
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import run_one
+from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.local import LocalStorage
 from doc_intel.templates.anchors import build_anchor_map
 from doc_intel.templates.schemas import TEXT_KINDS
@@ -81,7 +82,13 @@ async def run_jobs(migrated_db, llm, rounds=1):
     sm = async_sessionmaker(engine, expire_on_commit=False)
     settings = get_settings()
     handlers = make_handlers(
-        sm, LocalStorage(settings.storage_root), settings, FakeEmbedder(), NoopStore(), llm
+        sm,
+        LocalStorage(settings.storage_root),
+        settings,
+        FakeEmbedder(),
+        NoopStore(),
+        llm,
+        Retriever(FakeEmbedder(), NoopStore()),
     )
     try:
         for _ in range(rounds):

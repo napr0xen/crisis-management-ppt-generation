@@ -8,7 +8,9 @@ from pydantic import BaseModel, SecretStr
 
 from doc_intel.core.config import Settings, get_settings
 from doc_intel.llm.gateway import (
+    RETRY_ECHO_CHARS,
     LLMError,
+    LLMInvalidOutput,
     OllamaClient,
     OpenAICompatClient,
     complete_json,
@@ -148,9 +150,24 @@ async def test_complete_json_retries_once_with_a_correction_then_succeeds():
     assert retry_messages[-1]["role"] == "user"
 
 
+async def test_retry_echoes_a_truncated_reply_on_top_of_the_original_messages():
+    llm = FakeLLM("x" * (RETRY_ECHO_CHARS + 500), '{"answer": "Paris"}')
+    await complete_json(llm, MESSAGES, Out)
+    retry = llm.calls[1][0]
+    assert len(retry) == len(MESSAGES) + 2
+    assert retry[-2] == {"role": "assistant", "content": "x" * RETRY_ECHO_CHARS}
+
+
+async def test_failed_attempts_never_stack():
+    llm = FakeLLM("bad", "worse")
+    with pytest.raises(LLMError):
+        await complete_json(llm, MESSAGES, Out)
+    assert [len(m) for m, _ in llm.calls] == [len(MESSAGES), len(MESSAGES) + 2]
+
+
 async def test_complete_json_fails_after_two_invalid_replies():
     llm = FakeLLM("not json", '{"wrong": 1}')
-    with pytest.raises(LLMError):
+    with pytest.raises(LLMInvalidOutput):
         await complete_json(llm, MESSAGES, Out)
     assert len(llm.calls) == 2
 
@@ -184,3 +201,8 @@ async def test_qwen3_live_json_without_think_tags():
         )
         assert "<think>" not in raw
         assert "paris" in Out.model_validate_json(raw).answer.lower()
+
+
+def test_invalid_output_is_an_llm_error_but_transport_errors_are_not_invalid_output():
+    assert issubclass(LLMInvalidOutput, LLMError)
+    assert not issubclass(LLMError, LLMInvalidOutput)

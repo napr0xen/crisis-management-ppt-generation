@@ -245,9 +245,11 @@ Body: `{"document_id": "uuid"}`.
 
 ### `POST /v1/projects/{project_id}/mapping-runs`
 
-Body: `{"template_ir_id": "uuid", "document_ids": null}`. `null` means all `indexed` source documents in the project.
-- Inserts `mapping_runs` (`trigger='initial'`, `version = max(version for this template_ir_id) + 1`, i.e. 1 for the first run) and enqueues `run_mapping`, which renders the artifact at the end.
+Body: `{"template_ir_id": "uuid", "document_ids": null}`.
+- `document_ids`: `null` = every `role='source'`, `status='indexed'` document; otherwise 1 to 200 ids, duplicates collapsed.
+- Inserts `mapping_runs` (`trigger='initial'`, `version = max(version for this template_ir_id) + 1`, i.e. 1 for the first run) and enqueues `run_mapping` (Phase 6: stops at `verifying`; Phase 7 renders the artifact).
 - Returns `202` with `{"mapping_run_id": "uuid", "job_id": "uuid"}`.
+- Errors: `404` `template_ir_id` or any `document_id` not in the project; `422` `document_ids: []`, more than 200 ids, a document that is not an indexed source, or no indexed sources; `409` the version could not be allocated after one retry.
 
 ### `GET /v1/projects/{project_id}/mapping-runs/{run_id}`
 
@@ -261,6 +263,8 @@ Body: `{"template_ir_id": "uuid", "document_ids": null}`. `null` means all `inde
   "created_at": "…", "finished_at": "…"
 }
 ```
+
+`artifact` is `null` until rendered.
 
 ### `POST /v1/projects/{project_id}/mapping-runs/{run_id}/edits`
 

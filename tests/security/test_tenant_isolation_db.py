@@ -117,3 +117,27 @@ async def test_ensure_project_is_user_scoped(session, user_a, user_b):
     for user_id, project_id in ((user_b, project.id), (user_a, uuid.uuid4())):
         with pytest.raises(NotFound):
             await repo.ensure_project(session, user_id, project_id)
+
+
+async def test_mapping_functions_are_tenant_scoped(session, user_a, user_b):
+    from tests.integration.test_mapping_repo import add_doc, seed_ir
+
+    ctx, ir = await seed_ir(session, user_a)
+    run = await repo.create_mapping_run(session, ctx, template_ir_id=ir.id, document_ids=[])
+    doc_id = await add_doc(session, ctx)
+    other_project = await repo.create_project(session, user_a, "A2")
+    for wrong in (
+        TenantContext(user_b, ctx.project_id),
+        TenantContext(user_a, other_project.id),
+    ):
+        for call in (
+            repo.get_mapping_run(session, wrong, run.id),
+            repo.get_template_ir_by_id(session, wrong, ir.id),
+            repo.update_mapping_run(session, wrong, run.id, status="failed"),
+        ):
+            with pytest.raises(NotFound):
+                await call
+        assert await repo.get_documents(session, wrong, [doc_id]) == []
+        assert await repo.indexed_source_document_ids(session, wrong) == []
+    assert (await repo.get_mapping_run(session, ctx, run.id)).status == "queued"
+    assert await repo.indexed_source_document_ids(session, ctx) == [doc_id]

@@ -69,7 +69,7 @@ Every upload starts as `role = 'source'` and is indexed. Marking a document as a
 | `kind` | text NOT NULL | `ingest_document` \| `extract_template` \| `run_mapping` \| `render_artifact` |
 | `status` | text NOT NULL DEFAULT `'queued'` | `queued` \| `running` \| `succeeded` \| `failed` |
 | `payload` | jsonb NOT NULL | input ids, e.g. `{"document_id": "…"}` |
-| `progress` | jsonb NOT NULL DEFAULT `'{}'` | `{"stage": "embedding", "done": 12, "total": 40}` |
+| `progress` | jsonb NOT NULL DEFAULT `'{}'` | `{"stage": "embedding", "done": 12, "total": 40}`; `run_mapping`: `{"stage": "mapping", "done": i, "total": n}` |
 | `result` | jsonb NULL | output ids, e.g. `{"template_id": "…"}` |
 | `error_code` | text NULL | the failing exception's `code` (e.g. `parse_error`), `internal` otherwise, `interrupted` if the backend restarted during the last attempt; `ir_invalid` (TemplateIR still invalid after its retry); `validation_error` (template over a limit, see [system-design.md § 4](system-design.md#4-anchormap)) |
 | `error_message` | text NULL | safe text only, no document content |
@@ -85,7 +85,7 @@ Payload/result per kind:
 |---|---|---|
 | `ingest_document` | `{document_id}` | `{chunk_count, page_count}` |
 | `extract_template` | `{document_id}` | `{template_id, template_ir_id, ir_version}` |
-| `run_mapping` | `{mapping_run_id}` | `{mapping_run_id, artifact_id}` |
+| `run_mapping` | `{mapping_run_id}` | `{mapping_run_id, artifact_id}` (`artifact_id` is `null` until Phase 7 renders) |
 | `render_artifact` | `{mapping_run_id}` | `{artifact_id}` |
 
 ### `templates`
@@ -127,14 +127,14 @@ The row is written when `extract_template` succeeds. Before that, the job is the
 | `parent_run_id` | uuid NULL | FK `mapping_runs(id)`; set for `trigger = 'edit'` |
 | `version` | int NOT NULL | `max(version) + 1` over all runs with the same `template_ir_id` (1 for the first), for both triggers; on a `UNIQUE` violation the insert is retried once |
 | `trigger` | text NOT NULL | `initial` \| `edit` |
-| `status` | text NOT NULL | `queued` \| `retrieving` \| `extracting` \| `verifying` \| `rendering` \| `completed` \| `failed` |
+| `status` | text NOT NULL | `queued` \| `retrieving` \| `extracting` \| `verifying` \| `rendering` \| `completed` \| `failed`. Phase 6 runs stop at `verifying`; `failed` is set by the `run_mapping` failure hook. |
 | `document_ids` | uuid[] NOT NULL | source documents in scope (snapshot at run start) |
 | `results` | jsonb NOT NULL DEFAULT `'{}'` | `{ "<field_id>": FieldMappingResult }` |
-| `summary` | jsonb NOT NULL DEFAULT `'{}'` | `{"populated": n, "partial": n, "missing": n, "conflict": n, "warnings": [..]}` |
+| `summary` | jsonb NOT NULL DEFAULT `'{}'` | `{"populated": n, "partial": n, "missing": n, "conflict": n, "warnings": [{"field_id": "…", "code": "max_chars_exceeded"}]}` |
 | `edits` | jsonb NULL | the edit ops applied, for `trigger = 'edit'` |
-| `created_at`, `finished_at` | timestamptz | `finished_at` nullable |
+| `created_at`, `finished_at` | timestamptz | `finished_at` nullable; set at `completed` or `failed` |
 
-Constraints and indexes: `UNIQUE (template_ir_id, version)`; index `(user_id, project_id, created_at DESC)`. Rows are immutable once `completed`.
+Constraints and indexes: `UNIQUE (template_ir_id, version)`; index `(user_id, project_id, created_at DESC)`. Rows are immutable once `completed`. `results` keeps quotes and filenames as a snapshot; deleting a source document does not rewrite earlier runs.
 
 ### `artifacts`
 

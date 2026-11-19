@@ -25,7 +25,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 3 | Embeddings & vector store | **Complete** |
 | 4 | LLM gateway & grounded Q&A | **Complete** |
 | 5 | Template intelligence (Anchor Map + IR) | **Complete** |
-| 6 | Mapping engine | pending |
+| 6 | Mapping engine | **Complete** |
 | 7 | Surgical writers & artifacts | pending |
 | 8 | Open WebUI Pipe & chat orchestration | pending |
 | 9 | Conversational edits & run versioning | pending |
@@ -141,10 +141,20 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 - **Deliverables:**
   - `mapping/extractor.py`, `mapping/engine.py` (per-field state machine, status resolution, confidence tiers, progress);
   - the `run_mapping` job up to `verifying`;
-  - `POST/GET …/mapping-runs`.
+  - `POST …/mapping-runs`, `GET …/mapping-runs/{run_id}`.
 - **Exit:**
   - Unit tests for every status rule (0/1/2+ candidates, merge-equal, typed-value rejection, partial conditions, `llm_error` → missing without failing the run);
   - eval: **0 fabricated citations** on the mapping eval set, the seeded conflict fixture yields `conflict`, and absent fields yield `missing` (≥ 95%).
+- **Status:** Complete (2026-11-19). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 131 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 690 passed incl. llm evals (Phases 1-6), coverage 97%.
+  - Live smoke: real API + worker + qwen3:14b mapped a docx template over 2 sources (4 fields, 18.9 s): populated, typed date, conflict (12000 vs 15000) and missing as expected.
+  - Known limits:
+    - runs stop at `verifying` (`finished_at` null, job `succeeded`) until Phase 7 renders;
+    - a retried run recomputes every field (one LLM call per field again);
+    - at most 6 hits per field reach the LLM;
+    - paraphrased text is `partial`, never `populated`;
+    - `allowed_values`, `max_items`, `required`, `unit`, `date_format` have no mapping rule yet;
+    - typed numbers read English formats only; dates ISO or English month names only;
+    - live eval: 0 fabricated citations, seeded conflicts 2/2, absent fields 8/8 missing, field accuracy 7/8 present fields (87.5%) (qwen3:14b, 18 fields).
 
 ## Phase 7: Surgical writers & artifacts (Stage 4)
 

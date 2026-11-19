@@ -13,7 +13,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_intel.core.errors import Conflict, NotFound
-from doc_intel.db.models import Document, Job, Project, Template, TemplateIRVersion
+from doc_intel.db.models import (
+    Document,
+    Job,
+    MappingRun,
+    Project,
+    Template,
+    TemplateIRVersion,
+)
 
 if TYPE_CHECKING:  # core.tenancy imports this module
     from doc_intel.core.tenancy import TenantContext
@@ -281,3 +288,98 @@ async def get_template_ir(
     if row is None:
         raise NotFound()
     return row
+
+
+async def get_template_ir_by_id(
+    session: AsyncSession, ctx: TenantContext, template_ir_id: uuid.UUID
+) -> TemplateIRVersion:
+    row = await session.scalar(
+        select(TemplateIRVersion).where(*_scoped(TemplateIRVersion, ctx, template_ir_id))
+    )
+    if row is None:
+        raise NotFound()
+    return row
+
+
+async def get_documents(
+    session: AsyncSession, ctx: TenantContext, document_ids: list[uuid.UUID]
+) -> list[Document]:
+    """The subset of `document_ids` this tenant owns, in no particular order."""
+    rows = await session.scalars(
+        select(Document).where(
+            Document.user_id == ctx.user_id,
+            Document.project_id == ctx.project_id,
+            Document.id.in_(document_ids),
+        )
+    )
+    return list(rows)
+
+
+async def indexed_source_document_ids(session: AsyncSession, ctx: TenantContext) -> list[uuid.UUID]:
+    rows = await session.scalars(
+        select(Document.id)
+        .where(
+            Document.user_id == ctx.user_id,
+            Document.project_id == ctx.project_id,
+            Document.role == "source",
+            Document.status == "indexed",
+        )
+        .order_by(Document.created_at, Document.id)
+    )
+    return list(rows)
+
+
+async def create_mapping_run(
+    session: AsyncSession,
+    ctx: TenantContext,
+    *,
+    template_ir_id: uuid.UUID,
+    document_ids: list[uuid.UUID],
+) -> MappingRun:
+    """Next version for this IR. A concurrent insert of the same version loses the UNIQUE race:
+    retry once with a fresh max, then `Conflict`."""
+    for _ in range(2):
+        version = await session.scalar(
+            select(func.coalesce(func.max(MappingRun.version), 0) + 1).where(
+                MappingRun.user_id == ctx.user_id,
+                MappingRun.project_id == ctx.project_id,
+                MappingRun.template_ir_id == template_ir_id,
+            )
+        )
+        run = MappingRun(
+            user_id=ctx.user_id,
+            project_id=ctx.project_id,
+            template_ir_id=template_ir_id,
+            version=version,
+            trigger="initial",
+            status="queued",
+            document_ids=document_ids,
+        )
+        try:
+            async with session.begin_nested():
+                session.add(run)
+                await session.flush()
+        except IntegrityError:
+            continue
+        await session.refresh(run)
+        return run
+    raise Conflict("Could not allocate a mapping run version.")
+
+
+async def get_mapping_run(
+    session: AsyncSession, ctx: TenantContext, run_id: uuid.UUID
+) -> MappingRun:
+    run = await session.scalar(select(MappingRun).where(*_scoped(MappingRun, ctx, run_id)))
+    if run is None:
+        raise NotFound()
+    return run
+
+
+async def update_mapping_run(
+    session: AsyncSession, ctx: TenantContext, run_id: uuid.UUID, **values: Any
+) -> None:
+    result = await session.execute(
+        update(MappingRun).where(*_scoped(MappingRun, ctx, run_id)).values(**values)
+    )
+    if result.rowcount == 0:
+        raise NotFound()

@@ -7,10 +7,9 @@ from pydantic import BaseModel
 
 from doc_intel.core.errors import UpstreamUnavailable
 from doc_intel.core.tenancy import TenantContext
-from doc_intel.embeddings.schemas import Hit
 from doc_intel.llm.gateway import LLMClient, complete_json
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.mapping.retriever import Retriever
+from doc_intel.mapping.retriever import Retriever, format_hit
 from doc_intel.mapping.verifier import verify_quote
 
 NOT_FOUND = "I could not find this in the uploaded documents."
@@ -44,12 +43,6 @@ class Answer(BaseModel):
     found: bool
 
 
-def _source(hit: Hit) -> str:
-    page = hit.page_number if hit.page_number is not None else "-"
-    header = f"[{hit.chunk_id} | {hit.filename} | p.{page} | {hit.section_heading or '-'}]"
-    return f"{header}\n{hit.text}"
-
-
 async def answer(
     ctx: TenantContext,
     question: str,
@@ -66,7 +59,7 @@ async def answer(
         return not_found
     # shortcut: no token budget, the context is bounded by TOP_N hits x CHUNK_MAX_TOKENS within
     # LLM_NUM_CTX; add one if either grows.
-    sources = "\n\n".join(_source(h) for h in hits)
+    sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("qa")},
         {"role": "user", "content": f"Chunks:\n\n{sources}\n\nQuestion: {question}"},

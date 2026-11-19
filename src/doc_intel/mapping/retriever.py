@@ -11,6 +11,19 @@ from doc_intel.vector.qdrant_store import QdrantStore
 TOP_N = 8  # hits handed to the LLM
 
 
+def _inline(s: str) -> str:
+    """One line without header delimiters, so metadata cannot mimic a chunk header."""
+    return " ".join(s.translate(str.maketrans("[]|", "   ")).split())
+
+
+def format_hit(hit: Hit) -> str:
+    """A chunk as shown to the LLM: header `[chunk_id | filename | page | section]`, then text."""
+    page = hit.page_number if hit.page_number is not None else "-"
+    section = _inline(hit.section_heading or "") or "-"
+    header = f"[{hit.chunk_id} | {_inline(hit.filename)} | p.{page} | {section}]"
+    return f"{header}\n{hit.text}"
+
+
 class Retriever:
     def __init__(
         self, embedder: Embedder, store: QdrantStore, reranker: BGEReranker | None = None

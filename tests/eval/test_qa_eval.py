@@ -1,7 +1,7 @@
 """Phase 4 exit gate: grounded Q&A against the real models (testing-strategy § 5).
 
 Hard: 0 fabricated citations (re-checked here independently of the verifier) and "not found"
-for every unanswerable question. Writes tests/eval/report.json (git-ignored).
+for every unanswerable question. Merges its results into tests/eval/report.json["qa"] (git-ignored).
 """
 
 import json
@@ -95,7 +95,8 @@ async def test_qa_eval_grounded_answers_and_refusals(vector_store):
         "cited_expected_source": sum(r["source_hit"] for r in answerable) / len(answerable),
         "rows": rows,
     }
-    REPORT.write_text(json.dumps(summary, indent=2))
+    report = json.loads(REPORT.read_text()) if REPORT.exists() else {}
+    REPORT.write_text(json.dumps({**report, "qa": summary}, indent=2))
     print(json.dumps({k: v for k, v in summary.items() if k != "rows"}, indent=2))
 
     assert summary["fabricated_citations"] == 0

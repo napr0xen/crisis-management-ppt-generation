@@ -80,7 +80,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
   - `anthropic` is planned (FR-17), not built; an unknown provider fails at startup.
 - Default model: `qwen3:14b` (Q4_K_M, measured 10.0 GB resident at `num_ctx = 8192`). Low-RAM fallback: `qwen3:4b` (measured 3.9 GB at `num_ctx = 8192`).
 - Thinking is off by default (`LLM_ENABLE_THINKING=false` sends `think: false`). A leading `<think>…</think>` block is still removed before JSON parsing or citation checks; a `</think>` quoted from a document further on is kept.
-- Structured outputs (Q&A, Template IR, field extraction, intent routing) always use JSON-schema-constrained output and are validated with Pydantic (`complete_json`). Invalid output gets 1 retry with a corrective message, then the step fails (`LLMError` → `503 upstream_unavailable`).
+- Structured outputs (Q&A, Template IR, field extraction, intent routing) always use JSON-schema-constrained output and are validated with Pydantic (`complete_json`). Invalid output gets 1 retry with a corrective message, then the step fails (`LLMError` → `503 upstream_unavailable`). The retry carries the original messages plus the failed reply cut to 1,500 characters, so attempts never stack. In mapping, invalid output twice makes that field `missing(llm_error)` (system-design § 7); an unreachable LLM still fails the step.
 - Temperature is 0 for every call.
 
 **Trade-offs.** No LangChain/LlamaIndex: the adapter is roughly 150 lines and we control every prompt. Cloud providers send document text off-machine, so they need explicit opt-in through `.env` (see requirements NFR-1).
@@ -114,6 +114,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
   - the normalized quote is a substring of the normalized chunk text.
 - Typed values (number, currency, date, percent) must also appear in a verified quote.
 - `status = populated` requires at least 1 verified evidence item (or `provenance = user`). Everything else becomes `missing`, `partial`, or `conflict`.
+- Text, list and table values are `populated` only when every item appears in a verified quote; otherwise `partial`.
 - Two or more verified candidates with different normalized values give `conflict`. The system **never** picks one; only a user edit resolves it.
 
 **Trade-offs.** Some fields that a human would accept as paraphrases end up `missing`. That is the intended bias: a false `missing` is recoverable, a fabricated value is not.
@@ -172,9 +173,10 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
   - `parsed/` is overwritable;
   - rendering reuses an existing `artifacts` row for the run;
   - `extract_template` reuses an existing `templates` row;
-  - a job whose row was deleted meanwhile (e.g. the document) finishes without retrying and removes any output it wrote.
+  - a job whose row was deleted meanwhile (e.g. the document) finishes without retrying and removes any output it wrote;
+  - `run_mapping` recomputes every field and writes all results in one transaction; a run past `extracting` is returned unchanged.
 - A failed attempt is retried after `RETRY_DELAY_S × attempts` (30 s, then 60 s), so a short Ollama outage doesn't use up every attempt; stopping the worker cuts the wait short. Errors that can't succeed on retry set `retry = False` (e.g. `ParseError`) and fail at once.
-- When a job fails for good (last attempt, non-retryable error, or interrupted at startup), the worker calls that kind's failure hook so the row it owns (e.g. the document) is marked `failed` too, never left in progress.
+- When a job fails for good (last attempt, non-retryable error, or interrupted at startup), the worker calls that kind's failure hook so the row it owns (e.g. the document, or the mapping run for `run_mapping`) is marked `failed` too, never left in progress.
 - Progress is written to `jobs.progress`; `/v1/pipe/chat` polls it to emit SSE `status` events.
 
 **Trade-offs.** No Redis/Celery to run. Jobs stop while the API is down and resume on restart. `shortcut: single in-process worker, move to a separate worker process if API latency suffers during ingestion.`

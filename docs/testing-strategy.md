@@ -26,6 +26,8 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `uv run pytest -m llm tests/eval` | phases 4, 6, 10 exit; before release |
 | `uv run pytest --cov=doc_intel --cov-report=term-missing -m "not llm"` | phase exits; target ≥ 80% |
 
+`TEST_RUN_ID=<id>` gives a parallel pytest run its own test database (`doc_intel_test_<id>`) and Qdrant collection (`doc_chunks_test_<id>`).
+
 **Test doubles.**
 - `FakeLLM` implements the `LLMClient` protocol and returns scripted JSON, so mapping and routing logic is deterministic in unit and integration tests.
 - `FakeEmbedder` returns seeded vectors for integration tests that don't need semantic quality.
@@ -40,7 +42,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `ingestion/chunker` | per-format metadata; tables separate; ≤ `CHUNK_MAX_TOKENS`; contiguous `chunk_index`; no cross-section chunks |
 | `templates/anchors_*` | golden AnchorMap per fixture template; `anchor_id` grammar; formula cells excluded; vertical merges counted once; token false positives (`[1]`, `XXXL`, `___`) not anchored; `MAX_ANCHORS` boundary (400 passes, 401 and 0 anchors fail) |
 | `templates/ir_builder.validate` | unknown/duplicate anchor; invalid `write_mode` for kind; `replace_token` without matching token; `sheet_cell` allows only `fill_cell`; `fill_table_rows` only at row 1, col 0; no second field on a `fill_table_rows` table |
-| `mapping/verifier` | exact; whitespace/curly-quote/dash normalization; quote of a Markdown table row without the `|` separators; chunk not in hits; < 8 chars; typed value absent from quote; number/date canonicalization |
+| `mapping/verifier` | exact; whitespace/curly-quote/dash normalization; quote of a Markdown table row without the `|` separators; chunk not in hits; < 8 chars; typed value absent from quote; number/date canonicalization; sign and thousand/million/billion scale; comma digit grouping |
 | `mapping/engine` status rules | 0 → missing (each `missing_reason`); 1 → populated; incomplete → partial; ≥ 2 distinct → conflict; equal values merged; `llm_error` doesn't fail run; evidence metadata copied from hits, not LLM |
 | `mapping/schemas` | `FieldMappingResult` invariants reject: populated(rag) without evidence, missing with value, conflict with < 2 candidates |
 | `chat/edits` | each `EditOp`; invalid op → nothing applied; parent unchanged |
@@ -92,7 +94,7 @@ Datasets (synthetic, versioned in `tests/fixtures/eval/`):
 | Field accuracy | `populated` values matching expected (normalized) | ≥ 80% (soft, tracked) |
 | Source recall@8 | expected source chunk in retrieval top 8 | ≥ 90% (soft, tracked) |
 
-The eval run writes `tests/eval/report.json` (git-ignored) and prints a summary table. Phase 10 records the numbers in the PR.
+The eval run writes `tests/eval/report.json` (git-ignored), one top-level key per eval (`qa`, `mapping`), and prints a summary table. Phase 10 records the numbers in the PR.
 
 ## 6. Template fidelity tests (`tests/integration/test_writers_*.py`)
 

@@ -29,11 +29,13 @@ CHILD_ROUTES = [
     ("GET", "/v1/projects/{p}/jobs/{j}"),
     ("GET", "/v1/projects/{p}/templates/{d}"),
     ("GET", "/v1/projects/{p}/templates/{d}/irs/1"),
+    ("GET", "/v1/projects/{p}/mapping-runs/{j}"),
 ]
 PROJECT_ROUTES = [
     ("GET", "/v1/projects/{p}/documents"),
     ("POST", "/v1/projects/{p}/documents"),
     ("POST", "/v1/projects/{p}/templates"),
+    ("POST", "/v1/projects/{p}/mapping-runs"),
 ]
 # own_project=True: B's own project with A's document/job ids.
 CASES = [(*r, False) for r in CHILD_ROUTES + PROJECT_ROUTES] + [(*r, True) for r in CHILD_ROUTES]
@@ -60,6 +62,8 @@ def test_other_users_document_and_job_ids_are_404_identical_to_random(
         path = template.format(p=pid, d=did, j=jid)
         if path.endswith("/templates"):  # JSON body: B names A's document
             return client.request(method, path, headers=hdrs, json={"document_id": str(did)})
+        if path.endswith("/mapping-runs"):  # B names an id that is not B's template IR
+            return client.request(method, path, headers=hdrs, json={"template_ir_id": str(did)})
         return client.request(method, path, headers=hdrs, files={"file": ("r.pdf", b"%PDF-x")})
 
     as_b = call(p, up["document_id"], up["job_id"])

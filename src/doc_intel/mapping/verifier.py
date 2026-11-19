@@ -19,7 +19,14 @@ _PUNCT = str.maketrans(
 _WS = re.compile(r"\s+")
 # shortcut: "1,5" (decimal comma) and "12.000" (dot thousands) read as English numbers, add a
 # locale-aware parser when non-English documents need typed values.
-_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# Sign only when not glued to a word or dash ("COVID-19", "10-12" are not negative); a following
+# magnitude word scales the number ("2.5 million" == 2500000).
+# Thousands separators only in proper groups ("3,4,5" is three numbers); no sign after % or $.
+_NUMBER = re.compile(
+    r"(?:(?<![\w%$-])(-))?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(thousand|million|billion)\b)?"
+)
+_SCALE = {"thousand": 10**3, "million": 10**6, "billion": 10**9}
+TYPED_TYPES = frozenset({"number", "currency", "percent", "date"})
 # shortcut: ISO and English month-name dates only (no 03/04/2026: day/month order is ambiguous),
 # add formats when the eval set has them.
 _DATES = [
@@ -46,7 +53,11 @@ def verify_quote(hits: list[Hit], chunk_id: str, quote: str) -> Hit | None:
 
 
 def _numbers(s: str) -> set[Decimal]:
-    return {Decimal(m.replace(",", "")) for m in _NUMBER.findall(s)}
+    found = set()
+    for sign, digits, fraction, scale in _NUMBER.findall(normalize(s)):
+        n = Decimal(digits.replace(",", "") + fraction) * _SCALE.get(scale, 1)
+        found.add(-n if sign else n)
+    return found
 
 
 def _dates(s: str) -> set[date]:
@@ -60,8 +71,26 @@ def _dates(s: str) -> set[date]:
     return found
 
 
+def _canonical(value: str | int | float, value_type: str) -> Decimal | date | None:
+    """The one number (or date) a typed value states; None when it states none or several."""
+    found = _dates(str(value)) if value_type == "date" else _numbers(str(value))
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def canonical_value(value: str | int | float, value_type: str) -> int | float | str | None:
+    """int | float for numbers, ISO string for dates, None unless exactly one is stated."""
+    c = _canonical(value, value_type)
+    if c is None:
+        return None
+    if isinstance(c, date):
+        return c.isoformat()
+    # shortcut: floats lose precision above ~15 significant digits, return Decimal strings if the
+    # eval ever has such values.
+    return int(c) if c == c.to_integral_value() else float(c)
+
+
 def value_in_quotes(value: str | int | float, value_type: str, quotes: list[str]) -> bool:
     """A typed value (`number`, `currency`, `percent`, `date`) appears in some verified quote."""
+    c = _canonical(value, value_type)
     canonical = _dates if value_type == "date" else _numbers
-    wanted = canonical(str(value))
-    return bool(wanted) and any(wanted <= canonical(q) for q in quotes)
+    return c is not None and any(c in canonical(q) for q in quotes)

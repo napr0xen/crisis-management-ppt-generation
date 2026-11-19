@@ -63,6 +63,8 @@ Any failure sets `status = 'failed'` and `error_code` (e.g. `parse_error`, `ocr_
 3. If `RERANKER_ENABLED`, rerank to top 8; otherwise take the top 8 fused hits.
 4. Return a `Hit(chunk_id, document_id, filename, page_number, section_heading, element_type, text, score)` per result.
 
+`format_hit` (`mapping/retriever.py`) renders each hit for both Q&A and mapping; header fields are flattened to one line with `[`, `]`, `|` removed.
+
 ## 4. AnchorMap
 
 Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
@@ -323,10 +325,12 @@ Example (conflict):
 
 **`confidence`** is a deterministic tier for display only; it never drives `status`:
 - `populated` + typed value matched literally in a quote → `0.9`
-- `populated` text synthesized from verified quotes → `0.8`
+- `populated` text, list or table whose every item (cell) appears in a verified quote → `0.8`
 - `partial` → `0.5`
 - `missing` / `conflict` → `0.0`
 - `provenance = user` → `1.0`
+
+Engine results always have `provenance = rag`.
 
 `shortcut: heuristic confidence tiers, calibrate against the eval set in Phase 10.`
 
@@ -340,7 +344,11 @@ queued ─▶ retrieving ─▶ extracting ─▶ verifying ─▶ rendering ─
    └───────────┴─────────────┴─────────────┴────────────┴──▶ failed
 ```
 
-`failed` is reserved for infrastructure errors (DB, Qdrant, storage, writer). A field-level LLM failure does **not** fail the run; that field becomes `missing` with `missing_reason = "llm_error"`.
+Phase 6 stops at `verifying`: the job sets `extracting` when the field loop starts and writes `results`, `summary` and `verifying` in one transaction at the end. `retrieving` is not used (each field is retrieved, extracted and verified in turn). `finished_at` is set at `completed` or `failed`. Phase 7 continues from `verifying` to `rendering` and `completed`.
+
+A retried job recomputes every field; a run that is no longer `queued`/`retrieving`/`extracting` is returned unchanged. When the job fails for good, the `run_mapping` failure hook marks the run `failed`.
+
+`failed` is reserved for infrastructure errors (DB, Qdrant, storage, writer). A field-level LLM failure (invalid output after the corrective retry) does **not** fail the run: the field becomes `missing(llm_error)`. An unreachable LLM (connection error, timeout, 5xx) is an infrastructure error: the job is retried and the run ends `failed`.
 
 ### Per-field pipeline
 
@@ -355,26 +363,33 @@ PENDING ─retrieve─▶ RETRIEVED ─extract─▶ EXTRACTED ─verify─▶ R
    - Query = `label + " — " + description + " (" + " > ".join(section_path) + ")"`.
    - `retriever.search(ctx, query, document_ids=run.document_ids)`.
    - `checked_documents` = the distinct `document_id`s in `run.document_ids`, i.e. everything that was searched, not just the documents with hits.
+   - Up to 6 hits (`MAX_FIELD_HITS`) are shown to the LLM, and only those can be cited.
+   - The query and the prompt use a bounded copy of the field: the last 4 `section_path` elements (120 chars each), at most 30 `columns`/`allowed_values` (80 chars each).
 2. **Extract.** The LLM gets the field spec and the hits (each labeled with its `chunk_id`), with JSON-schema output:
    `{"candidates": [{"value": …, "quotes": [{"chunk_id": "…", "quote": "…"}]}], "not_found": bool, "incomplete": bool}`.
    The prompt says to copy quotes verbatim, use only the given chunks, and return `not_found` rather than guess.
+   The LLM `value` is a string for text/number/currency/percent/date, a list of strings for paragraphs/bullet_list, and a list of rows (lists of cell strings, body rows only, in `constraints.columns` order) for table. `not_found = true` wins over any candidates.
 3. **Verify** (`verifier.py`, deterministic).
    - `normalize(s)` = NFKC → casefold → map curly quotes and dashes to ASCII → replace `|` with a space (so a quoted Markdown table row matches its chunk) → collapse whitespace → strip.
    - A quote is verified iff `chunk_id ∈ hits` **and** `normalize(quote) in normalize(hit.text)` **and** `len(normalize(quote)) >= 8`.
+   - Quotes shorter than 8 or longer than 1,000 raw characters are dropped. The stored quote is the LLM quote verbatim.
    - Typed values (`number`, `currency`, `percent`, `date`): the value is normalized to a canonical form (`12,000` → `12000`; dates → ISO) and must appear, canonicalized, in at least one verified quote of that candidate.
+   - Typed canonical form: the value must state exactly one number (sign kept, thousand/million/billion applied, currency symbols and `%` ignored, digit groups of 3 after a comma) or one date (ISO). It must appear among the numbers/dates of a verified quote.
+   - Stored values: text → string; paragraphs/bullet_list → list of strings (bullet markers stripped); number/currency/percent → JSON number; date → ISO string; table → list of rows.
    - Evidence `filename`, `page_number`, and `section_heading` are copied from the **hit payload**, never from LLM output.
 4. **Resolve status.**
    1. Drop unverified quotes, then drop candidates with no verified quote.
-   2. Merge candidates whose canonical values are equal (union of evidence).
+   2. Merge candidates whose canonical values are equal (union of evidence). Text merges on `normalize()`; lists on their normalized items.
    3. 0 candidates → `missing`. The reason is `evidence_failed_verification` if the LLM proposed something, otherwise `not_found_by_llm`.
    4. ≥ 2 candidates → `conflict` (`value = null`, `conflict_details.candidates`). **Never auto-resolve.**
    5. 1 candidate → `populated`. It becomes `partial` (`missing_reason = "insufficient_evidence"`) when:
       - the LLM flagged `incomplete`, or
       - `min_items` is not met, or
-      - `columns` are not all filled for `table`.
-   6. A value longer than `max_chars` is still written; a warning goes into `mapping_runs.summary.warnings`. Values are never silently truncated.
+      - a text, list or table value has an item (cell) that appears in no verified quote of that candidate (synthesized or paraphrased text is never `populated`), or
+      - a `table` row has fewer than `len(columns)` non-empty cells.
+   6. A value longer than `max_chars` is still written; a warning (`{"field_id", "code": "max_chars_exceeded"}`) goes into `mapping_runs.summary.warnings`. Values are never silently truncated.
 
-Fields run sequentially (`JOB_CONCURRENCY=1`). `jobs.progress` is updated after each field.
+Fields run sequentially (`JOB_CONCURRENCY=1`). `jobs.progress` is updated after each field. Progress is `{"stage": "mapping", "done": i, "total": n}`. Stored results are a historical snapshot: deleting a source later does not change them.
 
 ## 8. Surgical writers (Stage 4)
 

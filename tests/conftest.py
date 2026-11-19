@@ -45,7 +45,9 @@ DEV_ENV = _dev_env()
 DEV_DATABASE_URL = os.environ.get("DATABASE_URL") or DEV_ENV.get(
     "DATABASE_URL", "postgresql+asyncpg://doc_intel:doc_intel@127.0.0.1:5432/doc_intel"
 )
-TEST_DB_NAME = "doc_intel_test"
+# TEST_RUN_ID gives parallel pytest runs their own DB and collection (default: shared names).
+_RUN_SUFFIX = f"_{os.environ['TEST_RUN_ID']}" if os.environ.get("TEST_RUN_ID") else ""
+TEST_DB_NAME = f"doc_intel_test{_RUN_SUFFIX}"
 TEST_DATABASE_URL = DEV_DATABASE_URL.rsplit("/", 1)[0] + f"/{TEST_DB_NAME}"
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("QDRANT_URL", DEV_ENV.get("QDRANT_URL", "http://127.0.0.1:6333"))
@@ -53,7 +55,7 @@ os.environ.setdefault("QDRANT_URL", DEV_ENV.get("QDRANT_URL", "http://127.0.0.1:
 # Tests drive jobs with `run_one`; a background worker would race them for queued jobs.
 os.environ["JOB_CONCURRENCY"] = "0"
 # Like the throwaway test DB: tests never touch the dev `doc_chunks` collection.
-os.environ["QDRANT_COLLECTION"] = "doc_chunks_test"
+os.environ["QDRANT_COLLECTION"] = f"doc_chunks_test{_RUN_SUFFIX}"
 os.environ["STORAGE_ROOT"] = tempfile.mkdtemp(prefix="doc_intel_test_storage_")
 atexit.register(shutil.rmtree, os.environ["STORAGE_ROOT"], ignore_errors=True)
 
@@ -157,7 +159,7 @@ def qdrant_collection() -> str:
     from doc_intel.vector.qdrant_store import QdrantStore
 
     settings = get_settings()
-    assert settings.qdrant_collection == "doc_chunks_test"
+    assert settings.qdrant_collection == f"doc_chunks_test{_RUN_SUFFIX}"
 
     async def recreate() -> None:
         client = AsyncQdrantClient(url=settings.qdrant_url)

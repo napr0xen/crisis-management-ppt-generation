@@ -4,6 +4,9 @@ import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import structlog
+from sqlalchemy import func
+
 from doc_intel.core.config import Settings
 from doc_intel.core.errors import NotFound
 from doc_intel.core.tenancy import TenantContext
@@ -14,15 +17,22 @@ from doc_intel.ingestion.pipeline import parse_and_chunk
 from doc_intel.ingestion.upload import parsed_key
 from doc_intel.jobs.worker import Handler, OnFailed, Sessionmaker, set_progress
 from doc_intel.llm.gateway import LLMClient
+from doc_intel.mapping.engine import map_field, summarize
+from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.base import StorageBackend
 from doc_intel.templates.anchors import build_anchor_map
 from doc_intel.templates.ir_builder import build_ir
+from doc_intel.templates.schemas import TemplateIR
 
 if TYPE_CHECKING:
     from doc_intel.vector.qdrant_store import QdrantStore
 
+log = structlog.get_logger()
+
 # Chunks embedded and upserted per step: only one batch of vectors (~32 KB each) is in memory.
 INDEX_BATCH = 256
+
+_ACTIVE_RUN = ("queued", "retrieving", "extracting")  # statuses a run_mapping job may still change
 
 
 def make_handlers(
@@ -32,6 +42,7 @@ def make_handlers(
     embedder: Embedder,
     vector_store: "QdrantStore",
     llm: LLMClient,
+    retriever: Retriever,
 ) -> dict[str, Handler]:
     async def document_exists(ctx: TenantContext, document_id: uuid.UUID) -> bool:
         async with sessionmaker() as session:
@@ -140,7 +151,52 @@ def make_handlers(
             )
         return {"template_id": str(template_id), "template_ir_id": str(row.id), "ir_version": 1}
 
-    return {"ingest_document": ingest_document, "extract_template": extract_template}
+    async def run_mapping(job: Job, ctx: TenantContext) -> dict[str, Any]:
+        run_id = uuid.UUID(job.payload["mapping_run_id"])
+        result = {"mapping_run_id": str(run_id), "artifact_id": None}
+        async with sessionmaker.begin() as session:
+            run = await repo.get_mapping_run(session, ctx, run_id)
+            if run.status not in _ACTIVE_RUN:  # retry after the final commit
+                return result
+            ir = TemplateIR.model_validate(
+                (await repo.get_template_ir_by_id(session, ctx, run.template_ir_id)).ir
+            )
+            document_ids = list(run.document_ids)
+            await repo.update_mapping_run(session, ctx, run_id, status="extracting")
+            total = len(ir.fields)
+            progress = {"stage": "mapping", "total": total}
+            await repo.update_job(session, ctx, job.id, progress={**progress, "done": 0})
+        # shortcut: fields run one at a time (one Ollama), and a crash redoes them all; add
+        # per-field checkpoints if runs get long.
+        results = {}
+        for done, field in enumerate(ir.fields, start=1):
+            results[field.field_id] = await map_field(ctx, field, document_ids, retriever, llm)
+            await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done})
+        summary = summarize(ir.fields, results)
+        async with sessionmaker.begin() as session:
+            await repo.update_mapping_run(
+                session,
+                ctx,
+                run_id,
+                results={fid: r.model_dump(mode="json") for fid, r in results.items()},
+                summary=summary.model_dump(mode="json"),
+                status="verifying",
+            )
+        log.info(
+            "mapping_run_done",
+            mapping_run_id=str(run_id),
+            populated=summary.populated,
+            partial=summary.partial,
+            missing=summary.missing,
+            conflict=summary.conflict,
+        )
+        return result
+
+    return {
+        "ingest_document": ingest_document,
+        "extract_template": extract_template,
+        "run_mapping": run_mapping,
+    }
 
 
 def make_failure_hooks(sessionmaker: Sessionmaker) -> dict[str, OnFailed]:
@@ -157,4 +213,16 @@ def make_failure_hooks(sessionmaker: Sessionmaker) -> dict[str, OnFailed]:
             except NotFound:
                 pass  # deleted meanwhile: nothing to mark
 
-    return {"ingest_document": ingest_failed}
+    async def mapping_failed(job: Job, ctx: TenantContext, code: str) -> None:
+        async with sessionmaker.begin() as session:
+            run_id = uuid.UUID(job.payload["mapping_run_id"])
+            try:
+                run = await repo.get_mapping_run(session, ctx, run_id)
+                if run.status in _ACTIVE_RUN:  # a committed verifying/completed run stays
+                    await repo.update_mapping_run(
+                        session, ctx, run_id, status="failed", finished_at=func.now()
+                    )
+            except NotFound:
+                pass  # hooks also run at startup recovery: never raise
+
+    return {"ingest_document": ingest_failed, "run_mapping": mapping_failed}

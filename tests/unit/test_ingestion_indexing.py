@@ -20,6 +20,7 @@ from doc_intel.ingestion.upload import parsed_key
 from doc_intel.jobs import handlers as handlers_mod
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import MAX_JOB_ATTEMPTS, run_one
+from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.local import LocalStorage
 from tests.conftest import headers
 from tests.fakes import FakeLLM
@@ -108,7 +109,9 @@ class ThreadRecordingStorage(LocalStorage):
 async def _process(sm, store, embedder, rounds=1, storage=None):
     settings = get_settings()
     storage = storage or LocalStorage(settings.storage_root)
-    handlers = make_handlers(sm, storage, settings, embedder, store, FakeLLM())
+    handlers = make_handlers(
+        sm, storage, settings, embedder, store, FakeLLM(), Retriever(embedder, store)
+    )
     for _ in range(rounds):
         await run_one(sm, handlers, make_failure_hooks(sm))
 

@@ -20,6 +20,7 @@ from doc_intel.jobs import handlers as handlers_mod
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import MAX_JOB_ATTEMPTS, recover_running_jobs, run_one
 from doc_intel.main import create_app
+from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.local import LocalStorage
 from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
 from tests.conftest import headers
@@ -48,7 +49,9 @@ async def _process(migrated_db, rounds=1):
     settings = get_settings()
     store = _store()
     storage = LocalStorage(settings.storage_root)
-    handlers = make_handlers(sm, storage, settings, FakeEmbedder(), store, FakeLLM())
+    handlers = make_handlers(
+        sm, storage, settings, FakeEmbedder(), store, FakeLLM(), Retriever(FakeEmbedder(), store)
+    )
     try:
         for _ in range(rounds):
             await run_one(sm, handlers, make_failure_hooks(sm))
