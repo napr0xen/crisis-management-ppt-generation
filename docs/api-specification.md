@@ -174,7 +174,9 @@ Returns `Document`.
 ### `DELETE /v1/projects/{project_id}/documents/{document_id}`
 
 Deletes the Qdrant points (tenant-filtered), the stored upload and parsed JSON, and the row. Returns `204`.
+- Order: the row delete is flushed (so `404`/`409` never touch Qdrant), then the points are deleted, then the transaction commits; files go in a background task after the commit.
 - `409` if the document is the template of a `templates` row that has mapping runs.
+- `503 upstream_unavailable` if Qdrant can't delete the points; nothing is deleted.
 
 ---
 

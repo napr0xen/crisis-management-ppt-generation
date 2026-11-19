@@ -148,7 +148,7 @@ Peak at steady state (one mapping run active, Docker up, default 14B model, rera
 | Docker VM (Open WebUI ~1.0, Postgres ~0.5, Qdrant ~0.5, VM overhead) | 3.0 | cap the VM at 3 GB in Docker Desktop; compose `mem_limit`s: open-webui 1.5g, postgres 512m, qdrant 1g |
 | Ollama `qwen2.5:14b-instruct` Q4_K_M weights | 9.0 | `OLLAMA_KEEP_ALIVE=10m` |
 | Ollama KV cache (8k ctx, one slot) | 1.5 | `num_ctx=8192`, `OLLAMA_NUM_PARALLEL=1`: each extra parallel slot would add another 1.5 GB |
-| BGE-M3 fp16 (loaded at startup) | 1.5 | weights ~1.1 + activations |
+| BGE-M3 fp16 (loaded on first embed, then kept) | 1.5 | measured Phase 3: 1.18 GB on MPS; ~4.3 GB process peak while loading (fp32 checkpoint) |
 | FastAPI process (Python, Docling idle) | 0.5 | |
 | **Subtotal (mapping)** | **20.5** | ~3.5 GB headroom |
 | + Docling layout/TableFormer/RapidOCR (only during ingestion) | +2.0 | loaded lazily, worker concurrency 1 |

@@ -4,7 +4,8 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from doc_intel.db.models import Job, MappingRun, Template, TemplateIRVersion
+from doc_intel.core.tenancy import TenantContext
+from doc_intel.db.models import Document, Job, MappingRun, Template, TemplateIRVersion
 from tests.conftest import headers
 
 pytestmark = pytest.mark.integration
@@ -50,6 +51,28 @@ def upload(client, user_id, project_id, name="report.pdf", data=PDF):
 def read_key(client, key: str) -> bytes:
     with client.app.state.storage.open_read(key) as f:
         return f.read()
+
+
+class FakeVectorStore:
+    """Records point deletions and whether the row was still committed at that moment."""
+
+    def __init__(self, sessionmaker, fail: bool = False) -> None:
+        self.sessionmaker = sessionmaker
+        self.fail = fail
+        self.deleted: list[tuple[TenantContext, uuid.UUID, bool]] = []
+
+    async def delete_document_points(self, ctx, document_id) -> None:
+        if self.fail:
+            raise ConnectionError("qdrant down")
+        async with self.sessionmaker() as s:
+            row_committed = await s.get(Document, document_id) is not None
+        self.deleted.append((ctx, document_id, row_committed))
+
+
+@pytest.fixture(autouse=True)
+def vector_store(client):
+    client.app.state.vector_store = FakeVectorStore(client.app.state.sessionmaker)
+    return client.app.state.vector_store
 
 
 async def test_upload_stores_file_and_enqueues_ingest(client, session, user_a, project):
@@ -115,7 +138,7 @@ def test_list_is_newest_first_and_limited(client, user_a, project):
     assert over.status_code == 422
 
 
-def test_delete_removes_row_and_files(client, user_a, project):
+def test_delete_removes_row_and_files(client, user_a, project, vector_store):
     doc_id = upload(client, user_a, project).json()["document_id"]
     base = f"users/{user_a}/projects/{project}"
     client.app.state.storage.put_bytes(f"{base}/parsed/{doc_id}.json", b"{}", overwrite=True)
@@ -128,9 +151,37 @@ def test_delete_removes_row_and_files(client, user_a, project):
     for key in (f"{base}/uploads/{doc_id}/original.pdf", f"{base}/parsed/{doc_id}.json"):
         with pytest.raises(FileNotFoundError):
             read_key(client, key)
+    # Points go first, while the row is still committed.
+    assert vector_store.deleted == [
+        (TenantContext(user_a, uuid.UUID(project)), uuid.UUID(doc_id), True)
+    ]
 
 
-async def test_delete_template_with_mapping_runs_is_409(client, session, user_a, project):
+def test_delete_when_vector_store_is_down_is_503_and_deletes_nothing(
+    client, user_a, project, vector_store
+):
+    doc_id = upload(client, user_a, project).json()["document_id"]
+    vector_store.fail = True
+    r = client.delete(f"/v1/projects/{project}/documents/{doc_id}", headers=headers(user_a))
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "upstream_unavailable"
+    got = client.get(f"/v1/projects/{project}/documents/{doc_id}", headers=headers(user_a))
+    assert got.status_code == 200
+    key = f"users/{user_a}/projects/{project}/uploads/{doc_id}/original.pdf"
+    assert read_key(client, key) == PDF
+
+
+def test_delete_unknown_document_is_404_without_touching_vectors(
+    client, user_a, project, vector_store
+):
+    r = client.delete(f"/v1/projects/{project}/documents/{uuid.uuid4()}", headers=headers(user_a))
+    assert r.status_code == 404
+    assert vector_store.deleted == []
+
+
+async def test_delete_template_with_mapping_runs_is_409(
+    client, session, user_a, project, vector_store
+):
     doc_id = uuid.UUID(upload(client, user_a, project).json()["document_id"])
     pid = uuid.UUID(project)
     template = Template(
@@ -166,6 +217,7 @@ async def test_delete_template_with_mapping_runs_is_409(client, session, user_a,
     assert r.json()["error"]["code"] == "conflict"
     got = client.get(f"/v1/projects/{project}/documents/{doc_id}", headers=headers(user_a))
     assert got.status_code == 200
+    assert vector_store.deleted == []  # a refused delete keeps the document searchable
 
 
 def test_unsupported_upload_is_415_and_writes_nothing(client, user_a, project):

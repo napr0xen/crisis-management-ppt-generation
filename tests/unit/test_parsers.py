@@ -124,3 +124,40 @@ def test_invalid_utf8_raises(parser):
 
 def test_empty_text_gives_no_elements():
     assert parse_txt(b"\n\n  \n").elements == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["# a" + " " * 1_000_000 + "b", "#" + " \t" * 500_000 + "x", "# a" + " #" * 500_000 + " x"],
+)
+def test_md_heading_parsing_is_linear_time(line):
+    """A crafted 1 MB line must not stall the single job worker (was quadratic backtracking)."""
+    import time
+
+    start = time.perf_counter()
+    parse_md(line.encode())
+    assert time.perf_counter() - start < 0.5
+
+
+@pytest.mark.parametrize(
+    "line, heading",
+    [
+        ("# Title", "Title"),
+        ("## Title ##", "Title"),
+        ("   ### Indented", "Indented"),
+        ("#\tTabbed  ", "Tabbed"),
+        ("## C# basics", "C# basics"),
+        ("# Ends with#", "Ends with#"),
+        ("#", None),
+        ("#hashtag", "NOT A HEADING"),
+        ("    # four spaces is code", "NOT A HEADING"),
+        ("####### seven", "NOT A HEADING"),
+    ],
+)
+def test_md_atx_heading_rules(line, heading):
+    doc = parse_md(f"{line}\n\nbody".encode())
+    body = doc.elements[-1]
+    if heading == "NOT A HEADING":
+        assert body.section_heading is None
+    else:
+        assert body.section_heading == heading

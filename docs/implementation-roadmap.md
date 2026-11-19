@@ -22,7 +22,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 0 | Architecture & source-of-truth docs | **Complete** |
 | 1 | Foundation, infrastructure & database | **Complete** |
 | 2 | Ingestion, storage & Open WebUI integration check | **Complete** |
-| 3 | Embeddings & vector store | pending |
+| 3 | Embeddings & vector store | **Complete** |
 | 4 | LLM gateway & grounded Q&A | pending |
 | 5 | Template intelligence (Anchor Map + IR) | pending |
 | 6 | Mapping engine | pending |

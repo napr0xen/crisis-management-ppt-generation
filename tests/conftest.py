@@ -42,6 +42,8 @@ os.environ.setdefault("QDRANT_URL", DEV_ENV.get("QDRANT_URL", "http://127.0.0.1:
 # Tests never write into ./data.
 # Tests drive jobs with `run_one`; a background worker would race them for queued jobs.
 os.environ["JOB_CONCURRENCY"] = "0"
+# Like the throwaway test DB: tests never touch the dev `doc_chunks` collection.
+os.environ["QDRANT_COLLECTION"] = "doc_chunks_test"
 os.environ["STORAGE_ROOT"] = tempfile.mkdtemp(prefix="doc_intel_test_storage_")
 atexit.register(shutil.rmtree, os.environ["STORAGE_ROOT"], ignore_errors=True)
 
@@ -132,3 +134,41 @@ async def empty_queue(migrated_db):
     async with engine.begin() as conn:
         await conn.execute(delete(Job))
     await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def qdrant_collection() -> str:
+    """Fresh `doc_chunks_test` collection, recreated once per run. Never the dev collection."""
+    import asyncio
+
+    from qdrant_client import AsyncQdrantClient
+
+    from doc_intel.core.config import get_settings
+    from doc_intel.vector.qdrant_store import QdrantStore
+
+    settings = get_settings()
+    assert settings.qdrant_collection == "doc_chunks_test"
+
+    async def recreate() -> None:
+        client = AsyncQdrantClient(url=settings.qdrant_url)
+        try:
+            await client.delete_collection(settings.qdrant_collection)
+            await QdrantStore(client, settings.qdrant_collection).ensure_collection()
+        finally:
+            await client.close()
+
+    asyncio.run(recreate())
+    return settings.qdrant_collection
+
+
+@pytest.fixture
+async def vector_store(qdrant_collection):
+    """A `QdrantStore` on the test collection; tests isolate themselves with random tenants."""
+    from qdrant_client import AsyncQdrantClient
+
+    from doc_intel.core.config import get_settings
+    from doc_intel.vector.qdrant_store import QdrantStore
+
+    client = AsyncQdrantClient(url=get_settings().qdrant_url)
+    yield QdrantStore(client, qdrant_collection)
+    await client.close()

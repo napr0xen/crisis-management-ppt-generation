@@ -78,6 +78,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 |---|---|---|
 | `DATABASE_URL` | `postgresql+asyncpg://doc_intel:doc_intel@127.0.0.1:5432/doc_intel` | app DB |
 | `QDRANT_URL` | `http://127.0.0.1:6333` | |
+| `QDRANT_COLLECTION` | `doc_chunks` | tests set `doc_chunks_test` |
 | `STORAGE_ROOT` | `./data/storage` | `LocalStorage` root |
 | `PIPE_SHARED_SECRET` | — (required) | bearer secret shared with the Pipe |
 | `SIGNING_SECRET` | — (required) | HMAC key for download URLs |

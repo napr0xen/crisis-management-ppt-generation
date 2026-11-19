@@ -50,6 +50,10 @@ class UnsupportedMediaType(AppError):
     code, http_status, message = "unsupported_media_type", 415, "Unsupported file type."
 
 
+class UpstreamUnavailable(AppError):
+    code, http_status, message = "upstream_unavailable", 503, "An upstream service is unavailable."
+
+
 def _request_id() -> str | None:
     return structlog.contextvars.get_contextvars().get("request_id")
 

@@ -12,9 +12,11 @@ from doc_intel.core.config import Settings, get_settings
 from doc_intel.core.errors import AppError, error_response, install_error_handlers
 from doc_intel.core.logging import configure_logging
 from doc_intel.db.session import make_engine
+from doc_intel.embeddings.bge_m3 import BGEM3Embedder
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import start_worker
 from doc_intel.storage.local import LocalStorage
+from doc_intel.vector.qdrant_store import QdrantStore
 
 log = structlog.get_logger()
 
@@ -68,12 +70,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.engine = make_engine(settings.database_url)
         app.state.sessionmaker = async_sessionmaker(app.state.engine, expire_on_commit=False)
         app.state.storage = LocalStorage(settings.storage_root)
+        # Closed below by this reference: tests may swap app.state.vector_store for a fake.
+        store = QdrantStore.connect(settings.qdrant_url, settings.qdrant_collection)
+        app.state.vector_store = store
+        try:
+            await store.ensure_collection()
+        except Exception as exc:  # the API still serves; health reports Qdrant, ingest retries
+            log.warning("qdrant_unavailable_at_startup", error_type=type(exc).__name__)
+        # Lazy: BGE-M3 loads on the first embed, not at startup (24 GB budget).
+        app.state.embedder = BGEM3Embedder(settings.embedding_model, settings.embedding_device)
         async with httpx.AsyncClient() as http:
             app.state.http = http
             stop_worker = (
                 await start_worker(
                     app.state.sessionmaker,
-                    make_handlers(app.state.sessionmaker, app.state.storage, settings),
+                    make_handlers(
+                        app.state.sessionmaker,
+                        app.state.storage,
+                        settings,
+                        app.state.embedder,
+                        store,
+                    ),
                     make_failure_hooks(app.state.sessionmaker),
                 )
                 if settings.job_concurrency
@@ -84,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 if stop_worker:
                     await stop_worker()
+        await store.close()
         await app.state.engine.dispose()
 
     app = FastAPI(title="doc_intel", version="0.1.0", lifespan=lifespan)

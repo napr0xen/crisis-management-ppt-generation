@@ -8,7 +8,27 @@ from openpyxl import load_workbook
 
 from doc_intel.ingestion.schemas import ParsedDocument, ParsedElement
 
-_ATX_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
+_NOT_HEADING = object()
+
+
+def _atx_heading(line: str) -> str | object | None:
+    """CommonMark ATX heading text (None for an empty heading), or `_NOT_HEADING`.
+
+    Plain string operations, linear in the line length: a regex with overlapping quantifiers
+    backtracked quadratically and let one crafted line stall the single job worker.
+    """
+    stripped = line.lstrip(" ")
+    if len(line) - len(stripped) > 3:
+        return _NOT_HEADING
+    rest = stripped.lstrip("#")
+    level = len(stripped) - len(rest)
+    if not 1 <= level <= 6 or (rest and rest[0] not in " \t"):
+        return _NOT_HEADING
+    text = rest.strip(" \t")
+    closed = text.rstrip("#")
+    if not closed or closed[-1] in " \t":  # optional closing `#` run must follow a space
+        text = closed.rstrip(" \t")
+    return text or None
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -61,9 +81,9 @@ def parse_md(data: bytes) -> ParsedDocument:
         block.clear()
 
     for line in data.decode("utf-8-sig").splitlines():
-        if m := _ATX_HEADING.match(line):
+        if (found := _atx_heading(line)) is not _NOT_HEADING:
             flush()
-            heading = (m.group(1) or "").strip() or None
+            heading = found
             if heading:  # heading text stays searchable, like Docling headings
                 elements.append(
                     ParsedElement(element_type="text", text=heading, section_heading=heading)

@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     max_upload_mb: int = 100
     chunk_max_tokens: int = 512
     embedding_model: str = "BAAI/bge-m3"
+    embedding_device: str = "mps"  # mps | cpu
+    reranker_enabled: bool = False
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    qdrant_collection: str = "doc_chunks"  # tests use their own collection
     # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
     # RAM budget fits one Docling/LLM job at a time (ADR-010); revisit with more memory.
     job_concurrency: int = Field(default=1, ge=0, le=1)

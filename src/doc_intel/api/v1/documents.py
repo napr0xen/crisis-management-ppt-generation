@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Query, Request, UploadFile
 from pydantic import BaseModel, ConfigDict
 
+from doc_intel.core.errors import UpstreamUnavailable
 from doc_intel.core.tenancy import Tenant
 from doc_intel.db import repo
 from doc_intel.db.session import Session
@@ -112,7 +113,16 @@ async def delete_document(
     request: Request,
     background: BackgroundTasks,
 ) -> None:
+    # Flushed, not committed: a 404/409 surfaces here, before any vector is touched.
     document = await repo.delete_document(session, ctx, document_id)
+    # Points go before the commit, so a deleted document's text never stays searchable (FR-16);
+    # if Qdrant is down the request fails and the transaction rolls back the row delete.
+    # shortcut: a commit that fails after this leaves the row without vectors; re-uploading
+    # the same file does not re-ingest it unless it failed, add a reindex path if that bites.
+    try:
+        await request.app.state.vector_store.delete_document_points(ctx, document_id)
+    except Exception as exc:
+        raise UpstreamUnavailable() from exc
     # Background tasks run after the response, i.e. after the commit: a rolled-back delete
     # never loses its files.
     storage = request.app.state.storage

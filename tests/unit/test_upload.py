@@ -104,3 +104,25 @@ def test_storage_keys_follow_the_data_model():
         f"users/user_1/projects/{ctx.project_id}/uploads/{doc}/original.pdf"
     )
     assert parsed_key(ctx, doc) == f"users/user_1/projects/{ctx.project_id}/parsed/{doc}.json"
+
+
+def test_zip_bomb_is_rejected_before_parsing(monkeypatch):
+    """A small OOXML upload must not expand into more than the unzip cap."""
+    from doc_intel.ingestion import upload
+
+    monkeypatch.setattr(upload, "MAX_UNZIPPED_BYTES", 1_000_000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "<x/>")
+        z.writestr("xl/workbook.xml", "<x/>")
+        z.writestr("xl/worksheets/sheet1.xml", b"0" * 2_000_000)  # ~2 KB compressed
+    data = buf.getvalue()
+    assert len(data) < 10_000
+    with pytest.raises(PayloadTooLarge):
+        validate_upload("bomb.xlsx", data, LIMIT * 100)
+
+
+def test_unzip_cap_default_is_512_mb():
+    from doc_intel.ingestion.upload import MAX_UNZIPPED_BYTES
+
+    assert MAX_UNZIPPED_BYTES == 512 * 1024 * 1024

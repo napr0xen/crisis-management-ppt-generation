@@ -68,6 +68,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `test_error_leaks.py` | unhandled error → 500 envelope, not re-raised, sentinel absent from output; DB errors hide bound parameters |
 | `test_tenant_isolation_api.py` | parametrized over **every** route with a path id: user B using user A's ids → 404, response identical to a random id |
 | `test_tenant_isolation_db.py` | every `db/repo.py` function returns nothing for a mismatched `user_id` or `project_id`; composite FK rejects a child row pointing at another user's project |
+| `test_qdrant_store.py` (integration) | collection config + payload indexes, idempotent upsert, dense/sparse/fused search, filters, scoped delete |
 | `test_qdrant_isolation.py` | search / retrieve-by-id / delete scoped to B never see or remove A's points (same `project_id` value under a different `user_id` included) |
 | `test_qdrant_access.py` | no module outside `vector/qdrant_store.py` imports `qdrant_client` |
 | `test_signed_urls.py` | valid → 200; altered `sig`/`exp`/`artifact_id` → 403; expired → 410 |

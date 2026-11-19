@@ -163,13 +163,13 @@ Index `(user_id, project_id, created_at DESC)`.
 
 Accessed only through `src/doc_intel/vector/qdrant_store.py`.
 
-**Collection `doc_chunks`.**
+**Collection `doc_chunks`** (name from `QDRANT_COLLECTION`; tests use their own `doc_chunks_test`, recreated per test session).
 
 | Setting | Value |
 |---|---|
 | Named dense vector | `dense`: size 1024, distance Cosine |
 | Named sparse vector | `sparse`: BGE-M3 lexical weights (no IDF modifier) |
-| Point id | `chunk_id` = `uuid5(CHUNK_NAMESPACE, f"{document_id}:{chunk_index}")` |
+| Point id | `chunk_id` = `uuid5(CHUNK_NAMESPACE, f"{document_id}:{chunk_index}")`, `CHUNK_NAMESPACE = 6f0f5a3e-2b1c-4d7e-9a8b-3c5d7e9f1a2b` (fixed forever: changing it re-keys every point) |
 
 **Payload.**
 
@@ -186,6 +186,8 @@ Accessed only through `src/doc_intel/vector/qdrant_store.py`.
 | `text` | string | no (chunk text, used by the verifier) |
 
 **Isolation rules.**
+- Upserts carry the tenant filter as Qdrant's `update_filter`, so a tenant can never overwrite another tenant's existing point (even by reusing its `document_id`).
+- Upserts go in batches of 256 points (`UPSERT_BATCH`): a BGE-M3 point is ~26 KB of JSON, and Qdrant rejects requests over 32 MB (~1,250 points).
 - Every search, scroll, retrieve, and delete has a `must` filter on `user_id` **and** `project_id`, optionally narrowed with `document_id` `match.any`.
 - `qdrant_store` methods take a required `TenantContext` and build the filter themselves. Callers can't pass raw filters.
 - Retrieving by id (for verification) also applies the tenant filter: an id from another tenant returns nothing.

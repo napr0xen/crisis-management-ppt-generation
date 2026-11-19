@@ -51,13 +51,13 @@ Outside the package: `integrations/openwebui/doc_intel_pipe.py` (the Pipe Functi
    - text items under the same heading are packed up to `CHUNK_MAX_TOKENS=512` BGE-M3 tokens (target ~400) and never cross a section boundary;
    - each table is its own chunk (`element_type = 'table'`), serialized as Markdown; tables longer than 512 tokens are split by rows, with the header row repeated;
    - `chunk_index` is 0-based and contiguous per document.
-5. Embed in batches of 16 (BGE-M3, fp16, MPS), upsert into `doc_chunks`, set `status = 'indexed'` with `page_count` and `chunk_count`.
+5. Embed in batches of 16 (BGE-M3, fp16, MPS). Then delete the document's existing points (a retry may yield fewer chunks), upsert into `doc_chunks`, and set `status = 'indexed'` with `page_count` and `chunk_count`. A document deleted meanwhile has its points and parsed JSON removed, and the job ends without retrying.
 
 Any failure sets `status = 'failed'` and `error_code` (e.g. `parse_error`, `ocr_error`, `embed_error`). No document text is logged.
 
 ## 3. Retrieval (shared by Q&A and mapping)
 
-`retriever.search(ctx: TenantContext, query: str, document_ids: list[UUID] | None, k=20)`:
+`Retriever(embedder, store, reranker | None).search(ctx: TenantContext, query: str, document_ids: list[UUID] | None = None, k=20)` (`mapping/retriever.py`):
 1. Embed the query with BGE-M3 (dense + sparse).
 2. `qdrant_store.hybrid_search`: prefetch `dense` limit 40 and `sparse` limit 40, both with the tenant filter, fused with RRF, limit `k`.
 3. If `RERANKER_ENABLED`, rerank to top 8; otherwise take the top 8 fused hits.

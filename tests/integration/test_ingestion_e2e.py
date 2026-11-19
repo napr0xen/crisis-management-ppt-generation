@@ -21,7 +21,9 @@ from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import MAX_JOB_ATTEMPTS, recover_running_jobs, run_one
 from doc_intel.main import create_app
 from doc_intel.storage.local import LocalStorage
+from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
 from tests.conftest import headers
+from tests.fakes import FakeEmbedder
 from tests.fixtures import sources
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue")]
@@ -35,14 +37,34 @@ def _upload(client, user, project_id, name, data):
     return r.json()
 
 
+def _store() -> QdrantStore:
+    settings = get_settings()
+    return QdrantStore.connect(settings.qdrant_url, settings.qdrant_collection)
+
+
 async def _process(migrated_db, rounds=1):
     engine = make_engine(migrated_db)
     sm = async_sessionmaker(engine, expire_on_commit=False)
     settings = get_settings()
-    handlers = make_handlers(sm, LocalStorage(settings.storage_root), settings)
-    for _ in range(rounds):
-        await run_one(sm, handlers, make_failure_hooks(sm))
-    await engine.dispose()
+    store = _store()
+    storage = LocalStorage(settings.storage_root)
+    handlers = make_handlers(sm, storage, settings, FakeEmbedder(), store)
+    try:
+        for _ in range(rounds):
+            await run_one(sm, handlers, make_failure_hooks(sm))
+    finally:
+        await store.close()
+        await engine.dispose()
+
+
+async def _point_count(user, project_id, document_id, max_chunks=200) -> int:
+    """Points this tenant can see for the document (chunk ids are deterministic)."""
+    store = _store()
+    ids = [chunk_id(uuid.UUID(document_id), i) for i in range(max_chunks)]
+    try:
+        return len(await store.retrieve(TenantContext(user, uuid.UUID(project_id)), ids))
+    finally:
+        await store.close()
 
 
 async def _rows(migrated_db, user, project_id, document_id, job_id):
@@ -75,7 +97,8 @@ async def test_upload_is_parsed_and_chunked(
     assert job.result == {"page_count": page_count, "chunk_count": doc.chunk_count}
     assert doc.chunk_count and doc.chunk_count > 0
     assert doc.page_count == page_count
-    assert doc.status == "parsing"  # `indexed` arrives with embedding in Phase 3
+    assert doc.status == "indexed"
+    assert await _point_count(user_a, project, up["document_id"]) == doc.chunk_count
     ctx = TenantContext(user_a, uuid.UUID(project))
     with LocalStorage(get_settings().storage_root).open_read(
         parsed_key(ctx, uuid.UUID(up["document_id"]))
@@ -105,6 +128,7 @@ async def test_unparseable_file_fails_document_after_last_attempt(
     assert (doc.status, doc.error_code) == ("failed", "parse_error")
 
 
+@pytest.mark.slow  # real BGE-M3 via the app lifespan
 def test_app_lifespan_runs_the_worker(migrated_db, user_a):
     settings = Settings(job_concurrency=1)
     with TestClient(create_app(settings)) as client:
@@ -155,6 +179,7 @@ async def test_document_deleted_mid_parse_leaves_no_parsed_text(
     await _process(migrated_db)
 
     assert not _parsed_exists(user_a, project, up["document_id"])
+    assert await _point_count(user_a, project, up["document_id"]) == 0
     engine = make_engine(migrated_db)
     async with async_sessionmaker(engine)() as s:
         job = await s.get(Job, uuid.UUID(up["job_id"]))
@@ -219,7 +244,7 @@ async def test_reuploading_a_failed_document_retries_it(client, migrated_db, use
 
     await _process(migrated_db, rounds=2)  # the old queued job and the retry both succeed
     doc, _ = await _rows(migrated_db, user_a, project, up["document_id"], again["job_id"])
-    assert doc.status == "parsing" and doc.chunk_count
+    assert doc.status == "indexed" and doc.chunk_count
 
 
 async def test_reuploading_a_healthy_document_still_deduplicates(client, user_a, project):
@@ -230,3 +255,14 @@ async def test_reuploading_a_healthy_document_still_deduplicates(client, user_a,
         None,
         True,
     )
+
+
+async def test_deleting_an_indexed_document_removes_its_points(
+    client, migrated_db, user_a, project
+):
+    up = _upload(client, user_a, project, "notes.txt", sources.txt())
+    await _process(migrated_db)
+    assert await _point_count(user_a, project, up["document_id"]) > 0
+    url = f"/v1/projects/{project}/documents/{up['document_id']}"
+    assert client.delete(url, headers=headers(user_a)).status_code == 204
+    assert await _point_count(user_a, project, up["document_id"]) == 0

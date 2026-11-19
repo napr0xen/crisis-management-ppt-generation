@@ -18,6 +18,9 @@ MIME_TYPES = {
     "csv": "text/csv",
     "md": "text/markdown",
 }
+# shortcut: zip metadata can understate sizes, so this stops honest-looking bombs only; parse in a
+# memory-limited subprocess if hostile uploads become a real threat.
+MAX_UNZIPPED_BYTES = 512 * 1024 * 1024  # an XML part this large would not fit a parser's memory
 OOXML_MAIN_PART = {
     "docx": "word/document.xml",
     "pptx": "ppt/presentation.xml",
@@ -42,10 +45,12 @@ def _content_matches(ext: str, data: bytes) -> bool:
         return data.startswith(b"%PDF-")
     if ext in OOXML_MAIN_PART:
         try:
-            names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
+            members = zipfile.ZipFile(io.BytesIO(data)).infolist()
         except zipfile.BadZipFile:
             return False
-        return {"[Content_Types].xml", OOXML_MAIN_PART[ext]} <= names
+        if sum(m.file_size for m in members) > MAX_UNZIPPED_BYTES:
+            raise PayloadTooLarge("Unzipped content is too large.")
+        return {"[Content_Types].xml", OOXML_MAIN_PART[ext]} <= {m.filename for m in members}
     if b"\x00" in data:
         return False
     try:

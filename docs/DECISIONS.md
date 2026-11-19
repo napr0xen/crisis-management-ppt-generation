@@ -59,7 +59,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 **Status:** Accepted
 
 **Decision.**
-- `BAAI/bge-m3` (via `FlagEmbedding`, fp16 on MPS) produces a 1024-dim dense vector and learned sparse lexical weights for each chunk in one pass.
+- `BAAI/bge-m3` (via `FlagEmbedding`, fp16 on MPS) produces a 1024-dim dense vector and learned sparse lexical weights for each chunk in one pass. Verified in Phase 3 with FlagEmbedding 1.4.2 on transformers 5.23 / torch 2.15. Models are fetched with `huggingface_hub.snapshot_download` skipping the unused ONNX export (~2.3 GB), and work offline from the HF cache afterwards.
 - Qdrant collection `doc_chunks` has named vectors `dense` (cosine) and `sparse`. Hybrid search runs two prefetches (dense and sparse), each tenant-filtered, fused with **Reciprocal Rank Fusion**.
 - `BAAI/bge-reranker-v2-m3` is **off by default** (`RERANKER_ENABLED=false`). When enabled it is lazy-loaded on first use and reranks the fused top-k.
 - Qdrant is accessed **only** through `src/doc_intel/vector/qdrant_store.py`, whose methods require a `TenantContext`.

@@ -1,0 +1,171 @@
+"""`QdrantStore` against the live Qdrant, on the throwaway `doc_chunks_test` collection."""
+
+import uuid
+
+import pytest
+
+from doc_intel.core.tenancy import TenantContext
+from doc_intel.embeddings.schemas import DENSE_DIM, Embedding, Hit, SparseVector
+from doc_intel.ingestion.schemas import ChunkPayload
+from doc_intel.vector.qdrant_store import chunk_id
+
+pytestmark = pytest.mark.integration
+
+UNUSED_DENSE, UNUSED_SPARSE = 1000, 99_999  # no seeded chunk uses these dimensions
+
+
+def emb(dense_at: int, sparse_at: int) -> Embedding:
+    """One-hot dense (so cosine picks exactly one chunk) plus a single sparse token."""
+    dense = [0.0] * DENSE_DIM
+    dense[dense_at] = 1.0
+    return Embedding(dense=dense, sparse=SparseVector(indices=[sparse_at], values=[1.0]))
+
+
+def chunk(document_id: uuid.UUID, index: int, element_type: str = "text") -> ChunkPayload:
+    return ChunkPayload(
+        document_id=document_id,
+        filename="report.pdf",
+        page_number=index + 1,
+        section_heading="Overview",
+        element_type=element_type,
+        chunk_index=index,
+        text=f"chunk {index}",
+    )
+
+
+def tenant() -> TenantContext:
+    return TenantContext(f"user_{uuid.uuid4().hex[:8]}", uuid.uuid4())
+
+
+async def seed(store, ctx, doc, element_types=("text", "text", "text")) -> list[ChunkPayload]:
+    """Chunk i gets dense dim i and sparse token 100 + i."""
+    chunks = [chunk(doc, i, t) for i, t in enumerate(element_types)]
+    await store.upsert_chunks(ctx, chunks, [emb(i, 100 + i) for i in range(len(chunks))])
+    return chunks
+
+
+async def test_ensure_collection_is_idempotent_and_configured(vector_store):
+    await vector_store.ensure_collection()
+    await vector_store.ensure_collection()
+
+    info = await vector_store._client.get_collection(vector_store._collection)
+    dense = info.config.params.vectors["dense"]
+    assert (dense.size, dense.distance.value) == (DENSE_DIM, "Cosine")
+    assert info.config.params.sparse_vectors["sparse"].modifier in (None, "none")
+    schema = info.payload_schema
+    for key in ("user_id", "project_id", "document_id", "element_type"):
+        assert schema[key].data_type.value == "keyword"
+    assert schema["user_id"].params.is_tenant is True
+
+
+def test_chunk_id_is_deterministic():
+    doc = uuid.uuid4()
+    assert chunk_id(doc, 3) == chunk_id(doc, 3)
+    assert chunk_id(doc, 3) != chunk_id(doc, 4)
+    assert chunk_id(doc, 3).version == 5
+
+
+async def test_hybrid_search_dense_sparse_and_fused(vector_store):
+    ctx, doc = tenant(), uuid.uuid4()
+    chunks = await seed(vector_store, ctx, doc)
+    ids = [chunk_id(doc, i) for i in range(3)]
+
+    dense_only = await vector_store.hybrid_search(ctx, emb(0, UNUSED_SPARSE))
+    assert dense_only[0].chunk_id == ids[0]
+    assert dense_only[0] == Hit(
+        chunk_id=ids[0], score=dense_only[0].score, **chunks[0].model_dump(exclude={"chunk_index"})
+    )
+    assert dense_only[0].score > 0
+
+    sparse_only = await vector_store.hybrid_search(ctx, emb(UNUSED_DENSE, 101))
+    assert sparse_only[0].chunk_id == ids[1]
+
+    fused = await vector_store.hybrid_search(ctx, emb(0, 102))
+    assert {h.chunk_id for h in fused[:2]} == {ids[0], ids[2]}
+    assert fused[2].chunk_id == ids[1]
+    assert fused[0].score >= fused[1].score > fused[2].score
+
+    assert len(await vector_store.hybrid_search(ctx, emb(0, 102), limit=1)) == 1
+
+
+async def test_reupsert_is_idempotent(vector_store):
+    ctx, doc = tenant(), uuid.uuid4()
+    await seed(vector_store, ctx, doc)
+    await seed(vector_store, ctx, doc)
+
+    hits = await vector_store.hybrid_search(ctx, emb(0, 100), limit=100)
+    assert sorted(h.chunk_id for h in hits) == sorted(chunk_id(doc, i) for i in range(3))
+
+
+async def test_upsert_rejects_length_mismatch(vector_store):
+    ctx, doc = tenant(), uuid.uuid4()
+    with pytest.raises(ValueError):
+        await vector_store.upsert_chunks(ctx, [chunk(doc, 0)], [])
+    with pytest.raises(ValueError):
+        await vector_store.upsert_chunks(ctx, [], [emb(0, 100)])
+    await vector_store.upsert_chunks(ctx, [], [])  # nothing to write is not an error
+
+
+async def test_document_ids_and_element_type_filters(vector_store):
+    ctx, doc1, doc2 = tenant(), uuid.uuid4(), uuid.uuid4()
+    await seed(vector_store, ctx, doc1, ("text", "table"))
+    await seed(vector_store, ctx, doc2, ("text",))
+    q = emb(0, 100)
+
+    assert {h.document_id for h in await vector_store.hybrid_search(ctx, q)} == {doc1, doc2}
+    only_doc2 = await vector_store.hybrid_search(ctx, q, document_ids=[doc2])
+    assert [h.chunk_id for h in only_doc2] == [chunk_id(doc2, 0)]
+    tables = await vector_store.hybrid_search(ctx, q, element_type="table")
+    assert [h.chunk_id for h in tables] == [chunk_id(doc1, 1)]
+    assert await vector_store.hybrid_search(ctx, q, document_ids=[doc2], element_type="table") == []
+    assert await vector_store.hybrid_search(ctx, q, document_ids=[]) == []
+
+
+async def test_delete_document_points_removes_only_that_document(vector_store):
+    ctx, doc1, doc2 = tenant(), uuid.uuid4(), uuid.uuid4()
+    await seed(vector_store, ctx, doc1)
+    await seed(vector_store, ctx, doc2)
+
+    await vector_store.delete_document_points(ctx, doc1)
+
+    hits = await vector_store.hybrid_search(ctx, emb(0, 100), limit=100)
+    assert {h.document_id for h in hits} == {doc2}
+    assert len(hits) == 3
+    assert await vector_store.retrieve(ctx, [chunk_id(doc1, i) for i in range(3)]) == []
+
+
+async def test_retrieve_returns_own_chunks(vector_store):
+    ctx, doc = tenant(), uuid.uuid4()
+    chunks = await seed(vector_store, ctx, doc)
+    ids = [chunk_id(doc, 0), chunk_id(doc, 2)]
+
+    hits = await vector_store.retrieve(ctx, ids)
+
+    expected = [
+        Hit(chunk_id=chunk_id(doc, i), score=0.0, **chunks[i].model_dump(exclude={"chunk_index"}))
+        for i in (0, 2)
+    ]
+    assert sorted(hits, key=str) == sorted(expected, key=str)
+    assert await vector_store.retrieve(ctx, []) == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        TenantContext("", uuid.uuid4()),
+        TenantContext("   ", uuid.uuid4()),
+        TenantContext(None, uuid.uuid4()),
+        TenantContext("user_x", None),
+        TenantContext("user_x", ""),
+    ],
+)
+async def test_blank_tenant_is_rejected_by_every_method(vector_store, bad):
+    doc = uuid.uuid4()
+    with pytest.raises(ValueError):
+        await vector_store.upsert_chunks(bad, [chunk(doc, 0)], [emb(0, 100)])
+    with pytest.raises(ValueError):
+        await vector_store.hybrid_search(bad, emb(0, 100))
+    with pytest.raises(ValueError):
+        await vector_store.retrieve(bad, [chunk_id(doc, 0)])
+    with pytest.raises(ValueError):
+        await vector_store.delete_document_points(bad, doc)
