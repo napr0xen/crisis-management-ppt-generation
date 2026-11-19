@@ -15,7 +15,7 @@ Table, column, and path names come from [data-model.md](data-model.md); endpoint
 | `llm/` | provider-agnostic gateway, prompts | `gateway.py`, `prompts/*.md` |
 | `templates/` | Stage 1 anchor extraction, Stage 2 IR build + validation | `anchors_pptx.py`, `anchors_docx.py`, `anchors_xlsx.py`, `ir_builder.py`, `schemas.py` |
 | `mapping/` | Stage 3 retrieval, extraction, verification, status resolution | `retriever.py`, `extractor.py`, `verifier.py`, `engine.py`, `schemas.py` |
-| `writers/` | Stage 4 surgical writers + markers | `pptx_writer.py`, `docx_writer.py`, `xlsx_writer.py`, `markers.py` |
+| `writers/` | Stage 4 surgical writers + markers | `pptx_writer.py`, `docx_writer.py`, `xlsx_writer.py`, `markers.py`, `runs.py` (shared `w:`/`a:` paragraph and run rules) |
 | `chat/` | Pipe chat orchestration: intent routing, Q&A, summaries, edits | `router.py`, `qa.py`, `summary.py`, `edits.py` |
 | `jobs/` | Postgres queue worker + handlers per `jobs.kind` | `worker.py`, `handlers.py` |
 | `api/v1/` | FastAPI routers, request/response models | `health.py`, `pipe.py`, `projects.py`, `documents.py`, `jobs.py`, `query.py`, `templates.py`, `mapping_runs.py`, `artifacts.py` |
@@ -106,7 +106,7 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
 
 **Selection rules.** Indexes are positions in the library's native collection, not counts of emitted anchors, so writers resolve them directly: `docx:body:p{i}` is `document.paragraphs[i]`, `t{t}` is `document.tables[t]`, and pptx uses `shape.shape_id`. Paragraph indexes are 0-based.
 - pptx: every shape with a text frame (group shapes are recursed) and every non-spanned table cell. An empty placeholder carries its layout prompt text as `text`.
-- docx: headings are not anchors (they form `path`). A body paragraph is an anchor if it has text, or is empty directly under a heading. Table cells are deduplicated across merges (one anchor at the merge origin). Header and footer paragraphs with text count only for sections not linked to the previous one (first-page and even-page headers are skipped). Tagged `w:sdt` content controls in the body are anchors; untagged ones are skipped, and the first of a duplicate tag is kept. An inline content control overlaps its paragraph's anchor.
+- docx: headings are not anchors (they form `path`). A body paragraph is an anchor if it has text, or is empty directly under a heading. Table cells are deduplicated across merges (one anchor at the merge origin). Header and footer paragraphs with text count only for sections not linked to the previous one (first-page and even-page headers are skipped). Tagged `w:sdt` content controls in the body are anchors; untagged ones are skipped, and the first of a duplicate tag is kept. An inline content control overlaps its paragraph's anchor. Content controls around tables, rows or cells are not anchors, and a table whose rows all sit in row-level content controls has no anchors (its index still counts).
 - xlsx: candidates are non-formula cells holding a token, plus empty right and below neighbours of text label cells. Merged non-origin cells are never anchors.
 
 `is_placeholder` means unfilled: tokens present, own text empty, or a content control.
@@ -124,7 +124,8 @@ Stage 2. The LLM proposes fields from the AnchorMap, and `ir_builder.validate()`
 - `write_mode` is allowed for the anchor kind (table below);
 - `replace_token` fields have `constraints.token` present in the anchor's `tokens`;
 - `fill_table_rows` anchors on table row 1, col 0;
-- a table filled by `fill_table_rows` has no other field on its cells.
+- a table filled by `fill_table_rows` has no other field on its cells;
+- a `replace_text` or `fill_cell` field on a text anchor whose anchor has `tokens` uses `replace_token`, unless the anchor text is exactly one token (so the text around a token is never deleted). xlsx `sheet_cell` is exempt.
 
 Invalid output gets 1 LLM retry, with the validation errors fed back. If it fails again, the `extract_template` job fails with `ir_invalid`. The fed-back errors name only field ids, anchor ids, write modes and anchor kinds, never document text.
 
@@ -344,7 +345,7 @@ queued ─▶ retrieving ─▶ extracting ─▶ verifying ─▶ rendering ─
    └───────────┴─────────────┴─────────────┴────────────┴──▶ failed
 ```
 
-Phase 6 stops at `verifying`: the job sets `extracting` when the field loop starts and writes `results`, `summary` and `verifying` in one transaction at the end. `retrieving` is not used (each field is retrieved, extracted and verified in turn). `finished_at` is set at `completed` or `failed`. Phase 7 continues from `verifying` to `rendering` and `completed`.
+`run_mapping` sets `extracting` when the field loop starts, then commits `results`, `summary` and `verifying` in one transaction. It then renders: it sets `rendering` (commit), writes the file, and commits the `artifacts` row together with `completed`, `finished_at` and the writer warnings appended to `summary.warnings`. `retrieving` is not used (each field is retrieved, extracted and verified in turn). A retried job whose run is `verifying`/`rendering` only renders; a `completed` run returns its artifact. `render_artifact` (payload `{mapping_run_id}`) runs the same render for a `verifying`/`rendering` run (Phase 9 edits enqueue it). Failure hooks: `run_mapping` marks any run that is not `completed`/`failed` as `failed`; `render_artifact` only fails `verifying`/`rendering` runs. `finished_at` is set at `completed` or `failed`.
 
 A retried job recomputes every field; a run that is no longer `queued`/`retrieving`/`extracting` is returned unchanged. When the job fails for good, the `run_mapping` failure hook marks the run `failed`.
 
@@ -395,7 +396,10 @@ Fields run sequentially (`JOB_CONCURRENCY=1`). `jobs.progress` is updated after 
 
 Common rules:
 - Copy the template `original.{ext}` into memory, mutate it, and write it as a new `artifacts/{artifact_id}.{ext}`. The upload is never changed.
-- Idempotent on retry: if an `artifacts` row already exists for the run and its file is on disk, reuse it. If the row exists but the file is missing, write the file under that row's `storage_key`.
+- `artifact_id = uuid5(fixed namespace, run_id)`, so a retry targets the same `artifacts/{artifact_id}.{ext}`. The file is written with `put_bytes(overwrite=False)` (atomic); `FileExistsError` means an earlier attempt crashed after writing, and that file is reused. The row, `completed` and `finished_at` commit in one transaction. If the project was deleted meanwhile, the file is removed and the job finishes. Writer errors (unresolvable anchor, bad content) are not retried.
+- download `filename` = `{template stem}_v{version}.{ext}`; stem characters outside `[A-Za-z0-9._-]` become `_`, cut to 100, fallback `artifact` (`shortcut: non-ASCII names become "_"; add RFC 5987 filename* when users need them.`).
+- every target is resolved before the first write, so cloned paragraphs never shift later anchors.
+- markers: `{label}` is replaced literally (never `str.format`); XML-illegal characters are stripped from every value.
 - Only anchors named in the IR are touched. All other package parts must be **C14N-equal** to the template, and are byte-equal for XLSX.
 - What gets written per status:
 
@@ -408,6 +412,16 @@ Common rules:
 - Value rendering by `expected_type`:
   - `paragraphs` / `bullet_list`: one paragraph per item;
   - `number` / `currency` / `percent` / `date`: formatted with `constraints.unit` / `date_format` for text targets, typed for XLSX.
+  - `text` targets: `number`/`currency` → `"{v} {unit}"` (or `"{v}"`), `percent` → `"{v}%"`, `date` → ISO `YYYY-MM-DD` (`shortcut: date_format is free text from the LLM, not a strftime pattern; upgrade when the IR emits one.`);
+  - lists into a single run/cell (`replace_token`, xlsx) are joined with `"; "`;
+  - a `table` value into a non-`fill_table_rows` anchor is one paragraph per row, cells joined by `" | "`;
+  - XLSX: `percent` is written as `v / 100`; a `date` is an Excel serial only when the target cell's style has a date number format (built-in 14-22, 45-47, or a custom format with d/m/y), otherwise ISO text as `inlineStr` (`shortcut: 1900 date system only`);
+  - `max_items` is not enforced (values are never truncated).
+- Write modes:
+  - `fill_table_rows` writes value rows into the existing body rows from row 1, one value per unique cell (merged docx cells and spanned pptx cells are written once);
+  - rows or cells that do not fit are not written and the field gets one `table_overflow` warning (status unchanged);
+  - a missing/conflict marker goes into cell r1c0.
+  - Warnings go to `mapping_runs.summary.warnings` as `{"field_id", "code"}`.
 
 ### PPTX (`python-pptx` + `lxml`)
 
@@ -417,7 +431,7 @@ Common rules:
   - extra items get a cloned paragraph (same `pPr`/`rPr`), and leftover original paragraphs are removed.
 - `replace_token`: first merge runs that the token spans (keeping the first run's `rPr`), then replace the token text in place.
 - Table cells work the same way inside `a:tc/a:txBody`.
-- Shapes, layouts, masters, notes, and media are never touched. No autofit changes. Overflow becomes a warning.
+- Shapes, layouts, masters, notes, and media are never touched. No autofit changes. Text overflow is reported only through `max_chars_exceeded` (no font metrics).
 
 ### DOCX (`python-docx` + `lxml`)
 
@@ -425,6 +439,9 @@ Common rules:
 - Header and footer anchors are resolved through `section.header` / `section.footer`.
 - `content_control` writes into the `w:sdtContent` of `w:sdt` with a matching `w:tag`, and removes `w:showingPlcHdr`.
 - Numbering (`w:numPr`) is kept on cloned paragraphs, so bullet lists stay bullets.
+- a paragraph `replace_text` keeps an inline content control that is itself a target of another field;
+- filling a placeholder content control also drops `w:rStyle="PlaceholderText"`;
+- cloned paragraphs drop `w:sectPr`.
 
 ### XLSX (zip-level XML patch, `lxml`)
 
@@ -432,16 +449,26 @@ Common rules:
 - Opens the zip and locates each worksheet XML via `workbook.xml` + `workbook.xml.rels`.
 - For each target cell `<c r="B4">`, keeps the `s` (style) attribute and writes:
   - strings: `t="inlineStr"` + `<is><t>…</t></is>`; `sharedStrings.xml` is untouched;
-  - numbers, currency, and percent: no `t` attribute, `<v>` with the canonical number;
-  - dates: an Excel serial number in `<v>`.
+  - numbers and currency: no `t` attribute, `<v>` with the canonical number; percent: `<v>` is `v / 100`;
+  - dates: an Excel serial in `<v>` only for date-formatted cells, otherwise ISO text as `inlineStr` (see Value rendering).
 - Creates the `<c>` element in column order if the cell doesn't exist.
-- Never writes into a cell with an `<f>` formula; that field becomes a warning.
+- Never writes into a cell with an `<f>` formula; the field gets a `formula_cell` warning.
 - Sets `<calcPr fullCalcOnLoad="1"/>` in `workbook.xml` so dependent formulas recalculate.
 - Copies every other zip entry byte-for-byte.
 
 ### Known limits
 
-`shortcut: no slide/shape/table-row/sheet-row insertion — fill_table_rows writes only into existing empty rows and marks the field partial when rows run out; upgrade when templates need dynamic row counts.`
+`shortcut: no slide/shape/table-row/sheet-row insertion — fill_table_rows writes only into existing empty rows and adds a table_overflow warning when rows run out; upgrade when templates need dynamic row counts.`
+
+`shortcut: touched runs keep only their text (tabs, breaks, fields inside a rewritten run are dropped); upgrade when templates carry them in anchored text.`
+
+`shortcut: a repeated content-control tag writes the first control only; upgrade when templates reuse tags.`
+
+`shortcut: xlsx rows/cells without an r attribute are not supported; upgrade when a template needs them.`
+
+`shortcut: a custom number format counts as a date if it has d/m/y outside quotes and brackets; upgrade when a template misclassifies one.`
+
+`shortcut: a final transaction that fails on every retry leaves the written artifact file unreferenced (run failed); upgrade with a sweep of unreferenced artifact files.`
 
 ## 9. Chat orchestration (`chat/`)
 

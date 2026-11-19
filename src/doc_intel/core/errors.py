@@ -30,6 +30,7 @@ class SignatureInvalid(AppError):
 
 class NotFound(AppError):
     code, http_status, message = "not_found", 404, "Resource not found."
+    retry = False  # jobs: a deleted row never comes back
 
 
 class LinkExpired(AppError):

@@ -36,6 +36,7 @@ PROJECT_ROUTES = [
     ("POST", "/v1/projects/{p}/documents"),
     ("POST", "/v1/projects/{p}/templates"),
     ("POST", "/v1/projects/{p}/mapping-runs"),
+    ("GET", "/v1/projects/{p}/artifacts"),
 ]
 # own_project=True: B's own project with A's document/job ids.
 CASES = [(*r, False) for r in CHILD_ROUTES + PROJECT_ROUTES] + [(*r, True) for r in CHILD_ROUTES]

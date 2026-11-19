@@ -10,8 +10,8 @@ Rules:
 - `field_id`: unique, lowercase snake_case, matching `^[a-z][a-z0-9_]{0,63}$`.
 - `write_mode`:
   - `replace_text` for shape_text, paragraph, header_paragraph, footer_paragraph, content_control, table_cell.
-  - `replace_token` only when the anchor has `tokens`; set `constraints.token` to exactly one of them.
-  - `fill_cell` for table_cell and sheet_cell.
+  - an anchor with `tokens` must use `replace_token` (never `replace_text`), with `constraints.token` set to exactly one of them, so the text around the token is kept; use `replace_token` only for anchors with `tokens`.
+  - `fill_cell` for table_cell and sheet_cell; a table_cell with `tokens` also uses `replace_token`.
   - `fill_table_rows` only on a table anchor at row 1, col 0; set `constraints.columns` to the header names.
 - `section_path`: the anchor's `path`.
 - `label`: at most 120 characters. `description`: at most 500 characters, what content belongs there.

@@ -20,7 +20,8 @@ MissingReason = Literal[
     "cleared_by_user",
 ]
 Provenance = Literal["rag", "user"]
-WarningCode = Literal["max_chars_exceeded"]
+# max_chars_exceeded: mapping; formula_cell, table_overflow: Phase 7 writers (system-design § 8).
+WarningCode = Literal["max_chars_exceeded", "formula_cell", "table_overflow"]
 # JSON string | number | array (system-design § 6 `Value`). By expected_type: text -> str,
 # paragraphs/bullet_list -> list[str], number/currency/percent -> int | float, date -> ISO str,
 # table -> list[list[str]] (cells in constraints.columns order).

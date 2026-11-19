@@ -60,6 +60,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 - Upload → `ingest_document` → `indexed` with correct `chunk_count`; DELETE removes points and files.
 - Dedup on `sha256`: re-attaching the same bytes under a new Open WebUI file id appends to `openwebui_file_ids`, and `/v1/pipe/chat` resolves both ids.
 - Template → `extract_template` (FakeLLM IR) → `run_mapping` → artifact row + file on disk.
+- `tests/integration/test_generation_e2e.py`: round trip per format (FakeLLM IR + extraction → render → signed download → reopen).
 - `/v1/pipe/chat` SSE: event order `status*` → `delta+` → `done`; error path emits `error` then `done`.
 
 ## 4. Security tests (`tests/security/`), hard gate at every phase exit
@@ -73,7 +74,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `test_qdrant_store.py` (integration) | collection config + payload indexes, idempotent upsert, dense/sparse/fused search, filters, scoped delete |
 | `test_qdrant_isolation.py` | search / retrieve-by-id / delete scoped to B never see or remove A's points (same `project_id` value under a different `user_id` included) |
 | `test_qdrant_access.py` | no module outside `vector/qdrant_store.py` imports `qdrant_client` |
-| `test_signed_urls.py` | valid → 200; altered `sig`/`exp`/`artifact_id` → 403; expired → 410 |
+| `test_signed_urls.py` | valid → 200; altered `sig`/`exp`, a `sig` for another existing artifact, or for another user → 403; expired → 410; unknown id or missing file → 404 |
 | `tests/unit/test_upload.py` | extension/magic mismatch → 415; oversize → 413; storage keys built from ids only, so malicious filenames never reach disk paths |
 | `test_log_redaction.py` | run ingest + Q&A + mapping with sentinel strings in documents and prompts; assert sentinels never appear in captured logs |
 | `test_template_files.py` | XXE and entity expansion in docx/pptx/xlsx never leak file content or expand; understated zip entry sizes fail; more than 5000 parts, any part over 32 MB (any name) or over 128 MB in total are rejected before parsing |
@@ -106,7 +107,14 @@ For each fixture template × format:
 | Written anchor keeps style | first-run `a:rPr` + `a:pPr` equal | `w:rPr` + `w:pPr` (incl. `w:numPr`) equal | cell `s` attribute equal |
 | Markers | `MISSING_MARKER`/`CONFLICT_MARKER` text present at the anchor for missing/conflict fields |  |  |
 | Structure | slide/shape count equal; layouts/masters untouched | headers/footers, sections, tables count equal | sheets, charts, images, defined names untouched; formula cells unchanged; `fullCalcOnLoad="1"` set |
-| Typed values | — | — | numbers/dates written as `<v>`, strings as `inlineStr` |
+| Typed values | — | — | numbers written as `<v>`; dates as `<v>` only in date-formatted cells; strings and other dates as `inlineStr` |
 | Opens cleanly | `python-pptx` loads | `python-docx` loads | `openpyxl` loads |
+
+Tests live in `tests/integration/test_writers_{pptx,docx,xlsx}.py`:
+- C14N probe: `python-pptx`/`python-docx` save without changes keeps every part C14N-equal (guards the first row).
+- Round trip: write a unique value at every golden anchor, re-extract, values match.
+- Overlapping paragraph + inline content control: a paragraph `replace_text` that overlaps an inline content control target writes both fields.
+- Merged-cell `fill_table_rows`: merged docx cells and spanned pptx cells are written once.
+- XLSX: a date is typed only in date-formatted cells.
 
 Manual check (Phase 7 and 10 PRs): open each output in PowerPoint/Word/Excel or LibreOffice and attach screenshots.

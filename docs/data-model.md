@@ -85,7 +85,7 @@ Payload/result per kind:
 |---|---|---|
 | `ingest_document` | `{document_id}` | `{chunk_count, page_count}` |
 | `extract_template` | `{document_id}` | `{template_id, template_ir_id, ir_version}` |
-| `run_mapping` | `{mapping_run_id}` | `{mapping_run_id, artifact_id}` (`artifact_id` is `null` until Phase 7 renders) |
+| `run_mapping` | `{mapping_run_id}` | `{mapping_run_id, artifact_id}` (`artifact_id` is `null` only if the run failed or vanished) |
 | `render_artifact` | `{mapping_run_id}` | `{artifact_id}` |
 
 ### `templates`
@@ -127,10 +127,10 @@ The row is written when `extract_template` succeeds. Before that, the job is the
 | `parent_run_id` | uuid NULL | FK `mapping_runs(id)`; set for `trigger = 'edit'` |
 | `version` | int NOT NULL | `max(version) + 1` over all runs with the same `template_ir_id` (1 for the first), for both triggers; on a `UNIQUE` violation the insert is retried once |
 | `trigger` | text NOT NULL | `initial` \| `edit` |
-| `status` | text NOT NULL | `queued` \| `retrieving` \| `extracting` \| `verifying` \| `rendering` \| `completed` \| `failed`. Phase 6 runs stop at `verifying`; `failed` is set by the `run_mapping` failure hook. |
+| `status` | text NOT NULL | `queued` \| `retrieving` \| `extracting` \| `verifying` \| `rendering` \| `completed` \| `failed`. `run_mapping` ends at `completed` (Phase 7); `failed` is set by the `run_mapping` failure hook. |
 | `document_ids` | uuid[] NOT NULL | source documents in scope (snapshot at run start) |
 | `results` | jsonb NOT NULL DEFAULT `'{}'` | `{ "<field_id>": FieldMappingResult }` |
-| `summary` | jsonb NOT NULL DEFAULT `'{}'` | `{"populated": n, "partial": n, "missing": n, "conflict": n, "warnings": [{"field_id": "…", "code": "max_chars_exceeded"}]}` |
+| `summary` | jsonb NOT NULL DEFAULT `'{}'` | `{"populated": n, "partial": n, "missing": n, "conflict": n, "warnings": [{"field_id": "…", "code": "max_chars_exceeded"}]}`; warning `code` is `max_chars_exceeded` \| `formula_cell` \| `table_overflow` |
 | `edits` | jsonb NULL | the edit ops applied, for `trigger = 'edit'` |
 | `created_at`, `finished_at` | timestamptz | `finished_at` nullable; set at `completed` or `failed` |
 

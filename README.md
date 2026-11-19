@@ -4,7 +4,7 @@ A local-first, domain-agnostic RAG platform. You chat in **Open WebUI**: upload 
 
 > The repo name reflects the first use case (crisis-management slide decks). Nothing in the platform is domain-specific.
 
-**Status:** Phase 1 complete (foundation, infrastructure, database). See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
+**Status:** Phases 1-7 complete (foundation, ingestion, embeddings + Qdrant, grounded Q&A, template intelligence, evidence mapping, surgical PPTX/DOCX/XLSX writers with signed downloads); next is Phase 8 (Open WebUI Pipe). See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
 
 ## How it works
 
@@ -32,7 +32,7 @@ Open WebUI chat ──Pipe Function──▶ FastAPI (native, MPS) ──▶ Pos
 - Start Ollama with `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_KEEP_ALIVE=10m`.
 - Full budget table: [docs/architecture.md § 6](docs/architecture.md#6-memory-budget-24-gb-unified-memory).
 
-## Quick start (Phase 1)
+## Quick start
 
 ```bash
 cp .env.example .env          # set POSTGRES_PASSWORD (also in DATABASE_URL), PIPE_SHARED_SECRET, SIGNING_SECRET

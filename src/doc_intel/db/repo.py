@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_intel.core.errors import Conflict, NotFound
 from doc_intel.db.models import (
+    Artifact,
     Document,
     Job,
     MappingRun,
@@ -383,3 +384,63 @@ async def update_mapping_run(
     )
     if result.rowcount == 0:
         raise NotFound()
+
+
+async def create_artifact(
+    session: AsyncSession,
+    ctx: TenantContext,
+    *,
+    artifact_id: uuid.UUID,
+    mapping_run_id: uuid.UUID,
+    format: str,
+    filename: str,
+    storage_key: str,
+    sha256: str,
+    size_bytes: int,
+) -> Artifact:
+    artifact = Artifact(
+        id=artifact_id,
+        user_id=ctx.user_id,
+        project_id=ctx.project_id,
+        mapping_run_id=mapping_run_id,
+        format=format,
+        filename=filename,
+        storage_key=storage_key,
+        sha256=sha256,
+        size_bytes=size_bytes,
+    )
+    session.add(artifact)
+    await session.flush()
+    await session.refresh(artifact)
+    return artifact
+
+
+async def get_artifact_by_run(
+    session: AsyncSession, ctx: TenantContext, run_id: uuid.UUID
+) -> Artifact | None:
+    return await session.scalar(
+        select(Artifact).where(
+            Artifact.user_id == ctx.user_id,
+            Artifact.project_id == ctx.project_id,
+            Artifact.mapping_run_id == run_id,
+        )
+    )
+
+
+async def list_artifacts(session: AsyncSession, ctx: TenantContext, limit: int) -> list[Artifact]:
+    rows = await session.scalars(
+        select(Artifact)
+        .where(Artifact.user_id == ctx.user_id, Artifact.project_id == ctx.project_id)
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        .limit(limit)
+    )
+    return list(rows)
+
+
+async def get_artifact_for_download(session: AsyncSession, artifact_id: uuid.UUID) -> Artifact:
+    """The one unscoped lookup (data-model.md tenancy exception 1): the caller must verify the
+    HMAC against the returned row's `user_id` before returning anything from it."""
+    artifact = await session.get(Artifact, artifact_id)
+    if artifact is None:
+        raise NotFound()
+    return artifact

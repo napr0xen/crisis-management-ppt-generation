@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     pipe_shared_secret: SecretStr = Field(min_length=32)
     signing_secret: SecretStr = Field(min_length=32)
     signed_url_ttl_s: int = 900
+    public_base_url: str = "http://127.0.0.1:8000"  # prefix for artifact download_url
+    missing_marker: str = "[MISSING: {label}]"  # written for missing fields (FR-12)
+    conflict_marker: str = "[CONFLICT: See Chat Summary]"
     log_level: str = "INFO"
     max_upload_mb: int = 100
     chunk_max_tokens: int = 512

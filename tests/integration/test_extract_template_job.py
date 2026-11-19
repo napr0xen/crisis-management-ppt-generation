@@ -187,3 +187,14 @@ async def test_corrupt_file_fails_with_parse_error(client, session, migrated_db,
     assert (doc.role, doc.status) == ("template", "indexed")
     count = await session.scalar(select(func.count()).where(Template.user_id == user_a))
     assert count == 0
+
+
+async def test_deleted_document_fails_after_one_attempt(
+    client, session, migrated_db, user_a, project
+):
+    doc_id, job_id = await queue_job(client, session, user_a, project, "pptx")
+    await session.execute(delete(Document).where(Document.id == uuid.UUID(doc_id)))
+    await session.commit()
+    await run_jobs(migrated_db, FakeLLM(draft_reply("pptx")))
+    job = await job_of(session, job_id)
+    assert (job.status, job.attempts, job.error_code) == ("failed", 1, "not_found")

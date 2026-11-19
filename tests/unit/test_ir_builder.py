@@ -124,6 +124,39 @@ def test_replace_token_needs_tokens_and_matching_token():
     assert _errors(_field("a", "tok", "replace_token"))
 
 
+def test_anchor_with_tokens_must_use_replace_token():
+    errors = _errors(_field("x", "tok", "replace_text"))
+    assert errors == [
+        "field 'x': anchor 'tok' has tokens; use replace_token so the text around the token "
+        "is kept."
+    ]
+    assert not _errors(_field("x", "tok", "replace_token", token="{{name}}"))
+
+
+def test_fill_cell_on_a_cell_with_tokens_must_use_replace_token():
+    table = TableRef(row=1, col=1, header="H")
+    owner = _anchor("o", "table_cell", tokens=["[name]"], table=table, text="Owner: [name]")
+    bare = _anchor("b", "table_cell", tokens=["[name]"], table=table, text="[name]")
+    sheet = _anchor("s", "sheet_cell", tokens=["[name]"], text="Owner: [name]")
+    amap = AnchorMap(format="docx", anchors=[owner, bare, sheet])
+    (err,) = validate(IRDraft(fields=[_field("x", "o", "fill_cell")]), amap)
+    assert "has tokens; use replace_token" in err
+    assert validate(IRDraft(fields=[_field("y", "b", "fill_cell")]), amap) == []
+    assert validate(IRDraft(fields=[_field("z", "s", "fill_cell")]), amap) == []
+
+
+def test_replace_text_is_fine_when_the_text_is_exactly_one_token():
+    amap = AnchorMap(format="docx", anchors=[_anchor("t", tokens=["{{a}}"], text=" {{a}} ")])
+    draft = IRDraft(fields=[_field("x", "t", "replace_text")])
+    assert validate(draft, amap) == []
+
+
+def test_fill_table_rows_ignores_the_token_rule():
+    cell = _anchor("c", "table_cell", tokens=["{{a}}"], table=TableRef(row=1, col=0, header="H"))
+    amap = AnchorMap(format="docx", anchors=[cell])
+    assert validate(IRDraft(fields=[_field("x", "c", "fill_table_rows")]), amap) == []
+
+
 @pytest.mark.parametrize(("anchor_id", "ok"), [("r1c0", True), ("r2c0", False), ("r1c1", False)])
 def test_fill_table_rows_needs_first_body_cell(anchor_id, ok):
     assert (_errors(_field("a", anchor_id, "fill_table_rows")) == []) is ok
@@ -144,7 +177,7 @@ TID = uuid.uuid4()
 
 async def test_build_ir_happy_path():
     long_amap = AnchorMap(format="pptx", anchors=[_anchor("a1", text="y" * 500, tokens=["{{t}}"])])
-    llm = FakeLLM(_reply(_field("a", "a1")))
+    llm = FakeLLM(_reply(_field("a", "a1", "replace_token", token="{{t}}")))
     ir = await build_ir(llm, long_amap, TID)
     assert (ir.template_id, ir.version, ir.format) == (TID, 1, "pptx")
     assert [f.field_id for f in ir.fields] == ["a"]

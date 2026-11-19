@@ -247,7 +247,7 @@ Body: `{"document_id": "uuid"}`.
 
 Body: `{"template_ir_id": "uuid", "document_ids": null}`.
 - `document_ids`: `null` = every `role='source'`, `status='indexed'` document; otherwise 1 to 200 ids, duplicates collapsed.
-- Inserts `mapping_runs` (`trigger='initial'`, `version = max(version for this template_ir_id) + 1`, i.e. 1 for the first run) and enqueues `run_mapping` (Phase 6: stops at `verifying`; Phase 7 renders the artifact).
+- Inserts `mapping_runs` (`trigger='initial'`, `version = max(version for this template_ir_id) + 1`, i.e. 1 for the first run) and enqueues `run_mapping` (maps, verifies and renders the artifact).
 - Returns `202` with `{"mapping_run_id": "uuid", "job_id": "uuid"}`.
 - Errors: `404` `template_ir_id` or any `document_id` not in the project; `422` `document_ids: []`, more than 200 ids, a document that is not an indexed source, or no indexed sources; `409` the version could not be allocated after one retry.
 
@@ -295,14 +295,16 @@ Any violation → `422` and nothing is applied.
 
 ### `GET /v1/projects/{project_id}/artifacts`
 
-Returns `{"items": [Artifact]}`; each `download_url` is freshly signed.
+Returns `{"items": [Artifact]}`; each `download_url` is freshly signed. Ties on `created_at` are ordered by `id` desc. `download_url` = `{PUBLIC_BASE_URL without trailing slash}/v1/artifacts/{id}/download?exp=&sig=`.
 
 ### `GET /v1/artifacts/{artifact_id}/download?exp={unix}&sig={hex}`
 
 No bearer auth: the signature is the credential.
 - `sig = HMAC_SHA256(SIGNING_SECRET, f"{artifact_id}|{user_id}|{exp}")`, where `user_id` is the artifact's owner from the DB.
-- Bad or missing `sig` → `403 signature_invalid`.
-- `exp` in the past → `410 link_expired`.
-- Unknown `artifact_id` → `404`.
+- Check order:
+  1. unknown `artifact_id`, or its file missing/unreadable → `404`;
+  2. bad or missing `sig` → `403 signature_invalid`;
+  3. `exp` in the past → `410 link_expired`.
+- A non-integer `exp` → `422`.
 
-`200` streams the file with `Content-Disposition: attachment; filename="<artifacts.filename>"` and the correct OOXML `Content-Type`.
+`200` streams the file with `Content-Disposition: attachment; filename="<artifacts.filename>"` and the correct OOXML `Content-Type`. Response headers also include `X-Content-Type-Options: nosniff` and `Cache-Control: private, no-store`; `filename` is ASCII `[A-Za-z0-9._-]` (see [system-design.md § 8](system-design.md#8-surgical-writers-stage-4)).

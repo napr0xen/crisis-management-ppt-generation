@@ -2,9 +2,10 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from doc_intel.api.v1.artifacts import ArtifactOut, artifact_out
 from doc_intel.core.errors import NotFound, ValidationFailed
 from doc_intel.core.tenancy import Tenant, TenantContext
 from doc_intel.db import repo
@@ -38,7 +39,7 @@ class MappingRunOut(BaseModel):
     document_ids: list[uuid.UUID]
     summary: dict[str, Any]
     results: dict[str, FieldMappingResult]
-    artifact: dict[str, Any] | None = None  # Phase 7 fills it
+    artifact: ArtifactOut | None = None
     created_at: datetime
     finished_at: datetime | None
 
@@ -70,5 +71,11 @@ async def create_mapping_run(body: MappingRunIn, ctx: Tenant, session: Session) 
 
 
 @router.get("/{run_id}")
-async def get_mapping_run(run_id: uuid.UUID, ctx: Tenant, session: Session) -> MappingRunOut:
-    return MappingRunOut.model_validate(await repo.get_mapping_run(session, ctx, run_id))
+async def get_mapping_run(
+    run_id: uuid.UUID, ctx: Tenant, session: Session, request: Request
+) -> MappingRunOut:
+    out = MappingRunOut.model_validate(await repo.get_mapping_run(session, ctx, run_id))
+    artifact = await repo.get_artifact_by_run(session, ctx, run_id)
+    if artifact is not None:
+        out.artifact = artifact_out(artifact, request.app.state.settings)
+    return out

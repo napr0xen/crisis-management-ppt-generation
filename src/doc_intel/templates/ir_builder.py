@@ -60,6 +60,16 @@ def validate(draft: IRDraft, amap: AnchorMap) -> list[str]:
                 f"field '{f.field_id}': write_mode '{f.write_mode}' is not allowed "
                 f"for anchor kind '{anchor.kind}'."
             )
+        elif (
+            f.write_mode in ("replace_text", "fill_cell")
+            and anchor.kind != "sheet_cell"
+            and anchor.tokens
+            and anchor.text.strip() not in anchor.tokens
+        ):
+            errors.append(
+                f"field '{f.field_id}': anchor '{anchor.anchor_id}' has tokens; use "
+                "replace_token so the text around the token is kept."
+            )
         elif f.write_mode == "replace_token" and f.constraints.token not in anchor.tokens:
             errors.append(
                 f"field '{f.field_id}': replace_token needs constraints.token to be one "

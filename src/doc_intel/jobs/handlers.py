@@ -1,24 +1,29 @@
 """Job handlers by `jobs.kind`. Each is idempotent: a retry may find a crashed attempt's output."""
 
 import asyncio
+import hashlib
+import re
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy import func
 
+from doc_intel import writers
 from doc_intel.core.config import Settings
-from doc_intel.core.errors import NotFound
+from doc_intel.core.errors import Conflict, NotFound
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.db import repo
 from doc_intel.db.models import Job
 from doc_intel.embeddings.schemas import Embedder
 from doc_intel.ingestion.pipeline import parse_and_chunk
-from doc_intel.ingestion.upload import parsed_key
+from doc_intel.ingestion.upload import artifact_key, parsed_key
 from doc_intel.jobs.worker import Handler, OnFailed, Sessionmaker, set_progress
 from doc_intel.llm.gateway import LLMClient
 from doc_intel.mapping.engine import map_field, summarize
 from doc_intel.mapping.retriever import Retriever
+from doc_intel.mapping.schemas import FieldMappingResult
 from doc_intel.storage.base import StorageBackend
 from doc_intel.templates.anchors import build_anchor_map
 from doc_intel.templates.ir_builder import build_ir
@@ -33,6 +38,21 @@ log = structlog.get_logger()
 INDEX_BATCH = 256
 
 _ACTIVE_RUN = ("queued", "retrieving", "extracting")  # statuses a run_mapping job may still change
+_RENDERABLE = ("verifying", "rendering")
+_OPEN_RUN = (*_ACTIVE_RUN, *_RENDERABLE)  # not yet completed or failed
+# Fixed namespace: a retry derives the same artifact id (and key); run ids are random, so the
+# ids stay unguessable.
+_ARTIFACT_NS = uuid.UUID("5d0f2a52-3c1e-4c55-9a0e-7b1c6f3d8e21")
+
+
+class NotRenderable(Conflict):
+    retry = False  # the run's state will not change by retrying
+
+
+def _artifact_stem(name: str) -> str:
+    # shortcut: non-ASCII names become "_"; add RFC 5987 filename* when users need them.
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", Path(name).stem)[:100].lstrip("._")
+    return stem or "artifact"
 
 
 def make_handlers(
@@ -151,13 +171,85 @@ def make_handlers(
             )
         return {"template_id": str(template_id), "template_ir_id": str(row.id), "ir_version": 1}
 
-    async def run_mapping(job: Job, ctx: TenantContext) -> dict[str, Any]:
-        run_id = uuid.UUID(job.payload["mapping_run_id"])
-        result = {"mapping_run_id": str(run_id), "artifact_id": None}
+    async def render(ctx: TenantContext, run_id: uuid.UUID) -> uuid.UUID | None:
         async with sessionmaker.begin() as session:
             run = await repo.get_mapping_run(session, ctx, run_id)
-            if run.status not in _ACTIVE_RUN:  # retry after the final commit
-                return result
+            if run.status == "completed":  # a retry after the final commit
+                artifact = await repo.get_artifact_by_run(session, ctx, run_id)
+                return artifact.id if artifact else None
+            if run.status not in _RENDERABLE:
+                raise NotRenderable("The mapping run is not ready to render.")
+            ir_row = await repo.get_template_ir_by_id(session, ctx, run.template_ir_id)
+            template = await repo.get_template(session, ctx, ir_row.template_id)
+            doc = await repo.get_document(session, ctx, template.document_id)
+            await repo.update_mapping_run(session, ctx, run_id, status="rendering")
+            fields = TemplateIR.model_validate(ir_row.ir).fields
+            results = {k: FieldMappingResult.model_validate(v) for k, v in run.results.items()}
+            summary, version = dict(run.summary), run.version
+        fmt = template.format
+        template_bytes = await asyncio.to_thread(read, doc.storage_key)
+        try:
+            data, warnings = await asyncio.to_thread(
+                writers.render,
+                fmt,
+                template_bytes,
+                fields,
+                results,
+                missing_marker=settings.missing_marker,
+                conflict_marker=settings.conflict_marker,
+            )
+        except (KeyError, TypeError, ValueError):  # same template + results fail the same way
+            raise NotRenderable("The template could not be rendered.") from None
+        artifact_id = uuid.uuid5(_ARTIFACT_NS, str(run_id))
+        key = artifact_key(ctx, artifact_id, fmt)
+        try:
+            await asyncio.to_thread(storage.put_bytes, key, data)
+        except FileExistsError:  # an earlier attempt crashed after writing: its bytes win
+            data = await asyncio.to_thread(read, key)
+        summary["warnings"] = [*summary.get("warnings", []), *(w.model_dump() for w in warnings)]
+        # shortcut: a tx2 that fails on every retry leaves the written artifact file unreferenced
+        # (run is failed), add a cleanup sweep if storage grows.
+        try:
+            async with sessionmaker.begin() as session:
+                await repo.update_mapping_run(
+                    session,
+                    ctx,
+                    run_id,
+                    status="completed",
+                    finished_at=func.now(),
+                    summary=summary,
+                )
+                await repo.create_artifact(
+                    session,
+                    ctx,
+                    artifact_id=artifact_id,
+                    mapping_run_id=run_id,
+                    format=fmt,
+                    filename=f"{_artifact_stem(doc.filename)}_v{version}.{fmt}",
+                    storage_key=key,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    size_bytes=len(data),
+                )
+        except NotFound:  # project deleted meanwhile (cascade): nothing to retry (ADR-010)
+            await asyncio.to_thread(storage.delete, key)
+            return None
+        log.info(
+            "artifact_rendered",
+            mapping_run_id=str(run_id),
+            artifact_id=str(artifact_id),
+            format=fmt,
+            size_bytes=len(data),
+            warnings=len(warnings),
+        )
+        return artifact_id
+
+    async def render_artifact(job: Job, ctx: TenantContext) -> dict[str, Any]:
+        artifact_id = await render(ctx, uuid.UUID(job.payload["mapping_run_id"]))
+        return {"artifact_id": str(artifact_id) if artifact_id else None}
+
+    async def map_run(job: Job, ctx: TenantContext, run_id: uuid.UUID) -> None:
+        async with sessionmaker.begin() as session:
+            run = await repo.get_mapping_run(session, ctx, run_id)
             ir = TemplateIR.model_validate(
                 (await repo.get_template_ir_by_id(session, ctx, run.template_ir_id)).ir
             )
@@ -190,12 +282,26 @@ def make_handlers(
             missing=summary.missing,
             conflict=summary.conflict,
         )
-        return result
+
+    async def run_mapping(job: Job, ctx: TenantContext) -> dict[str, Any]:
+        run_id = uuid.UUID(job.payload["mapping_run_id"])
+        async with sessionmaker() as session:
+            status = (await repo.get_mapping_run(session, ctx, run_id)).status
+        if status == "failed":
+            return {"mapping_run_id": str(run_id), "artifact_id": None}
+        if status in _ACTIVE_RUN:  # else a retry after the mapping commit: only render
+            await map_run(job, ctx, run_id)
+        artifact_id = await render(ctx, run_id)
+        return {
+            "mapping_run_id": str(run_id),
+            "artifact_id": str(artifact_id) if artifact_id else None,
+        }
 
     return {
         "ingest_document": ingest_document,
         "extract_template": extract_template,
         "run_mapping": run_mapping,
+        "render_artifact": render_artifact,
     }
 
 
@@ -213,16 +319,24 @@ def make_failure_hooks(sessionmaker: Sessionmaker) -> dict[str, OnFailed]:
             except NotFound:
                 pass  # deleted meanwhile: nothing to mark
 
-    async def mapping_failed(job: Job, ctx: TenantContext, code: str) -> None:
-        async with sessionmaker.begin() as session:
-            run_id = uuid.UUID(job.payload["mapping_run_id"])
-            try:
-                run = await repo.get_mapping_run(session, ctx, run_id)
-                if run.status in _ACTIVE_RUN:  # a committed verifying/completed run stays
-                    await repo.update_mapping_run(
-                        session, ctx, run_id, status="failed", finished_at=func.now()
-                    )
-            except NotFound:
-                pass  # hooks also run at startup recovery: never raise
+    def run_failed(open_statuses: tuple[str, ...]) -> OnFailed:
+        async def hook(job: Job, ctx: TenantContext, code: str) -> None:
+            async with sessionmaker.begin() as session:
+                run_id = uuid.UUID(job.payload["mapping_run_id"])
+                try:
+                    run = await repo.get_mapping_run(session, ctx, run_id)
+                    if run.status in open_statuses:  # a completed run stays
+                        await repo.update_mapping_run(
+                            session, ctx, run_id, status="failed", finished_at=func.now()
+                        )
+                except NotFound:
+                    pass  # hooks also run at startup recovery: never raise
 
-    return {"ingest_document": ingest_failed, "run_mapping": mapping_failed}
+        return hook
+
+    return {
+        "ingest_document": ingest_failed,
+        "run_mapping": run_failed(_OPEN_RUN),
+        # a render job failing on a still-mapping run must not kill that run
+        "render_artifact": run_failed(_RENDERABLE),
+    }

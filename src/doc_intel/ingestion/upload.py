@@ -82,3 +82,7 @@ def upload_key(ctx: TenantContext, document_id: uuid.UUID, ext: str) -> str:
 
 def parsed_key(ctx: TenantContext, document_id: uuid.UUID) -> str:
     return f"{_project_prefix(ctx)}/parsed/{document_id}.json"
+
+
+def artifact_key(ctx: TenantContext, artifact_id: uuid.UUID, ext: str) -> str:
+    return f"{_project_prefix(ctx)}/artifacts/{artifact_id}.{ext}"

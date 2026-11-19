@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls, qn
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.util import Inches
@@ -64,6 +66,52 @@ def test_docx_duplicate_sdt_tag_keeps_first():
         a for a in build_anchor_map("docx", _bytes(doc)).anchors if a.kind == "content_control"
     ]
     assert [(a.anchor_id, a.text) for a in anchors] == [("docx:sdt:dup", "first")]
+
+
+def test_docx_sdt_around_table_or_row_is_not_an_anchor():
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    row = doc.add_table(rows=2, cols=1)
+    for tag, target in (("roster", table._tbl), ("rowctl", row._tbl.tr_lst[1])):
+        sdt = parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtPr><w:tag w:val="{tag}"/></w:sdtPr>'
+            "<w:sdtContent/></w:sdt>"
+        )
+        target.addprevious(sdt)
+        sdt.find(qn("w:sdtContent")).append(target)
+    doc.element.body.sectPr.addprevious(_sdt("block", "kept"))
+    doc.add_paragraph("x")
+    inline = parse_xml(
+        f'<w:sdt {nsdecls("w")}><w:sdtPr><w:tag w:val="inline"/></w:sdtPr>'
+        "<w:sdtContent><w:r><w:t>v</w:t></w:r></w:sdtContent></w:sdt>"
+    )
+    doc.paragraphs[-1]._p.append(inline)
+    ids = [a.anchor_id for a in build_anchor_map("docx", _bytes(doc)).anchors]
+    assert [i for i in ids if i.startswith("docx:sdt:")] == ["docx:sdt:block", "docx:sdt:inline"]
+
+
+def _row_sdt_doc() -> bytes:
+    doc = Document()
+    only_sdt = doc.add_table(rows=1, cols=1)  # python-docx sees no rows at all
+    half = doc.add_table(rows=2, cols=1)  # header visible, body row hidden
+    half.cell(0, 0).text = "H"
+    later = doc.add_table(rows=2, cols=1)
+    later.cell(1, 0).text = "later"
+    for tbl, tr in ((only_sdt._tbl, 0), (half._tbl, 1)):
+        row = tbl.tr_lst[tr]
+        sdt = parse_xml(f"<w:sdt {nsdecls('w')}><w:sdtContent/></w:sdt>")
+        row.addprevious(sdt)
+        sdt.find(qn("w:sdtContent")).append(row)
+    return _bytes(doc)
+
+
+def test_docx_row_level_sdt_does_not_fail_the_template():
+    ids = [a.anchor_id for a in build_anchor_map("docx", _row_sdt_doc()).anchors]
+    assert [i for i in ids if i.startswith("docx:body:t")] == [
+        "docx:body:t1:r0c0",
+        "docx:body:t2:r0c0",
+        "docx:body:t2:r1c0",
+    ]
 
 
 @pytest.mark.parametrize(

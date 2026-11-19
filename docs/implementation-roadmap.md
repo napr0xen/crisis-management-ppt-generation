@@ -26,7 +26,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 4 | LLM gateway & grounded Q&A | **Complete** |
 | 5 | Template intelligence (Anchor Map + IR) | **Complete** |
 | 6 | Mapping engine | **Complete** |
-| 7 | Surgical writers & artifacts | pending |
+| 7 | Surgical writers & artifacts | **Complete** |
 | 8 | Open WebUI Pipe & chat orchestration | pending |
 | 9 | Conversational edits & run versioning | pending |
 | 10 | Hardening, evaluation & audit | pending |
@@ -166,6 +166,19 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 - **Exit:**
   - Fidelity tests per format: untouched parts C14N-equal (XLSX: byte-equal zip entries); written runs keep `rPr`/`s` style; markers written for missing/conflict; formula cells untouched; output opens in python-pptx/python-docx/openpyxl;
   - signed URL tests (tamper → 403, expired → 410, unknown `artifact_id` → 404); `GET …/artifacts` on another user's project → 404.
+- **Status:** Complete (2026-11-19). Gate: `uv run ruff check .` and `uv run ruff format --check .` clean; `uv run alembic check` clean; `uv run pytest` 861 passed (Phases 1-7).
+  - Live smoke: qwen3:14b rendered pptx/docx/xlsx and downloaded them via signed URLs.
+- **Known limits:**
+  - no row/slide/sheet-row insertion (`table_overflow` warning);
+  - dates ISO for text targets (`date_format` ignored) and 1900 date system for xlsx;
+  - non-ASCII download names become `_`;
+  - `max_items` not enforced;
+  - an artifact file can be left unreferenced if the final commit fails on every retry;
+  - xlsx IR can propose fields on empty cells next to labels that are themselves labels (Phase 5 neighbour heuristic, seen in the live smoke);
+  - content controls around tables, rows or cells are not fields (rows inside a row-level control are not anchored).
+- **Phase 5 change** (cause: Phase 7 live smoke lost template labels): the IR validator requires `replace_token` on anchors with tokens for both `replace_text` and `fill_cell` (unless the anchor text is exactly one token).
+- **Phase 5 change** (cause: Phase 7 audit, writing such a control deleted the table and produced an unreadable file): docx extractor skips content controls around tables/rows/cells and tables whose rows all sit in a row-level control.
+- `NotFound` is not retried by jobs (cause: audit; a deleted row never comes back).
 
 ## Phase 8: Open WebUI Pipe & chat orchestration
 

@@ -59,6 +59,9 @@ def _body(doc: DocumentObject) -> list[Anchor]:
             prev_heading = False
             # shortcut: nested tables are not anchored, upgrade when templates need them.
             table = Table(child, doc)
+            if not table.rows:  # every row hides in a row-level sdt; keep t_idx aligned
+                t_idx += 1
+                continue
             path = [*(trail[k] for k in sorted(trail)), f"Table {t_idx}"]
             headers = [c.text.strip() or None for c in table.rows[0].cells]
             seen = set()  # table-wide: a vertical merge repeats its cell in every spanned row
@@ -106,6 +109,14 @@ def _content_controls(doc: DocumentObject) -> list[Anchor]:
         if tag is None or not tag.get(qn("w:val")):
             continue
         content = sdt.find(qn("w:sdtContent"))
+        # shortcut: content controls around tables, rows or cells are not fields (rows inside a
+        # row-level control are not anchored either), upgrade when templates need them.
+        if (
+            content is not None
+            and content.find(qn("w:p")) is None
+            and content.find(qn("w:r")) is None
+        ):
+            continue
         text = "".join(t.text or "" for t in content.iter(qn("w:t"))) if content is not None else ""
         anchors.append(_anchor(f"docx:sdt:{tag.get(qn('w:val'))}", "content_control", [], text))
     return anchors

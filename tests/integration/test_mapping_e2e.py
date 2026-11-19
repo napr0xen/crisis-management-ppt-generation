@@ -131,8 +131,9 @@ async def test_mapping_run_populates_misses_and_conflicts(
     body = client.get(
         f"/v1/projects/{project}/mapping-runs/{run_id}", headers=headers(user_a)
     ).json()
-    assert body["status"] == "verifying"
-    assert body["artifact"] is None
+    assert body["status"] == "completed"  # Phase 7 renders the artifact after verifying
+    assert body["artifact"]["mapping_run_id"] == run_id
+    assert body["finished_at"] is not None
     assert body["summary"] == {
         "populated": 1,
         "partial": 0,

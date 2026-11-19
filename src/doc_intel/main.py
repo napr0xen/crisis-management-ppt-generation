@@ -7,7 +7,16 @@ import structlog
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from doc_intel.api.v1 import documents, health, jobs, mapping_runs, projects, query, templates
+from doc_intel.api.v1 import (
+    artifacts,
+    documents,
+    health,
+    jobs,
+    mapping_runs,
+    projects,
+    query,
+    templates,
+)
 from doc_intel.core.config import Settings, get_settings
 from doc_intel.core.errors import AppError, error_response, install_error_handlers
 from doc_intel.core.logging import configure_logging
@@ -135,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(query.router, prefix="/v1")
     app.include_router(templates.router, prefix="/v1")
     app.include_router(mapping_runs.router, prefix="/v1")
+    app.include_router(artifacts.router, prefix="/v1")
     return app
 
 

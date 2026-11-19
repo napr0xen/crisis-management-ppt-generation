@@ -10,7 +10,7 @@ from doc_intel.core.config import Settings
 from doc_intel.main import create_app
 from tests.conftest import AUTH, PIPE_SECRET
 
-PUBLIC = {"/v1/health"}
+PUBLIC = {"/v1/health", "/v1/artifacts/{artifact_id}/download"}
 # Auth is checked before any DB access, so no services are needed.
 SETTINGS = Settings(_env_file=None, database_url="postgresql+asyncpg://x:x@127.0.0.1:1/x")
 
