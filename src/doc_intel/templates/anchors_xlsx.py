@@ -8,6 +8,7 @@ from openpyxl.worksheet.formula import ArrayFormula
 from doc_intel.templates.anchors import find_tokens, too_many_anchors
 from doc_intel.templates.schemas import MAX_ANCHORS, Anchor
 
+_MAX_COL, _MAX_ROW = 16384, 1048576  # Excel grid limits (XFD, 1048576)
 _SCAN = 100  # shortcut: path context looks at most 100 cells left/up, upgrade if labels sit farther
 
 
@@ -48,6 +49,8 @@ def _candidates(ws) -> set[tuple[int, int]]:
             chosen.add((r, c))
         elif _is_string(cell):  # a label: its right and below neighbours, when empty
             for pos in ((r, c + 1), (r + 1, c)):
+                if pos[1] > _MAX_COL or pos[0] > _MAX_ROW:
+                    continue
                 nb = cells.get(pos)
                 if nb is None or (
                     not isinstance(nb, MergedCell) and not _is_formula(nb) and _text(nb) == ""

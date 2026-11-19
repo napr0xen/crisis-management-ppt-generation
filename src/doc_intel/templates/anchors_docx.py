@@ -67,7 +67,7 @@ def _body(doc: DocumentObject) -> list[Anchor]:
                     if cell._tc in seen:  # merged cells repeat; keep the first grid position
                         continue
                     seen.add(cell._tc)  # the element, not id(): proxies' ids get reused
-                    ref = TableRef(row=r, col=c, header=headers[c])
+                    ref = TableRef(row=r, col=c, header=headers[c] if c < len(headers) else None)
                     anchors.append(
                         _anchor(f"docx:body:t{t_idx}:r{r}c{c}", "table_cell", path, cell.text, ref)
                     )

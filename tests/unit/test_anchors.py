@@ -181,3 +181,35 @@ def test_extractor_failure_is_logged_with_type_only(monkeypatch):
             "log_level": "warning",
         }
     ]
+
+
+def test_docx_short_header_row_does_not_crash():
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "A"
+    table.cell(0, 1).text = "B"
+    tr = table.rows[0]._tr
+    tr.remove(tr.tc_lst[-1])
+    grid_after = OxmlElement("w:gridAfter")
+    grid_after.set(qn("w:val"), "1")
+    tr.get_or_add_trPr().append(grid_after)
+    by_id = {a.anchor_id: a for a in build_anchor_map("docx", _bytes(doc)).anchors}
+    assert by_id["docx:body:t0:r1c2"].table.header is None
+    assert by_id["docx:body:t0:r1c0"].table.header == "A"
+    assert by_id["docx:body:t0:r1c1"].table.header == "B"
+
+
+@pytest.mark.parametrize(
+    ("label_cell", "off_grid", "on_grid"),
+    [("XFD1", "XFE1", "XFD2"), ("A1048576", "A1048577", "B1048576")],
+)
+def test_xlsx_neighbours_stay_inside_the_grid(label_cell, off_grid, on_grid):
+    wb = Workbook()
+    wb.active.title = "S"
+    wb.active[label_cell] = "Label"
+    ids = {a.anchor_id for a in build_anchor_map("xlsx", _bytes(wb)).anchors}
+    assert f"xlsx:S!{off_grid}" not in ids
+    assert f"xlsx:S!{on_grid}" in ids

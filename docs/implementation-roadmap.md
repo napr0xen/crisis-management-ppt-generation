@@ -24,7 +24,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 2 | Ingestion, storage & Open WebUI integration check | **Complete** |
 | 3 | Embeddings & vector store | **Complete** |
 | 4 | LLM gateway & grounded Q&A | **Complete** |
-| 5 | Template intelligence (Anchor Map + IR) | pending |
+| 5 | Template intelligence (Anchor Map + IR) | **Complete** |
 | 6 | Mapping engine | pending |
 | 7 | Surgical writers & artifacts | pending |
 | 8 | Open WebUI Pipe & chat orchestration | pending |
@@ -124,6 +124,16 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - validator rejects unknown/duplicate anchors and invalid `write_mode`;
   - an IR built for each fixture passes the validator.
 - **Checkpoints:** `/ponytail-audit` (whole repo).
+- **Status:** Complete (2026-11-19). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 117 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 535 passed (Phases 1-5).
+  - Live smoke: qwen3:14b built a valid TemplateIR for the pptx/docx/xlsx fixtures (19-60 s per template).
+  - Known limits:
+    - IR prompt holds the whole AnchorMap (MAX_ANCHORS=400; large templates may not fit LLM_NUM_CTX=8192);
+    - a failed `extract_template` leaves the document `role=template` with points purged (recover by POSTing again);
+    - docx skips nested tables, first-page/even headers, and content controls in headers/footers;
+    - duplicate content-control tags keep the first;
+    - xlsx path context scans at most 100 cells;
+    - template packages capped at 5000 parts, 32 MB per part, 128 MB total;
+    - `/ponytail-audit` deferred to after Phase 7 by user decision.
 
 ## Phase 6: Mapping engine (Stage 3)
 
