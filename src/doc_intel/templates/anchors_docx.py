@@ -58,12 +58,12 @@ def _body(doc) -> list[Anchor]:
             table = Table(child, doc)
             path = [*(trail[k] for k in sorted(trail)), f"Table {t_idx}"]
             headers = [c.text.strip() or None for c in table.rows[0].cells]
+            seen = set()  # table-wide: a vertical merge repeats its cell in every spanned row
             for r, row in enumerate(table.rows):
-                seen = set()
                 for c, cell in enumerate(row.cells):
-                    if id(cell._tc) in seen:  # merged cells repeat; keep the first grid position
+                    if cell._tc in seen:  # merged cells repeat; keep the first grid position
                         continue
-                    seen.add(id(cell._tc))
+                    seen.add(cell._tc)  # the element, not id(): proxies' ids get reused
                     ref = TableRef(row=r, col=c, header=headers[c])
                     anchors.append(
                         _anchor(f"docx:body:t{t_idx}:r{r}c{c}", "table_cell", path, cell.text, ref)
@@ -95,6 +95,9 @@ def _headers_footers(doc) -> list[Anchor]:
 def _content_controls(doc) -> list[Anchor]:
     anchors: list[Anchor] = []
     # An inline sdt overlaps its paragraph's anchor; Phase 7 writers must handle that.
+    # shortcut: content controls in headers/footers are not scanned, and paragraphs inside a
+    # block-level w:sdt appear only as that content_control anchor, upgrade when templates
+    # need them.
     for sdt in doc.element.body.iter(qn("w:sdt")):
         tag = sdt.find(f"{qn('w:sdtPr')}/{qn('w:tag')}")
         if tag is None or not tag.get(qn("w:val")):

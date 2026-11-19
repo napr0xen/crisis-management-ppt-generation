@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import structlog
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,6 +21,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PIPE_SECRET = "test-pipe-secret-0123456789abcdef"
 os.environ.setdefault("PIPE_SHARED_SECRET", PIPE_SECRET)
 os.environ.setdefault("SIGNING_SECRET", "test-signing-secret-0123456789abcdef")
+
+
+@pytest.fixture(autouse=True)
+def _reset_structlog():
+    yield
+    # create_app/configure_logging bind the test's captured stdout, closed once the test ends.
+    structlog.reset_defaults()
 
 
 def _dev_env() -> dict[str, str]:

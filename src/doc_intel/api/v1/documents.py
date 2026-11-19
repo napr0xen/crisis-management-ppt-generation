@@ -52,7 +52,7 @@ async def upload_document(
     upload = await asyncio.to_thread(validate_upload, file.filename, data, max_bytes)
 
     existing = await repo.find_document_by_sha256(session, ctx, upload.sha256)
-    if existing is not None and existing.status == "failed":
+    if existing is not None and existing.status == "failed" and existing.role == "source":
         # Same bytes after a failure (e.g. a model download that failed offline): retry ingestion.
         await repo.update_document(
             session,

@@ -271,3 +271,16 @@ async def test_file_io_runs_off_the_event_loop(sm, ctx, upload):
     assert {op for op, _ in storage.ops} == {"open_read", "put_bytes", "delete"}
     loop_thread = threading.get_ident()
     assert all(tid != loop_thread for _, tid in storage.ops)
+
+
+async def test_template_document_is_never_indexed(sm, ctx, upload):
+    document_id, job_id = upload
+    async with sm.begin() as s:
+        await repo.update_document(s, ctx, document_id, role="template")
+    store, embedder = FakeVectorStore(), FakeEmbedder()
+    await _process(sm, store, embedder)
+
+    doc, job = await _doc_and_job(sm, ctx, document_id, job_id)
+    assert job.status == "succeeded"
+    assert doc.status == "uploaded"
+    assert store.calls == [] and embedder.calls == []

@@ -95,3 +95,26 @@ def test_understated_zip_size_is_rejected():
                 dst.filelist[-1].file_size = item.file_size // 2
     with pytest.raises(ParseError):
         build_anchor_map("docx", out.getvalue())
+
+
+def _never_called(data):
+    raise AssertionError("the library must not see an oversized template")
+
+
+def test_too_many_zip_parts_rejected(monkeypatch):
+    monkeypatch.setattr("doc_intel.templates.anchors_docx.extract", _never_called)
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for i in range(5001):
+            z.writestr(f"p{i}", b"")
+    with pytest.raises(ValidationFailed, match="too many parts"):
+        build_anchor_map("docx", out.getvalue())
+
+
+def test_oversized_xml_part_rejected_before_parsing(monkeypatch):
+    monkeypatch.setattr("doc_intel.templates.anchors_docx.extract", _never_called)
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", b"<a><!--" + b"x" * (33 * 1024 * 1024) + b"--></a>")
+    with pytest.raises(ValidationFailed, match="too large"):
+        build_anchor_map("docx", out.getvalue())

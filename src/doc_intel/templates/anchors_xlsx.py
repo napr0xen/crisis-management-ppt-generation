@@ -5,8 +5,8 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula
 
-from doc_intel.templates.anchors import find_tokens
-from doc_intel.templates.schemas import Anchor
+from doc_intel.templates.anchors import find_tokens, too_many_anchors
+from doc_intel.templates.schemas import MAX_ANCHORS, Anchor
 
 _SCAN = 100  # shortcut: path context looks at most 100 cells left/up, upgrade if labels sit farther
 
@@ -38,7 +38,7 @@ def _nearest(cells, positions) -> str | None:
     return next((cells[p].value for p in positions if _is_string(cells.get(p))), None)
 
 
-def _extract_sheet(ws) -> list[Anchor]:
+def _candidates(ws) -> set[tuple[int, int]]:
     cells = ws._cells  # existing cells only, so a huge max_row is never scanned
     chosen: set[tuple[int, int]] = set()
     for (r, c), cell in cells.items():
@@ -53,6 +53,11 @@ def _extract_sheet(ws) -> list[Anchor]:
                     not isinstance(nb, MergedCell) and not _is_formula(nb) and _text(nb) == ""
                 ):
                     chosen.add(pos)
+    return chosen
+
+
+def _extract_sheet(ws, chosen: set[tuple[int, int]]) -> list[Anchor]:
+    cells = ws._cells
     anchors = []
     for r, c in sorted(chosen):
         text = _text(cells.get((r, c)))
@@ -74,4 +79,8 @@ def _extract_sheet(ws) -> list[Anchor]:
 
 def extract(data: bytes) -> list[Anchor]:
     wb = load_workbook(BytesIO(data), data_only=False)
-    return [a for ws in wb.worksheets for a in _extract_sheet(ws)]
+    chosen = [_candidates(ws) for ws in wb.worksheets]
+    total = sum(map(len, chosen))
+    if total > MAX_ANCHORS:  # before any path scan or Anchor construction
+        raise too_many_anchors(total)
+    return [a for ws, c in zip(wb.worksheets, chosen, strict=True) for a in _extract_sheet(ws, c)]

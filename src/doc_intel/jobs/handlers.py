@@ -51,6 +51,8 @@ def make_handlers(
         try:
             async with sessionmaker.begin() as session:
                 doc = await repo.get_document(session, ctx, document_id)
+                if doc.role == "template":  # template text must never be evidence (data-model.md)
+                    return {}
                 await repo.update_document(session, ctx, document_id, status="parsing")
             await set_progress(sessionmaker, ctx, job.id, {"stage": "parsing"})
             # File I/O in threads: the worker shares its event loop with the API.
@@ -115,8 +117,9 @@ def make_handlers(
         await set_progress(sessionmaker, ctx, job.id, {"stage": "ir"})
         template_id = existing.id if existing else uuid.uuid4()
         ir = await build_ir(llm, amap, template_id)
-        # shortcut: two concurrent extract_template jobs for one document: the second fails on
-        # templates.document_id UNIQUE; fine at JOB_CONCURRENCY=1.
+        # shortcut: two concurrent extract_template jobs for one document: the loser hits
+        # templates.document_id UNIQUE, is retried by the worker and then reuses the winner's row
+        # (one wasted LLM call); fine at JOB_CONCURRENCY=1.
         async with sessionmaker.begin() as session:
             if existing is None:
                 await repo.create_template(

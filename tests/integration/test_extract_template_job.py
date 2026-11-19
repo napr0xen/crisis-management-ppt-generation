@@ -158,6 +158,8 @@ async def test_invalid_ir_twice_fails_without_retry_or_rows(
     assert job.status == "failed"
     assert job.error_code == "ir_invalid"
     assert job.attempts == 1
+    assert job.error_message == "Job failed after 1 attempt(s) (ir_invalid)."
+    assert not any(p in job.error_message for p in ("pptx:", "docx:", "xlsx:", "no_such_anchor"))
     count = await session.scalar(select(func.count()).where(Template.user_id == user_a))
     assert count == 0
     doc = await session.get(Document, uuid.UUID(doc_id))

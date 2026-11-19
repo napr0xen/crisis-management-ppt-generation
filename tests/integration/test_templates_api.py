@@ -199,3 +199,28 @@ async def test_other_users_template_is_404(client, session, user_a, user_b, proj
         base = f"/v1/projects/{pid}/templates/{t.id}"
         assert client.get(base, headers=headers(user_b)).status_code == 404
         assert client.get(f"{base}/irs/1", headers=headers(user_b)).status_code == 404
+
+
+async def test_reupload_of_failed_template_is_not_reingested(client, session, user_a, project):
+    doc_id = upload(client, user_a, project)
+    await set_status(session, user_a, project, doc_id, "failed")
+    assert post(client, user_a, project, doc_id).status_code == 202
+
+    async def ingest_jobs() -> int:
+        return await session.scalar(
+            select(func.count()).where(Job.user_id == user_a, Job.kind == "ingest_document")
+        )
+
+    before = await ingest_jobs()
+    r = client.post(
+        f"/v1/projects/{project}/documents",
+        files={"file": ("t.pptx", sources.pptx())},
+        headers=headers(user_a),
+    )
+    assert r.status_code == 201
+    assert r.json() == {"document_id": doc_id, "job_id": None, "deduplicated": True}
+
+    session.expire_all()
+    assert await ingest_jobs() == before
+    doc = await session.get(Document, uuid.UUID(doc_id))
+    assert (doc.status, doc.role) == ("failed", "template")

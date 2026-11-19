@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from docx import Document
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.util import Inches
+from structlog.testing import capture_logs
 
 from doc_intel.core.errors import ValidationFailed
 from doc_intel.ingestion.pipeline import ParseError
@@ -76,6 +78,9 @@ def test_docx_duplicate_sdt_tag_keeps_first():
         ("Sign ____ and _____", ["____", "_____"]),
         ("{{" + "a" * 101 + "}}", []),
         ("{{multi\nline}}", []),
+        ("[1] and [ x] and [2024]", []),
+        ("a < b > c", []),
+        ("[client name] <classification>", ["[client name]", "<classification>"]),
     ],
 )
 def test_find_tokens(text, expected):
@@ -139,3 +144,40 @@ def test_is_placeholder_means_unfilled():
     assert by_id["pptx:s1:sp3"].is_placeholder  # empty on the slide: layout prompt text
     docx_by_id = {a.anchor_id: a for a in build_anchor_map("docx", docx_template()).anchors}
     assert docx_by_id["docx:sdt:owner"].is_placeholder  # content controls exist to be filled
+
+
+def test_xlsx_over_limit_fails_before_path_scan(monkeypatch):
+    def boom(*a):
+        raise AssertionError("path scan ran before the MAX_ANCHORS check")
+
+    monkeypatch.setattr("doc_intel.templates.anchors_xlsx._nearest", boom)
+    start = time.monotonic()
+    with pytest.raises(ValidationFailed, match=rf"{MAX_ANCHORS + 1}.*{MAX_ANCHORS}"):
+        build_anchor_map("xlsx", _many_xlsx(MAX_ANCHORS + 1))
+    assert time.monotonic() - start < 2
+
+
+def test_docx_vertical_merge_yields_one_anchor_at_origin():
+    doc = Document()
+    table = doc.add_table(rows=3, cols=2)
+    table.cell(1, 0).merge(table.cell(2, 0))
+    ids = {a.anchor_id for a in build_anchor_map("docx", _bytes(doc)).anchors}
+    assert "docx:body:t0:r1c0" in ids
+    assert "docx:body:t0:r2c0" not in ids
+
+
+def test_extractor_failure_is_logged_with_type_only(monkeypatch):
+    def broken(data):
+        raise KeyError("secret document text")
+
+    monkeypatch.setattr("doc_intel.templates.anchors_docx.extract", broken)
+    with capture_logs() as logs, pytest.raises(ParseError):
+        build_anchor_map("docx", docx_template())
+    assert logs == [
+        {
+            "event": "template_parse_failed",
+            "fmt": "docx",
+            "error_type": "KeyError",
+            "log_level": "warning",
+        }
+    ]
