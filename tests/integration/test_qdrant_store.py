@@ -183,12 +183,16 @@ async def test_ensure_collection_refuses_a_collection_built_for_other_vectors():
     name = f"doc_chunks_test_mismatch_{uuid.uuid4().hex[:8]}"
     await client.create_collection(
         name,
-        vectors_config={"dense": qm.VectorParams(size=8, distance=qm.Distance.COSINE)},
+        # The old BGE-M3 layout: same dense size, so only the missing IDF gives it away.
+        vectors_config={"dense": qm.VectorParams(size=DENSE_DIM, distance=qm.Distance.COSINE)},
         sparse_vectors_config={"sparse": qm.SparseVectorParams()},
     )
     try:
-        with pytest.raises(RuntimeError, match="re-ingest"):
+        with pytest.raises(RuntimeError, match="upload each document again"):
             await QdrantStore(client, name).ensure_collection()
+        # Search must refuse too, not quietly rank against the old vectors.
+        with pytest.raises(RuntimeError, match="upload each document again"):
+            await QdrantStore(client, name).hybrid_search(tenant(), emb(0, 0))
     finally:
         await client.delete_collection(name)
         await client.close()

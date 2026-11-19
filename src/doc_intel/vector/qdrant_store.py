@@ -90,7 +90,8 @@ class QdrantStore:
                 # Vectors from another embedding setup would silently rank garbage.
                 raise RuntimeError(
                     f"Qdrant collection {self._collection!r} was built for another embedding "
-                    "setup: delete it and re-ingest the documents."
+                    "setup: delete it, then delete and upload each document again "
+                    "(re-uploading an indexed file is deduplicated)."
                 )
         await self._client.create_payload_index(
             self._collection,
@@ -153,6 +154,7 @@ class QdrantStore:
         if element_type is not None:
             conditions.append(_match("element_type", element_type))
         flt = _tenant_filter(ctx, *conditions)
+        await self.ensure_collection()  # never rank against another embedding setup's vectors
         sparse = m.SparseVector(indices=query.sparse.indices, values=query.sparse.values)
         res = await self._client.query_points(
             self._collection,

@@ -1,7 +1,6 @@
 """Optional cross-encoder reranker (ADR-011); constructed only when `RERANKER_ENABLED`."""
 
 import threading
-from typing import Any
 
 from doc_intel.embeddings.schemas import Hit
 
@@ -32,7 +31,7 @@ class _CrossEncoder:
         model = AutoModelForSequenceClassification.from_pretrained(path, dtype=dtype)
         self._model = model.to(device).eval()
 
-    def compute_score(self, pairs: list[tuple[str, str]], **_: Any) -> list[float]:
+    def compute_score(self, pairs: list[tuple[str, str]]) -> list[float]:
         with self._torch.no_grad():
             inputs = self._tokenizer(
                 [q for q, _ in pairs],

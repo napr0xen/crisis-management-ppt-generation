@@ -1,7 +1,6 @@
 import json
 import math
 import uuid
-from typing import Any
 
 import httpx
 import pytest
@@ -186,7 +185,7 @@ async def test_fake_embedder_matches_the_protocol_and_records_calls():
 
 
 class _FakeScorer:
-    def compute_score(self, pairs: list[tuple[str, str]], **kwargs: Any) -> list[float]:
+    def compute_score(self, pairs: list[tuple[str, str]]) -> list[float]:
         return [float(len(passage)) for _, passage in pairs]
 
 
