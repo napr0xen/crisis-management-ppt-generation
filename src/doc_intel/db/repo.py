@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_intel.core.errors import Conflict, NotFound
-from doc_intel.db.models import Document, Job, Project
+from doc_intel.db.models import Document, Job, Project, Template, TemplateIRVersion
 
 if TYPE_CHECKING:  # core.tenancy imports this module
     from doc_intel.core.tenancy import TenantContext
@@ -183,3 +183,101 @@ async def update_job(
     result = await session.execute(update(Job).where(*_scoped(Job, ctx, job_id)).values(**values))
     if result.rowcount == 0:
         raise NotFound()
+
+
+async def get_template(
+    session: AsyncSession, ctx: TenantContext, template_id: uuid.UUID
+) -> Template:
+    template = await session.scalar(select(Template).where(*_scoped(Template, ctx, template_id)))
+    if template is None:
+        raise NotFound()
+    return template
+
+
+async def find_template_by_document(
+    session: AsyncSession, ctx: TenantContext, document_id: uuid.UUID
+) -> Template | None:
+    return await session.scalar(
+        select(Template).where(
+            Template.user_id == ctx.user_id,
+            Template.project_id == ctx.project_id,
+            Template.document_id == document_id,
+        )
+    )
+
+
+async def create_template(
+    session: AsyncSession,
+    ctx: TenantContext,
+    *,
+    template_id: uuid.UUID,
+    document_id: uuid.UUID,
+    format: str,
+    anchor_map: dict[str, Any],
+    anchor_count: int,
+) -> Template:
+    template = Template(
+        id=template_id,
+        user_id=ctx.user_id,
+        project_id=ctx.project_id,
+        document_id=document_id,
+        format=format,
+        anchor_map=anchor_map,
+        anchor_count=anchor_count,
+    )
+    session.add(template)
+    await session.flush()
+    await session.refresh(template)
+    return template
+
+
+async def create_template_ir(
+    session: AsyncSession,
+    ctx: TenantContext,
+    *,
+    template_id: uuid.UUID,
+    version: int,
+    ir: dict[str, Any],
+) -> TemplateIRVersion:
+    row = TemplateIRVersion(
+        user_id=ctx.user_id,
+        project_id=ctx.project_id,
+        template_id=template_id,
+        version=version,
+        ir=ir,
+    )
+    session.add(row)
+    await session.flush()
+    await session.refresh(row)
+    return row
+
+
+async def latest_template_ir(
+    session: AsyncSession, ctx: TenantContext, template_id: uuid.UUID
+) -> TemplateIRVersion | None:
+    return await session.scalar(
+        select(TemplateIRVersion)
+        .where(
+            TemplateIRVersion.user_id == ctx.user_id,
+            TemplateIRVersion.project_id == ctx.project_id,
+            TemplateIRVersion.template_id == template_id,
+        )
+        .order_by(TemplateIRVersion.version.desc())
+        .limit(1)
+    )
+
+
+async def get_template_ir(
+    session: AsyncSession, ctx: TenantContext, template_id: uuid.UUID, version: int
+) -> TemplateIRVersion:
+    row = await session.scalar(
+        select(TemplateIRVersion).where(
+            TemplateIRVersion.user_id == ctx.user_id,
+            TemplateIRVersion.project_id == ctx.project_id,
+            TemplateIRVersion.template_id == template_id,
+            TemplateIRVersion.version == version,
+        )
+    )
+    if row is None:
+        raise NotFound()
+    return row

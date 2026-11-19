@@ -1,0 +1,166 @@
+{
+  "schema_version": "1.0",
+  "format": "docx",
+  "anchors": [
+    {
+      "anchor_id": "docx:body:p2",
+      "kind": "paragraph",
+      "path": [
+        "Incident Report",
+        "Summary"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "docx:body:p3",
+      "kind": "paragraph",
+      "path": [
+        "Incident Report",
+        "Summary"
+      ],
+      "text": "Client: {{client_name}}",
+      "tokens": [
+        "{{client_name}}"
+      ],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "docx:body:p4",
+      "kind": "paragraph",
+      "path": [
+        "Incident Report",
+        "Summary"
+      ],
+      "text": "Signature ____",
+      "tokens": [
+        "____"
+      ],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "docx:body:t0:r0c0",
+      "kind": "table_cell",
+      "path": [
+        "Incident Report",
+        "Summary",
+        "Table 0"
+      ],
+      "text": "Item",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": {
+        "row": 0,
+        "col": 0,
+        "header": "Item"
+      }
+    },
+    {
+      "anchor_id": "docx:body:t0:r0c1",
+      "kind": "table_cell",
+      "path": [
+        "Incident Report",
+        "Summary",
+        "Table 0"
+      ],
+      "text": "Owner",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": {
+        "row": 0,
+        "col": 1,
+        "header": "Owner"
+      }
+    },
+    {
+      "anchor_id": "docx:body:t0:r0c2",
+      "kind": "table_cell",
+      "path": [
+        "Incident Report",
+        "Summary",
+        "Table 0"
+      ],
+      "text": "Date",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": {
+        "row": 0,
+        "col": 2,
+        "header": "Date"
+      }
+    },
+    {
+      "anchor_id": "docx:body:t0:r1c0",
+      "kind": "table_cell",
+      "path": [
+        "Incident Report",
+        "Summary",
+        "Table 0"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 1,
+        "col": 0,
+        "header": "Item"
+      }
+    },
+    {
+      "anchor_id": "docx:body:t0:r1c2",
+      "kind": "table_cell",
+      "path": [
+        "Incident Report",
+        "Summary",
+        "Table 0"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 1,
+        "col": 2,
+        "header": "Date"
+      }
+    },
+    {
+      "anchor_id": "docx:sec1:header:p0",
+      "kind": "header_paragraph",
+      "path": [
+        "Section 1",
+        "Header"
+      ],
+      "text": "Confidential <classification>",
+      "tokens": [
+        "<classification>"
+      ],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "docx:sec1:footer:p0",
+      "kind": "footer_paragraph",
+      "path": [
+        "Section 1",
+        "Footer"
+      ],
+      "text": "Page footer",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": null
+    },
+    {
+      "anchor_id": "docx:sdt:owner",
+      "kind": "content_control",
+      "path": [],
+      "text": "Owner name",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    }
+  ]
+}

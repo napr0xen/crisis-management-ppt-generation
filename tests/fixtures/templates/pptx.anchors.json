@@ -1,0 +1,242 @@
+{
+  "schema_version": "1.0",
+  "format": "pptx",
+  "anchors": [
+    {
+      "anchor_id": "pptx:s1:sp2",
+      "kind": "shape_text",
+      "path": [
+        "Slide 1",
+        "Situation Overview",
+        "Title 1"
+      ],
+      "text": "Situation Overview",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": null
+    },
+    {
+      "anchor_id": "pptx:s1:sp3",
+      "kind": "shape_text",
+      "path": [
+        "Slide 1",
+        "Situation Overview",
+        "Content Placeholder 2"
+      ],
+      "text": "Click to edit Master text styles\nSecond level\nThird level\nFourth level\nFifth level",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "pptx:s2:sp2",
+      "kind": "shape_text",
+      "path": [
+        "Slide 2",
+        "Incident",
+        "Title 1"
+      ],
+      "text": "Incident",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": null
+    },
+    {
+      "anchor_id": "pptx:s2:sp3",
+      "kind": "shape_text",
+      "path": [
+        "Slide 2",
+        "Incident",
+        "TextBox 2"
+      ],
+      "text": "Date {{incident_date}} status TBD",
+      "tokens": [
+        "{{incident_date}}",
+        "TBD"
+      ],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "pptx:s3:sp2",
+      "kind": "shape_text",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Title 1"
+      ],
+      "text": "Stakeholders",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": null
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r0c0",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "Name",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": {
+        "row": 0,
+        "col": 0,
+        "header": "Name"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r0c1",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "Role",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": {
+        "row": 0,
+        "col": 1,
+        "header": "Role"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r0c2",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "Owner",
+      "tokens": [],
+      "is_placeholder": false,
+      "table": {
+        "row": 0,
+        "col": 2,
+        "header": "Owner"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r1c0",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 1,
+        "col": 0,
+        "header": "Name"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r1c1",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 1,
+        "col": 1,
+        "header": "Role"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r1c2",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 1,
+        "col": 2,
+        "header": "Owner"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r2c0",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 2,
+        "col": 0,
+        "header": "Name"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r2c1",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 2,
+        "col": 1,
+        "header": "Role"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp3:r2c2",
+      "kind": "table_cell",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "Table 2"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": {
+        "row": 2,
+        "col": 2,
+        "header": "Owner"
+      }
+    },
+    {
+      "anchor_id": "pptx:s3:sp5",
+      "kind": "shape_text",
+      "path": [
+        "Slide 3",
+        "Stakeholders",
+        "TextBox 4"
+      ],
+      "text": "[note]",
+      "tokens": [
+        "[note]"
+      ],
+      "is_placeholder": true,
+      "table": null
+    }
+  ]
+}

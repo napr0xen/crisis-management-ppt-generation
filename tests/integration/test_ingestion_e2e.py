@@ -23,7 +23,7 @@ from doc_intel.main import create_app
 from doc_intel.storage.local import LocalStorage
 from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
 from tests.conftest import headers
-from tests.fakes import FakeEmbedder
+from tests.fakes import FakeEmbedder, FakeLLM
 from tests.fixtures import sources
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue")]
@@ -48,7 +48,7 @@ async def _process(migrated_db, rounds=1):
     settings = get_settings()
     store = _store()
     storage = LocalStorage(settings.storage_root)
-    handlers = make_handlers(sm, storage, settings, FakeEmbedder(), store)
+    handlers = make_handlers(sm, storage, settings, FakeEmbedder(), store, FakeLLM())
     try:
         for _ in range(rounds):
             await run_one(sm, handlers, make_failure_hooks(sm))

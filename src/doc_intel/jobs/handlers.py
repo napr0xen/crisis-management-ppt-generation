@@ -13,7 +13,10 @@ from doc_intel.embeddings.schemas import Embedder
 from doc_intel.ingestion.pipeline import parse_and_chunk
 from doc_intel.ingestion.upload import parsed_key
 from doc_intel.jobs.worker import Handler, OnFailed, Sessionmaker, set_progress
+from doc_intel.llm.gateway import LLMClient
 from doc_intel.storage.base import StorageBackend
+from doc_intel.templates.anchors import build_anchor_map
+from doc_intel.templates.ir_builder import build_ir
 
 if TYPE_CHECKING:
     from doc_intel.vector.qdrant_store import QdrantStore
@@ -28,6 +31,7 @@ def make_handlers(
     settings: Settings,
     embedder: Embedder,
     vector_store: "QdrantStore",
+    llm: LLMClient,
 ) -> dict[str, Handler]:
     async def document_exists(ctx: TenantContext, document_id: uuid.UUID) -> bool:
         async with sessionmaker() as session:
@@ -92,7 +96,48 @@ def make_handlers(
             await asyncio.to_thread(storage.delete, key)
             return {}
 
-    return {"ingest_document": ingest_document}
+    async def extract_template(job: Job, ctx: TenantContext) -> dict[str, Any]:
+        document_id = uuid.UUID(job.payload["document_id"])
+        async with sessionmaker.begin() as session:
+            doc = await repo.get_document(session, ctx, document_id)
+            existing = await repo.find_template_by_document(session, ctx, document_id)
+            latest = await repo.latest_template_ir(session, ctx, existing.id) if existing else None
+        if existing and latest:  # a re-POST or a retry after commit: reuse, no LLM call
+            return {
+                "template_id": str(existing.id),
+                "template_ir_id": str(latest.id),
+                "ir_version": latest.version,
+            }
+        fmt = doc.storage_key.rsplit(".", 1)[1]
+        await set_progress(sessionmaker, ctx, job.id, {"stage": "anchors"})
+        data = await asyncio.to_thread(read, doc.storage_key)
+        amap = await asyncio.to_thread(build_anchor_map, fmt, data)
+        await set_progress(sessionmaker, ctx, job.id, {"stage": "ir"})
+        template_id = existing.id if existing else uuid.uuid4()
+        ir = await build_ir(llm, amap, template_id)
+        # shortcut: two concurrent extract_template jobs for one document: the second fails on
+        # templates.document_id UNIQUE; fine at JOB_CONCURRENCY=1.
+        async with sessionmaker.begin() as session:
+            if existing is None:
+                await repo.create_template(
+                    session,
+                    ctx,
+                    template_id=template_id,
+                    document_id=document_id,
+                    format=fmt,
+                    anchor_map=amap.model_dump(mode="json"),
+                    anchor_count=len(amap.anchors),
+                )
+            row = await repo.create_template_ir(
+                session,
+                ctx,
+                template_id=template_id,
+                version=1,
+                ir=ir.model_dump(mode="json", exclude_none=True),
+            )
+        return {"template_id": str(template_id), "template_ir_id": str(row.id), "ir_version": 1}
+
+    return {"ingest_document": ingest_document, "extract_template": extract_template}
 
 
 def make_failure_hooks(sessionmaker: Sessionmaker) -> dict[str, OnFailed]:

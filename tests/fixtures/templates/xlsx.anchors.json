@@ -1,0 +1,119 @@
+{
+  "schema_version": "1.0",
+  "format": "xlsx",
+  "anchors": [
+    {
+      "anchor_id": "xlsx:Summary!C1",
+      "kind": "sheet_cell",
+      "path": [
+        "Summary",
+        "Value"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Summary!D1",
+      "kind": "sheet_cell",
+      "path": [
+        "Summary",
+        "Value"
+      ],
+      "text": "[client name]",
+      "tokens": [
+        "[client name]"
+      ],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Summary!B2",
+      "kind": "sheet_cell",
+      "path": [
+        "Summary",
+        "Cases",
+        "Value"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Summary!B3",
+      "kind": "sheet_cell",
+      "path": [
+        "Summary",
+        "Deaths",
+        "Value"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Summary!A5",
+      "kind": "sheet_cell",
+      "path": [
+        "Summary",
+        "Total"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Summary!B6",
+      "kind": "sheet_cell",
+      "path": [
+        "Summary",
+        "Notes",
+        "Value"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Summary!A7",
+      "kind": "sheet_cell",
+      "path": [
+        "Summary",
+        "Notes"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Q1!Data!B1",
+      "kind": "sheet_cell",
+      "path": [
+        "Q1!Data",
+        "Region"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    },
+    {
+      "anchor_id": "xlsx:Q1!Data!A2",
+      "kind": "sheet_cell",
+      "path": [
+        "Q1!Data",
+        "Region"
+      ],
+      "text": "",
+      "tokens": [],
+      "is_placeholder": true,
+      "table": null
+    }
+  ]
+}
