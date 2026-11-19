@@ -18,6 +18,9 @@ from doc_intel.storage.base import StorageBackend
 if TYPE_CHECKING:
     from doc_intel.vector.qdrant_store import QdrantStore
 
+# Chunks embedded and upserted per step: only one batch of vectors (~32 KB each) is in memory.
+INDEX_BATCH = 256
+
 
 def make_handlers(
     sessionmaker: Sessionmaker,
@@ -34,6 +37,10 @@ def make_handlers(
                 return False
         return True
 
+    def read(key: str) -> bytes:
+        with storage.open_read(key) as f:
+            return f.read()
+
     async def ingest_document(job: Job, ctx: TenantContext) -> dict[str, Any]:
         document_id = uuid.UUID(job.payload["document_id"])
         key = parsed_key(ctx, document_id)
@@ -42,8 +49,8 @@ def make_handlers(
                 doc = await repo.get_document(session, ctx, document_id)
                 await repo.update_document(session, ctx, document_id, status="parsing")
             await set_progress(sessionmaker, ctx, job.id, {"stage": "parsing"})
-            with storage.open_read(doc.storage_key) as f:
-                data = f.read()
+            # File I/O in threads: the worker shares its event loop with the API.
+            data = await asyncio.to_thread(read, doc.storage_key)
             parsed, chunks = await asyncio.to_thread(
                 parse_and_chunk,
                 data,
@@ -54,20 +61,23 @@ def make_handlers(
                 tokenizer_model=settings.chunk_tokenizer,
             )
             # overwrite: derived data a crashed attempt may have left behind
-            storage.put_bytes(key, parsed.model_dump_json().encode(), overwrite=True)
-            result = {"page_count": parsed.page_count, "chunk_count": len(chunks)}
-            texts = [c.text for c in chunks]
-            await set_progress(
-                sessionmaker, ctx, job.id, {"stage": "embedding", "total": len(texts)}
+            await asyncio.to_thread(
+                storage.put_bytes, key, parsed.model_dump_json().encode(), overwrite=True
             )
-            embeddings = await embedder.embed_documents(texts) if texts else []
-            await set_progress(sessionmaker, ctx, job.id, {"stage": "indexing"})
+            total = len(chunks)
+            result = {"page_count": parsed.page_count, "chunk_count": total}
+            progress = {"stage": "embedding", "total": total}
+            await set_progress(sessionmaker, ctx, job.id, {**progress, "done": 0})
             await vector_store.ensure_collection()  # Qdrant may have been down at app startup
             # A retry or re-ingest may yield fewer chunks: overwriting by id would leave the old
             # higher chunk_index points searchable.
             await vector_store.delete_document_points(ctx, document_id)
-            if chunks:
-                await vector_store.upsert_chunks(ctx, chunks, embeddings)
+            for start in range(0, total, INDEX_BATCH):
+                batch = chunks[start : start + INDEX_BATCH]
+                embeddings = await embedder.embed_documents([c.text for c in batch])
+                await vector_store.upsert_chunks(ctx, batch, embeddings)
+                done = start + len(batch)
+                await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done})
             async with sessionmaker.begin() as session:
                 await repo.update_document(session, ctx, document_id, status="indexed", **result)
             return result
@@ -79,7 +89,7 @@ def make_handlers(
             # shortcut: if Qdrant stays down through every attempt, points upserted after the
             # user's delete outlive the row; add a sweep for orphan document_ids if that happens.
             await vector_store.delete_document_points(ctx, document_id)
-            storage.delete(key)
+            await asyncio.to_thread(storage.delete, key)
             return {}
 
     return {"ingest_document": ingest_document}

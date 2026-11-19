@@ -51,7 +51,7 @@ Outside the package: `integrations/openwebui/doc_intel_pipe.py` (the Pipe Functi
    - text items under the same heading are packed up to `CHUNK_MAX_TOKENS=512` tokens (`CHUNK_TOKENIZER`) (target ~400) and never cross a section boundary;
    - each table is its own chunk (`element_type = 'table'`), serialized as Markdown; tables longer than 512 tokens are split by rows, with the header row repeated;
    - `chunk_index` is 0-based and contiguous per document.
-5. Embed in batches of 32: dense from Ollama `qwen3-embedding` (raw chunk text), sparse BM25 locally. Then delete the document's existing points (a retry may yield fewer chunks), upsert into `doc_chunks`, and set `status = 'indexed'` with `page_count` and `chunk_count`. A document deleted meanwhile has its points and parsed JSON removed, and the job ends without retrying.
+5. Delete the document's existing points (a retry may yield fewer chunks). Then, 256 chunks at a time (`INDEX_BATCH` in `jobs/handlers.py`, so only one batch of vectors is in memory), embed (dense from Ollama `qwen3-embedding` on raw chunk text, 32 texts per request; sparse BM25 locally), upsert into `doc_chunks`, and set `progress = {"stage": "embedding", "done", "total"}`. Finally set `status = 'indexed'` with `page_count` and `chunk_count`. File reads and writes run in `asyncio.to_thread`, because the worker shares the API's event loop. A document deleted meanwhile has its points and parsed JSON removed, and the job ends without retrying.
 
 Any failure sets `status = 'failed'` and `error_code` (e.g. `parse_error`, `ocr_error`, `embed_error`). No document text is logged.
 

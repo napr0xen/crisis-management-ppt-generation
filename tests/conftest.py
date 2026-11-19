@@ -16,8 +16,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 # Settings must be importable in every test, so give the required secrets test values.
-os.environ.setdefault("PIPE_SHARED_SECRET", "test-pipe-secret")
-os.environ.setdefault("SIGNING_SECRET", "test-signing-secret")
+# Secrets need >= 32 characters (core/config.py).
+PIPE_SECRET = "test-pipe-secret-0123456789abcdef"
+os.environ.setdefault("PIPE_SHARED_SECRET", PIPE_SECRET)
+os.environ.setdefault("SIGNING_SECRET", "test-signing-secret-0123456789abcdef")
 
 
 def _dev_env() -> dict[str, str]:
@@ -47,7 +49,7 @@ os.environ["QDRANT_COLLECTION"] = "doc_chunks_test"
 os.environ["STORAGE_ROOT"] = tempfile.mkdtemp(prefix="doc_intel_test_storage_")
 atexit.register(shutil.rmtree, os.environ["STORAGE_ROOT"], ignore_errors=True)
 
-AUTH = {"Authorization": "Bearer test-pipe-secret"}
+AUTH = {"Authorization": f"Bearer {PIPE_SECRET}"}
 
 
 def headers(user_id: str) -> dict[str, str]:

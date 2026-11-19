@@ -15,8 +15,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://doc_intel:doc_intel@127.0.0.1:5432/doc_intel"
     qdrant_url: str = "http://127.0.0.1:6333"
     storage_root: Path = Path("./data/storage")
-    pipe_shared_secret: SecretStr
-    signing_secret: SecretStr
+    # >= 32 chars: an empty SIGNING_SECRET would make every signed download link forgeable.
+    pipe_shared_secret: SecretStr = Field(min_length=32)
+    signing_secret: SecretStr = Field(min_length=32)
     signed_url_ttl_s: int = 900
     log_level: str = "INFO"
     max_upload_mb: int = 100

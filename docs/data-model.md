@@ -73,7 +73,7 @@ Every upload starts as `role = 'source'` and is indexed. Marking a document as a
 | `result` | jsonb NULL | output ids, e.g. `{"template_id": "…"}` |
 | `error_code` | text NULL | the failing exception's `code` (e.g. `parse_error`), `internal` otherwise, `interrupted` if the backend restarted during the last attempt |
 | `error_message` | text NULL | safe text only, no document content |
-| `attempts` | int NOT NULL DEFAULT 0 | the worker fails a job once `attempts` reaches 3 (constant `MAX_JOB_ATTEMPTS` in `jobs/worker.py`) |
+| `attempts` | int NOT NULL DEFAULT 0 | the worker fails a job once `attempts` reaches 3 (constant `MAX_JOB_ATTEMPTS` in `jobs/worker.py`), or after the first attempt for an error marked `retry = False` (`parse_error`) |
 | `locked_at` | timestamptz NULL | set when claimed |
 | `created_at`, `started_at`, `finished_at` | timestamptz | `started_at`/`finished_at` nullable |
 

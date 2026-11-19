@@ -128,3 +128,22 @@ async def test_invalid_llm_output_is_503(client, vector_store, llm, user_a, proj
     r = ask(client, user_a, project)
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "upstream_unavailable"
+
+
+async def test_no_db_connection_is_held_while_the_llm_answers(
+    client, vector_store, llm, user_a, project
+):
+    # The LLM call can take minutes; holding a pooled connection through it exhausts the pool.
+    doc = await seed(vector_store, TenantContext(user_a, uuid.UUID(project)))
+    llm.replies.append(reply(chunk_id(doc, 0)))
+    pool = client.app.state.engine.pool
+    checked_out = []
+    complete = llm.complete
+
+    async def spy(messages, json_schema=None):
+        checked_out.append(pool.checkedout())
+        return await complete(messages, json_schema)
+
+    llm.complete = spy
+    assert ask(client, user_a, project).json()["found"] is True
+    assert checked_out == [0]

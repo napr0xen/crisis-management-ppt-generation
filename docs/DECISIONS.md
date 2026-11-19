@@ -173,7 +173,8 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
   - rendering reuses an existing `artifacts` row for the run;
   - `extract_template` reuses an existing `templates` row;
   - a job whose row was deleted meanwhile (e.g. the document) finishes without retrying and removes any output it wrote.
-- When a job fails for good (last attempt, or interrupted at startup), the worker calls that kind's failure hook so the row it owns (e.g. the document) is marked `failed` too, never left in progress.
+- A failed attempt is retried after `RETRY_DELAY_S × attempts` (30 s, then 60 s), so a short Ollama outage doesn't use up every attempt; stopping the worker cuts the wait short. Errors that can't succeed on retry set `retry = False` (e.g. `ParseError`) and fail at once.
+- When a job fails for good (last attempt, non-retryable error, or interrupted at startup), the worker calls that kind's failure hook so the row it owns (e.g. the document) is marked `failed` too, never left in progress.
 - Progress is written to `jobs.progress`; `/v1/pipe/chat` polls it to emit SSE `status` events.
 
 **Trade-offs.** No Redis/Celery to run. Jobs stop while the API is down and resume on restart. `shortcut: single in-process worker, move to a separate worker process if API latency suffers during ingestion.`
@@ -192,7 +193,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
   - only queries get Qwen3's retrieval instruction (`Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: `); chunks are embedded as raw text;
   - `dimensions` is Matryoshka truncation, so switching to `qwen3-embedding:4b` in `.env` keeps 1024-dim vectors. Any model change still needs a re-ingest: vectors from different models are not comparable.
 - **Sparse:** hashed-token BM25 (`embeddings/sparse.py`, no ML model). Documents carry the BM25 term-frequency part (`k1 = 1.2`, `b = 0.75`, fixed average length 256 tokens); queries carry weight 1 per distinct term. The collection's `sparse` vector uses `modifier = IDF`, so Qdrant computes IDF from the indexed corpus.
-- Qdrant, RRF fusion, tenant filters and the `doc_chunks` layout are unchanged from ADR-004. `ensure_collection` refuses a collection created with another dense size or without IDF (the fix: delete the collection, then delete and upload each document again, because re-uploading an indexed file is deduplicated). `hybrid_search` runs the same check, so search never ranks against old vectors.
+- Qdrant, RRF fusion, tenant filters and the `doc_chunks` layout are unchanged from ADR-004. `ensure_collection` refuses a collection created with another dense size or without IDF (the fix: delete the collection, then delete and upload each document again, because re-uploading an indexed file is deduplicated). `hybrid_search` runs the same check, so search never ranks against old vectors. At startup the refusal stops the app with that message, instead of being logged as "Qdrant unavailable".
 - **Chunk sizing** uses the Qwen3 tokenizer from Hugging Face (`CHUNK_TOKENIZER = Qwen/Qwen3-Embedding-0.6B`, tokenizer files only).
 - **Reranker:** `BAAI/bge-reranker-v2-m3` stays optional and off by default, now on plain `transformers` (`RERANKER_DEVICE`). FlagEmbedding is removed.
 - This also amends ADR-001's list of in-process ML: embeddings now run in Ollama, not in the FastAPI process.

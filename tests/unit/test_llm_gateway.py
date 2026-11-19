@@ -156,7 +156,7 @@ async def test_complete_json_fails_after_two_invalid_replies():
 
 
 def test_make_llm_client_picks_the_provider():
-    base = {"_env_file": None, "pipe_shared_secret": "x", "signing_secret": "y"}
+    base = {"_env_file": None, "pipe_shared_secret": "x" * 32, "signing_secret": "y" * 32}
     http = httpx.AsyncClient()
     assert isinstance(make_llm_client(Settings(**base), http), OllamaClient)
     openai = Settings(**base, llm_provider="openai", llm_base_url="https://api.example.com/v1")
@@ -165,7 +165,12 @@ def test_make_llm_client_picks_the_provider():
 
 def test_unknown_provider_fails_at_startup():
     with pytest.raises(ValueError):
-        Settings(_env_file=None, pipe_shared_secret="x", signing_secret="y", llm_provider="other")
+        Settings(
+            _env_file=None,
+            pipe_shared_secret="x" * 32,
+            signing_secret="y" * 32,
+            llm_provider="other",
+        )
 
 
 @pytest.mark.llm

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from doc_intel.core.config import Settings
 from doc_intel.main import create_app
+from tests.conftest import AUTH, PIPE_SECRET
 
 PUBLIC = {"/v1/health"}
 # Auth is checked before any DB access, so no services are needed.
@@ -45,9 +46,9 @@ def test_route_discovery_finds_the_project_routes():
     [
         None,
         "Bearer wrong",
-        "test-pipe-secret",
-        "Bearer test-pipe-secret ",
-        "bearer test-pipe-secret",
+        PIPE_SECRET,
+        f"Bearer {PIPE_SECRET} ",
+        f"bearer {PIPE_SECRET}",
     ],
 )
 def test_bad_or_missing_bearer_is_401(offline_client, method, path, auth):
@@ -60,7 +61,7 @@ def test_bad_or_missing_bearer_is_401(offline_client, method, path, auth):
 @pytest.mark.parametrize("method, path", PROTECTED)
 @pytest.mark.parametrize("user_id", [None, "", "../x", "a b", "x" * 65])
 def test_bad_user_id_is_422(offline_client, method, path, user_id):
-    hdrs = {"Authorization": "Bearer test-pipe-secret"}
+    hdrs = dict(AUTH)
     if user_id is not None:
         hdrs["X-OWUI-User-Id"] = user_id
     r = offline_client.request(method, path, headers=hdrs, json={"name": "x"})

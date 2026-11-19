@@ -80,6 +80,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.vector_store = store
         try:
             await store.ensure_collection()
+        except RuntimeError:
+            raise  # built for another embedding setup: refuse to start, the message says the fix
         except Exception as exc:  # the API still serves; health reports Qdrant, ingest retries
             log.warning("qdrant_unavailable_at_startup", error_type=type(exc).__name__)
         async with httpx.AsyncClient() as http:

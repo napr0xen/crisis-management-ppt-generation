@@ -80,8 +80,8 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `QDRANT_URL` | `http://127.0.0.1:6333` | |
 | `QDRANT_COLLECTION` | `doc_chunks` | tests set `doc_chunks_test` |
 | `STORAGE_ROOT` | `./data/storage` | `LocalStorage` root |
-| `PIPE_SHARED_SECRET` | — (required) | bearer secret shared with the Pipe |
-| `SIGNING_SECRET` | — (required) | HMAC key for download URLs |
+| `PIPE_SHARED_SECRET` | — (required, ≥ 32 chars) | bearer secret shared with the Pipe |
+| `SIGNING_SECRET` | — (required, ≥ 32 chars) | HMAC key for download URLs |
 | `SIGNED_URL_TTL_S` | `900` | |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | prefix for `download_url` |
 | `LLM_PROVIDER` | `ollama` | `ollama` \| `openai` (any OpenAI-compatible endpoint); `anthropic` planned (ADR-005) |

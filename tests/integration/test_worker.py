@@ -11,6 +11,7 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.db import repo
 from doc_intel.db.models import Job
 from doc_intel.db.session import make_engine
+from doc_intel.ingestion.pipeline import ParseError
 from doc_intel.jobs import worker
 from doc_intel.jobs.worker import (
     MAX_JOB_ATTEMPTS,
@@ -176,3 +177,45 @@ async def test_started_worker_recovers_runs_and_stops(sm, user_a, monkeypatch):
     await asyncio.wait_for(stop(), timeout=5)
     row = await load(sm, interrupted.id)
     assert (row.status, row.attempts, row.result) == ("succeeded", 2, {"ok": True})
+
+
+async def test_parse_error_fails_at_once_without_retry(sm, user_a):
+    # The same bytes fail the same way: retrying only keeps the single worker busy.
+    job = await enqueue(sm, user_a)
+    failed = []
+
+    async def handler(_job, _ctx):
+        raise ParseError()
+
+    async def on_failed(j, _ctx, code):
+        failed.append((j.id, code))
+
+    await run_one(sm, {"ingest_document": handler}, {"ingest_document": on_failed})
+    row = await load(sm, job.id)
+    assert (row.status, row.attempts, row.error_code) == ("failed", 1, "parse_error")
+    assert failed == [(job.id, "parse_error")]
+    assert await run_one(sm, {"ingest_document": handler}) is False
+
+
+async def test_retry_waits_and_stop_cuts_the_wait_short(sm, user_a, monkeypatch):
+    # A short Ollama outage must not burn every attempt back to back.
+    monkeypatch.setattr(worker, "RETRY_DELAY_S", 60.0)
+    job = await enqueue(sm, user_a)
+    calls = []
+
+    async def handler(_job, _ctx):
+        calls.append(1)
+        raise RuntimeError("ollama down")
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(worker.run_loop(sm, {"ingest_document": handler}, stop))
+    for _ in range(100):
+        if calls:
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.5)
+    assert len(calls) == 1
+    row = await load(sm, job.id)
+    assert (row.status, row.attempts) == ("queued", 1)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)

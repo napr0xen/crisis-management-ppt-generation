@@ -23,6 +23,7 @@ PARSERS: dict[str, Parser] = {
 
 class ParseError(Exception):
     code = "parse_error"
+    retry = False  # the same bytes fail the same way
 
 
 @cache

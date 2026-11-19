@@ -118,13 +118,12 @@ async def test_retry_overwrites_existing_parsed_json(client, migrated_db, user_a
 
 
 @pytest.mark.slow
-async def test_unparseable_file_fails_document_after_last_attempt(
-    client, migrated_db, user_a, project
-):
+async def test_unparseable_file_fails_document_at_once(client, migrated_db, user_a, project):
+    # parse_error is not retried: the same bytes fail the same way (ADR-010).
     up = _upload(client, user_a, project, "broken.pdf", b"%PDF-1.7 not really a pdf")
-    await _process(migrated_db, rounds=MAX_JOB_ATTEMPTS)
+    await _process(migrated_db, rounds=1)
     doc, job = await _rows(migrated_db, user_a, project, up["document_id"], up["job_id"])
-    assert (job.status, job.error_code, job.attempts) == ("failed", "parse_error", MAX_JOB_ATTEMPTS)
+    assert (job.status, job.error_code, job.attempts) == ("failed", "parse_error", 1)
     assert (doc.status, doc.error_code) == ("failed", "parse_error")
 
 

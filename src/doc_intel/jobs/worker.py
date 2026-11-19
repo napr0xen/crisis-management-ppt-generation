@@ -21,6 +21,9 @@ from doc_intel.db.models import Job
 
 MAX_JOB_ATTEMPTS = 3
 POLL_INTERVAL_S = 1.0
+# Wait RETRY_DELAY_S x attempts before the next try, so a short Ollama outage doesn't use up
+# every attempt at once. The single worker idles meanwhile; every other job needs Ollama too.
+RETRY_DELAY_S = 30.0
 
 Handler = Callable[[Job, TenantContext], Awaitable[dict[str, Any]]]
 # Called once when a job is failed for good (last attempt, or interrupted at startup), so the kind
@@ -101,8 +104,12 @@ async def run_one(
     sessionmaker: Sessionmaker,
     handlers: dict[str, Handler],
     on_failed: dict[str, OnFailed] | None = None,
+    stop: asyncio.Event | None = None,
 ) -> bool:
-    """Claim and run one job. Returns False when the queue is empty."""
+    """Claim and run one job. Returns False when the queue is empty.
+
+    With `stop` (the worker loop), a failed attempt waits before its retry; `stop` cuts it short.
+    """
     job = await claim_next_job(sessionmaker)
     if job is None:
         return False
@@ -116,22 +123,26 @@ async def run_one(
         bound.error("job_attempt_failed", error_type=type(exc).__name__)
         code = getattr(exc, "code", None)
         code = code if isinstance(code, str) else "internal"
+        final = job.attempts >= MAX_JOB_ATTEMPTS or getattr(exc, "retry", True) is False
         async with sessionmaker.begin() as session:
-            if job.attempts >= MAX_JOB_ATTEMPTS:
+            if final:
                 await repo.update_job(
                     session,
                     ctx,
                     job.id,
                     status="failed",
                     error_code=code,
-                    error_message=f"Job failed after {MAX_JOB_ATTEMPTS} attempts ({code}).",
+                    error_message=f"Job failed after {job.attempts} attempt(s) ({code}).",
                     locked_at=None,
                     finished_at=func.now(),
                 )
             else:
                 await repo.update_job(session, ctx, job.id, status="queued", locked_at=None)
-        if job.attempts >= MAX_JOB_ATTEMPTS:
+        if final:
             await _notify_failed(on_failed, job, code)
+        elif stop is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), RETRY_DELAY_S * job.attempts)
         return True
     async with sessionmaker.begin() as session:
         await repo.update_job(
@@ -156,7 +167,7 @@ async def run_loop(
     """Run jobs one at a time (JOB_CONCURRENCY=1) until `stop` is set; poll when idle."""
     while not stop.is_set():
         try:
-            worked = await run_one(sessionmaker, handlers, on_failed)
+            worked = await run_one(sessionmaker, handlers, on_failed, stop)
         except Exception as exc:
             # e.g. Postgres down mid-transition: the job stays `running` until the next startup.
             log.error("worker_error", error_type=type(exc).__name__)

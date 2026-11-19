@@ -13,6 +13,16 @@ def test_missing_required_secrets_fail_fast(monkeypatch):
     assert {"pipe_shared_secret", "signing_secret"} <= missing
 
 
+@pytest.mark.parametrize("field", ["pipe_shared_secret", "signing_secret"])
+@pytest.mark.parametrize("value", ["", "x" * 31])
+def test_short_secrets_fail_fast(field, value):
+    # An empty SIGNING_SECRET would make every signed download link forgeable.
+    secrets = {"pipe_shared_secret": "p" * 32, "signing_secret": "s" * 32, field: value}
+    with pytest.raises(ValidationError) as exc:
+        Settings(_env_file=None, **secrets)
+    assert {e["loc"][0] for e in exc.value.errors()} == {field}
+
+
 def test_defaults_match_development_guidelines(monkeypatch):
     for var in ("DATABASE_URL", "QDRANT_URL", "STORAGE_ROOT", "SIGNED_URL_TTL_S", "LOG_LEVEL"):
         monkeypatch.delenv(var, raising=False)

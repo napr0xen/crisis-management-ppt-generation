@@ -3,11 +3,16 @@
 import uuid
 
 import pytest
+from fastapi.testclient import TestClient
+from qdrant_client import AsyncQdrantClient
+from qdrant_client import models as m
 
+from doc_intel.core.config import Settings, get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import DENSE_DIM, Embedding, Hit, SparseVector
 from doc_intel.ingestion.schemas import ChunkPayload
-from doc_intel.vector.qdrant_store import chunk_id
+from doc_intel.main import create_app
+from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
 
 pytestmark = pytest.mark.integration
 
@@ -42,6 +47,36 @@ async def seed(store, ctx, doc, element_types=("text", "text", "text")) -> list[
     chunks = [chunk(doc, i, t) for i, t in enumerate(element_types)]
     await store.upsert_chunks(ctx, chunks, [emb(i, 100 + i) for i in range(len(chunks))])
     return chunks
+
+
+@pytest.fixture
+async def wrong_dims_collection():
+    """A collection left by another embedding setup (8-dim dense vectors)."""
+    client = AsyncQdrantClient(url=get_settings().qdrant_url)
+    name = f"doc_chunks_test_wrong_dims_{uuid.uuid4().hex[:8]}"
+    await client.create_collection(
+        name,
+        vectors_config={"dense": m.VectorParams(size=8, distance=m.Distance.COSINE)},
+        sparse_vectors_config={"sparse": m.SparseVectorParams(modifier=m.Modifier.IDF)},
+    )
+    yield client, name
+    await client.delete_collection(name)
+    await client.close()
+
+
+async def test_collection_for_another_embedding_setup_is_refused(wrong_dims_collection):
+    client, name = wrong_dims_collection
+    with pytest.raises(RuntimeError, match="another embedding setup"):
+        await QdrantStore(client, name).ensure_collection()
+
+
+async def test_startup_refuses_a_collection_for_another_embedding_setup(wrong_dims_collection):
+    # Swallowing this at startup left only "qdrant unavailable" in the log while every
+    # upload and question failed.
+    _, name = wrong_dims_collection
+    with pytest.raises(RuntimeError, match="another embedding setup"):
+        with TestClient(create_app(Settings(qdrant_collection=name))):
+            pass
 
 
 async def test_ensure_collection_is_idempotent_and_configured(vector_store):
