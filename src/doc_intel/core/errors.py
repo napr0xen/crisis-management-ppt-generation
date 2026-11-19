@@ -38,6 +38,14 @@ class LinkExpired(AppError):
 
 class ValidationFailed(AppError):
     code, http_status, message = "validation_error", 422, "Validation failed."
+    retry = False  # jobs: the same input fails the same way
+
+
+class IRInvalid(AppError):
+    """Recorded as a job error_code only; never returned by a route."""
+
+    code, http_status, message = "ir_invalid", 422, "The template IR failed validation twice."
+    retry = False  # already retried once with the errors fed back
 
 
 class Conflict(AppError):

@@ -304,13 +304,16 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
+    { name = "defusedxml" },
     { name = "docling", extra = ["rapidocr"] },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "openpyxl" },
     { name = "pydantic-settings" },
+    { name = "python-docx" },
     { name = "python-multipart" },
+    { name = "python-pptx" },
     { name = "qdrant-client" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
@@ -326,8 +329,6 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
-    { name = "python-docx" },
-    { name = "python-pptx" },
     { name = "ruff" },
 ]
 
@@ -335,13 +336,16 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.20.1" },
     { name = "asyncpg", specifier = ">=0.32.0" },
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "docling", extras = ["rapidocr"], specifier = ">=2.150.1" },
     { name = "fastapi", specifier = ">=0.164.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=1.33.0" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pydantic-settings", specifier = ">=2.16.3" },
+    { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-multipart", specifier = ">=0.0.34" },
+    { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "qdrant-client", specifier = ">=1.20.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.9" },
     { name = "structlog", specifier = ">=26.1.0" },
@@ -357,8 +361,6 @@ dev = [
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-asyncio", specifier = ">=1.5.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
-    { name = "python-docx", specifier = ">=1.2.0" },
-    { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "ruff", specifier = ">=0.17.5" },
 ]
 
