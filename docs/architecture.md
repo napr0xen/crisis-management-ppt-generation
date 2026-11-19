@@ -23,7 +23,7 @@ Why each choice was made: [DECISIONS.md](DECISIONS.md). Names: [data-model.md](d
 │              │          │                                                            │
 │              ▼          ▼                                                            │
 │  ingestion/ (Docling + RapidOCR, native fallbacks)   templates/ (anchors, IR)        │
-│  embeddings/ (BGE-M3, MPS; reranker lazy, optional)  mapping/ (retrieve, verify)     │
+│  embeddings/ (Ollama dense + BM25 sparse; reranker)  mapping/ (retrieve, verify)     │
 │  vector/qdrant_store.py (only Qdrant access)         writers/ (pptx, docx, xlsx)     │
 │  storage/ (StorageBackend → ./data/storage/)         llm/gateway ──────────┐         │
 └────────────────────────────────────────────────────────────────────────────┼─────────┘
@@ -60,7 +60,7 @@ Pipe: each __files__ entry ──▶ POST /v1/pipe/files (bytes, openwebui_file_
                      parsed/{document_id}.json → structural chunker
                                           │  (text ≤ 512 tok per section; tables separate)
                                           ▼
-                     BGE-M3 (dense 1024 + sparse) batch 16, MPS
+                     Ollama qwen3-embedding (dense 1024) + BM25 (sparse), batch 32
                                           │
                      qdrant_store.upsert(ctx, points)  ── payload: user_id, project_id,
                                           │                document_id, page_number, …
@@ -76,7 +76,7 @@ User question ─▶ Pipe ─▶ POST /v1/pipe/chat (SSE)
                               ▼
                  chat/router: intent = "qa"
                               │
-                 retriever.search(ctx, q): BGE-M3 → Qdrant prefetch dense ∥ sparse
+                 retriever.search(ctx, q): qwen3 query + BM25 → Qdrant prefetch dense ∥ sparse
                               │              (filter user_id AND project_id) → RRF → [rerank]
                               ▼
                  LLM: answer_markdown + citations[{marker, chunk_id, quote}]
@@ -148,12 +148,12 @@ Peak at steady state (one mapping run active, Docker up, default 14B model, rera
 | Docker VM (Open WebUI ~1.0, Postgres ~0.5, Qdrant ~0.5, VM overhead) | 3.0 | cap the VM at 3 GB in Docker Desktop; compose `mem_limit`s: open-webui 1.5g, postgres 512m, qdrant 1g |
 | Ollama `qwen2.5:14b-instruct` Q4_K_M weights | 9.0 | `OLLAMA_KEEP_ALIVE=10m` |
 | Ollama KV cache (8k ctx, one slot) | 1.5 | `num_ctx=8192`, `OLLAMA_NUM_PARALLEL=1`: each extra parallel slot would add another 1.5 GB |
-| BGE-M3 fp16 (loaded on first embed, then kept) | 1.5 | measured Phase 3: 1.18 GB on MPS; ~4.3 GB process peak while loading (fp32 checkpoint) |
+| Ollama `qwen3-embedding:0.6b` (`num_ctx=1024`) | 0.8 | measured: 0.81 GB (1.24 GB at the default context); unloaded after `OLLAMA_KEEP_ALIVE` when idle. Ollama must be allowed ≥ 2 loaded models (LLM + embedder; its default allows more) |
 | FastAPI process (Python, Docling idle) | 0.5 | |
-| **Subtotal (mapping)** | **20.5** | ~3.5 GB headroom |
+| **Subtotal (mapping)** | **19.8** | ~4.2 GB headroom |
 | + Docling layout/TableFormer/RapidOCR (only during ingestion) | +2.0 | loaded lazily, worker concurrency 1 |
 | + BGE reranker v2-m3 (only if `RERANKER_ENABLED=true`) | +1.5 | lazy-loaded |
-| **Worst case (ingest + LLM + reranker)** | **24.0** | at the limit: switch to `qwen2.5:7b-instruct` (−4 GB) |
+| **Worst case (ingest + LLM + reranker)** | **23.3** | near the limit: switch to `qwen2.5:7b-instruct` (−4 GB) |
 
 Rules this budget implies:
 - `JOB_CONCURRENCY=1` and `OLLAMA_NUM_PARALLEL=1` (chat Q&A and a running job then queue at Ollama instead of each reserving their own KV cache);

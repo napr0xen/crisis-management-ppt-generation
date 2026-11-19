@@ -1,16 +1,17 @@
-"""Phase 3 exit gate: real BGE-M3 + Qdrant RRF finds the expected chunk in the top 8."""
+"""Phase 3 exit gate: Ollama qwen3-embedding + BM25 + Qdrant RRF finds the chunk in the top 8."""
 
 import uuid
 
+import httpx
 import pytest
 
 from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
-from doc_intel.embeddings.bge_m3 import BGEM3Embedder
+from doc_intel.embeddings.ollama import OllamaQwen3Embedder
 from doc_intel.ingestion.schemas import ChunkPayload
 from doc_intel.mapping.retriever import Retriever
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.llm]
 
 PASSAGES = [
     "The river crested at 7.2 metres on Tuesday, flooding 340 homes in the lower district.",
@@ -42,7 +43,10 @@ QUERIES = [
 
 async def test_expected_chunk_is_in_the_top_8_for_10_seeded_queries(vector_store):
     settings = get_settings()
-    embedder = BGEM3Embedder(settings.embedding_model, settings.embedding_device)
+    http = httpx.AsyncClient()
+    embedder = OllamaQwen3Embedder(
+        http, settings.embedding_base_url, settings.embedding_model, settings.embedding_dimensions
+    )
     ctx = TenantContext(f"smoke_{uuid.uuid4().hex[:8]}", uuid.uuid4())
     document_id = uuid.uuid4()
     chunks = [
@@ -57,7 +61,7 @@ async def test_expected_chunk_is_in_the_top_8_for_10_seeded_queries(vector_store
         )
         for i, text in enumerate(PASSAGES)
     ]
-    await vector_store.upsert_chunks(ctx, chunks, embedder.embed(PASSAGES))
+    await vector_store.upsert_chunks(ctx, chunks, await embedder.embed_documents(PASSAGES))
 
     retriever = Retriever(embedder, vector_store)
     misses = []
@@ -65,4 +69,5 @@ async def test_expected_chunk_is_in_the_top_8_for_10_seeded_queries(vector_store
         texts = [h.text for h in await retriever.search(ctx, query)]
         if PASSAGES[expected] not in texts:
             misses.append(query)
+    await http.aclose()
     assert misses == [], f"{len(QUERIES) - len(misses)}/{len(QUERIES)} found"

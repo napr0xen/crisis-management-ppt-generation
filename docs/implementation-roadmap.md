@@ -90,7 +90,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 
 - **Entry:** Phase 2 done.
 - **Deliverables:**
-  - `embeddings/bge_m3.py` (dense + sparse, MPS fp16, batch 16), `embeddings/reranker.py` (lazy, flag-gated);
+  - `embeddings/ollama.py` (Ollama `qwen3-embedding` dense, batch 32) + `embeddings/sparse.py` (BM25), `embeddings/reranker.py` (lazy, flag-gated); ADR-011 replaced the original BGE-M3 plan;
   - `vector/qdrant_store.py` (collection bootstrap with named vectors + payload indexes, upsert, hybrid RRF search, tenant-filtered retrieve/delete);
   - `mapping/retriever.py`;
   - ingestion completes to `indexed`; DELETE removes points.

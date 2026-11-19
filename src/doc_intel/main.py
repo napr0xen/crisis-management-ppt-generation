@@ -12,7 +12,7 @@ from doc_intel.core.config import Settings, get_settings
 from doc_intel.core.errors import AppError, error_response, install_error_handlers
 from doc_intel.core.logging import configure_logging
 from doc_intel.db.session import make_engine
-from doc_intel.embeddings.bge_m3 import BGEM3Embedder
+from doc_intel.embeddings.ollama import OllamaQwen3Embedder
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import start_worker
 from doc_intel.storage.local import LocalStorage
@@ -71,16 +71,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.sessionmaker = async_sessionmaker(app.state.engine, expire_on_commit=False)
         app.state.storage = LocalStorage(settings.storage_root)
         # Closed below by this reference: tests may swap app.state.vector_store for a fake.
-        store = QdrantStore.connect(settings.qdrant_url, settings.qdrant_collection)
+        store = QdrantStore.connect(
+            settings.qdrant_url, settings.qdrant_collection, settings.embedding_dimensions
+        )
         app.state.vector_store = store
         try:
             await store.ensure_collection()
         except Exception as exc:  # the API still serves; health reports Qdrant, ingest retries
             log.warning("qdrant_unavailable_at_startup", error_type=type(exc).__name__)
-        # Lazy: BGE-M3 loads on the first embed, not at startup (24 GB budget).
-        app.state.embedder = BGEM3Embedder(settings.embedding_model, settings.embedding_device)
         async with httpx.AsyncClient() as http:
             app.state.http = http
+            # Ollama loads the model on the first request and unloads it after OLLAMA_KEEP_ALIVE.
+            app.state.embedder = OllamaQwen3Embedder(
+                http,
+                settings.embedding_base_url,
+                settings.embedding_model,
+                settings.embedding_dimensions,
+            )
             stop_worker = (
                 await start_worker(
                     app.state.sessionmaker,

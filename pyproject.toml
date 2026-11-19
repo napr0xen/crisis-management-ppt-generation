@@ -8,8 +8,8 @@ dependencies = [
     "asyncpg>=0.32.0",
     "docling[rapidocr]>=2.150.1",
     "fastapi>=0.164.0",
-    "flagembedding>=1.4.2",
     "httpx>=0.28.1",
+    "huggingface-hub>=1.33.0",
     "openpyxl>=3.1.5",
     "pydantic-settings>=2.16.3",
     "python-multipart>=0.0.34",
@@ -17,6 +17,8 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.1.9",
     "structlog>=26.1.0",
     "tokenizers>=0.23.3",
+    "torch>=2.15.0",
+    "transformers>=5.23.0",
     "uvicorn[standard]>=0.54.0",
 ]
 

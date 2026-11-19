@@ -16,7 +16,7 @@ from doc_intel.ingestion.schemas import ChunkPayload
 # Fixed forever: changing it re-keys every point, so re-ingest would duplicate instead of overwrite.
 CHUNK_NAMESPACE = UUID("6f0f5a3e-2b1c-4d7e-9a8b-3c5d7e9f1a2b")
 PREFETCH_LIMIT = 40  # per retrieval mode, before RRF (system-design § 3)
-# ~26 KB of JSON per BGE-M3 point: 256 keeps each request far below Qdrant's 32 MB default limit.
+# ~26 KB of JSON per 1024-dim point: 256 keeps each request far below Qdrant's 32 MB limit.
 UPSERT_BATCH = 256
 _INDEXED_KEYWORDS = ("project_id", "document_id", "element_type")
 _HIT_KEYS = [k for k in Hit.model_fields if k not in ("chunk_id", "score")]
@@ -47,15 +47,18 @@ def _hit(point_id: str | int, payload: dict, score: float) -> Hit:
 
 
 class QdrantStore:
-    def __init__(self, client: AsyncQdrantClient, collection: str) -> None:
+    def __init__(
+        self, client: AsyncQdrantClient, collection: str, dense_dim: int = DENSE_DIM
+    ) -> None:
         self._client = client
         self._collection = collection
+        self._dense_dim = dense_dim
         self._ready = False  # collection known to exist with its indexes
 
     @classmethod
-    def connect(cls, url: str, collection: str) -> "QdrantStore":
+    def connect(cls, url: str, collection: str, dense_dim: int = DENSE_DIM) -> "QdrantStore":
         """Build the client here, so no other module ever imports qdrant_client."""
-        return cls(AsyncQdrantClient(url=url), collection)
+        return cls(AsyncQdrantClient(url=url), collection, dense_dim)
 
     async def close(self) -> None:
         await self._client.close()
@@ -73,10 +76,22 @@ class QdrantStore:
             await self._client.create_collection(
                 self._collection,
                 vectors_config={
-                    "dense": m.VectorParams(size=DENSE_DIM, distance=m.Distance.COSINE)
+                    "dense": m.VectorParams(size=self._dense_dim, distance=m.Distance.COSINE)
                 },
-                sparse_vectors_config={"sparse": m.SparseVectorParams()},  # no IDF modifier
+                # BM25: points carry term-frequency weights, Qdrant applies IDF (ADR-011).
+                sparse_vectors_config={"sparse": m.SparseVectorParams(modifier=m.Modifier.IDF)},
             )
+        else:
+            params = (await self._client.get_collection(self._collection)).config.params
+            if (
+                params.vectors["dense"].size != self._dense_dim
+                or params.sparse_vectors["sparse"].modifier != m.Modifier.IDF
+            ):
+                # Vectors from another embedding setup would silently rank garbage.
+                raise RuntimeError(
+                    f"Qdrant collection {self._collection!r} was built for another embedding "
+                    "setup: delete it and re-ingest the documents."
+                )
         await self._client.create_payload_index(
             self._collection,
             "user_id",

@@ -1,4 +1,4 @@
-"""Pick the parser for an extension, then chunk with BGE-M3 token counts (system-design § 2)."""
+"""Pick the parser for an extension, then chunk by CHUNK_TOKENIZER counts (system-design § 2)."""
 
 import uuid
 from functools import cache

@@ -26,8 +26,8 @@ class Retriever:
         document_ids: list[UUID] | None = None,
         k: int = 20,
     ) -> list[Hit]:
-        """BGE-M3 dense+sparse query -> tenant-filtered RRF top `k` -> reranked or fused top 8."""
-        [embedding] = await asyncio.to_thread(self._embedder.embed, [query])
+        """Dense+sparse query -> tenant-filtered RRF top `k` -> reranked or fused top 8."""
+        embedding = await self._embedder.embed_query(query)
         hits = await self._store.hybrid_search(ctx, embedding, document_ids=document_ids, limit=k)
         if self._reranker is None:
             return hits[:TOP_N]

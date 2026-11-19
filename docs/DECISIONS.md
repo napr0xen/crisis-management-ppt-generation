@@ -56,7 +56,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 
 ## ADR-004 — BGE-M3 dense + sparse in Qdrant with RRF; optional lazy reranker
 
-**Status:** Accepted
+**Status:** Superseded by ADR-011
 
 **Decision.**
 - `BAAI/bge-m3` (via `FlagEmbedding`, fp16 on MPS) produces a 1024-dim dense vector and learned sparse lexical weights for each chunk in one pass. Verified in Phase 3 with FlagEmbedding 1.4.2 on transformers 5.23 / torch 2.15. Models are fetched with `huggingface_hub.snapshot_download` skipping the unused ONNX export (~2.3 GB), and work offline from the HF cache afterwards.
@@ -172,3 +172,28 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 - Progress is written to `jobs.progress`; `/v1/pipe/chat` polls it to emit SSE `status` events.
 
 **Trade-offs.** No Redis/Celery to run. Jobs stop while the API is down and resume on restart. `shortcut: single in-process worker, move to a separate worker process if API latency suffers during ingestion.`
+
+---
+
+## ADR-011 — Ollama `qwen3-embedding` (dense) + local BM25 (sparse); supersedes ADR-004
+
+**Status:** Accepted
+
+**Context.** BGE-M3 ran inside the Python process through FlagEmbedding, which pulled in sentence-transformers, peft, datasets and accelerate, and kept about 1.2 GB resident once loaded. Ollama already runs natively on Metal for the LLM and can serve embedding models too.
+
+**Decision.**
+- **Dense:** Ollama `qwen3-embedding:0.6b` via `POST /api/embed` (`embeddings/ollama.py`, `OllamaQwen3Embedder`):
+  - batches of 32, `dimensions = EMBEDDING_DIMENSIONS` (1024), `options.num_ctx = 1024`;
+  - only queries get Qwen3's retrieval instruction (`Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: `); chunks are embedded as raw text;
+  - `dimensions` is Matryoshka truncation, so switching to `qwen3-embedding:4b` in `.env` keeps 1024-dim vectors. Any model change still needs a re-ingest: vectors from different models are not comparable.
+- **Sparse:** hashed-token BM25 (`embeddings/sparse.py`, no ML model). Documents carry the BM25 term-frequency part (`k1 = 1.2`, `b = 0.75`, fixed average length 256 tokens); queries carry weight 1 per distinct term. The collection's `sparse` vector uses `modifier = IDF`, so Qdrant computes IDF from the indexed corpus.
+- Qdrant, RRF fusion, tenant filters and the `doc_chunks` layout are unchanged from ADR-004. `ensure_collection` refuses a collection created with another dense size or without IDF ("delete it and re-ingest").
+- **Chunk sizing** uses the Qwen3 tokenizer from Hugging Face (`CHUNK_TOKENIZER = Qwen/Qwen3-Embedding-0.6B`, tokenizer files only).
+- **Reranker:** `BAAI/bge-reranker-v2-m3` stays optional and off by default, now on plain `transformers` (`RERANKER_DEVICE`). FlagEmbedding is removed.
+- This also amends ADR-001's list of in-process ML: embeddings now run in Ollama, not in the FastAPI process.
+
+**Trade-offs.**
+- **Memory:** the model moves out of Python into Ollama rather than disappearing. Measured: 0.81 GB in Ollama at `num_ctx = 1024` (1.24 GB at the default context), against BGE-M3's 1.18 GB on MPS. Ollama also unloads it after `OLLAMA_KEEP_ALIVE` when idle. The Python process loses FlagEmbedding's dependency tree. torch stays, because Docling needs it.
+- **Sparse quality:** hashed BM25 is a lexical baseline, not BGE-M3's learned weights. The Phase 3 smoke test still finds the expected chunk in the top 8 for 10 of 10 queries.
+- **Dependency:** ingestion and search now need Ollama running, which they need anyway for the LLM (Phase 4).
+

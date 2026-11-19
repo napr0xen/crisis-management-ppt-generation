@@ -1,4 +1,4 @@
-"""Upserts stay under Qdrant's 32 MB request limit (~1,250 BGE-M3 points per request)."""
+"""Upserts stay under Qdrant's 32 MB request limit (~1,250 1024-dim points per request)."""
 
 import uuid
 
@@ -20,7 +20,10 @@ class RecordingClient:
 
     async def collection_exists(self, collection):
         self.exists_calls += 1
-        return True
+        return False
+
+    async def create_collection(self, *args, **kwargs):
+        pass
 
     async def create_payload_index(self, *args, **kwargs):
         pass

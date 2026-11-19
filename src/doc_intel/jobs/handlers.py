@@ -51,7 +51,7 @@ def make_handlers(
                 document_id=document_id,
                 filename=doc.filename,
                 max_tokens=settings.chunk_max_tokens,
-                tokenizer_model=settings.embedding_model,
+                tokenizer_model=settings.chunk_tokenizer,
             )
             # overwrite: derived data a crashed attempt may have left behind
             storage.put_bytes(key, parsed.model_dump_json().encode(), overwrite=True)
@@ -60,7 +60,7 @@ def make_handlers(
             await set_progress(
                 sessionmaker, ctx, job.id, {"stage": "embedding", "total": len(texts)}
             )
-            embeddings = await asyncio.to_thread(embedder.embed, texts) if texts else []
+            embeddings = await embedder.embed_documents(texts) if texts else []
             await set_progress(sessionmaker, ctx, job.id, {"stage": "indexing"})
             await vector_store.ensure_collection()  # Qdrant may have been down at app startup
             # A retry or re-ingest may yield fewer chunks: overwriting by id would leave the old

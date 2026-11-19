@@ -11,7 +11,7 @@ A local-first, domain-agnostic RAG platform. You chat in **Open WebUI**: upload 
 ```
 Open WebUI chat ──Pipe Function──▶ FastAPI (native, MPS) ──▶ PostgreSQL 16 · Qdrant · ./data/storage
                                        │
-                                       ├─ Docling + RapidOCR → structural chunks → BGE-M3 (dense+sparse) → Qdrant (RRF)
+                                       ├─ Docling + RapidOCR → structural chunks → qwen3-embedding (Ollama) + BM25 → Qdrant (RRF)
                                        ├─ Q&A: hybrid retrieval → LLM → deterministic quote verification
                                        └─ Templates: Anchor Map → Template IR → per-field evidence mapping
                                                     → surgical in-place write → signed download link
@@ -20,7 +20,7 @@ Open WebUI chat ──Pipe Function──▶ FastAPI (native, MPS) ──▶ Pos
 ```
 
 - **Docker Compose:** Open WebUI, PostgreSQL 16, Qdrant.
-- **Native macOS (`uv`, Python 3.12):** FastAPI backend with Docling, BGE-M3, and optional BGE reranker; Ollama.
+- **Native macOS (`uv`, Python 3.12):** FastAPI backend with Docling and the optional BGE reranker; Ollama for the LLM and `qwen3-embedding` embeddings.
 - **Isolation:** every row and vector is scoped by `user_id` + `project_id`; one project per Open WebUI chat.
 
 ## Target machine: MacBook Pro M5 Pro, 24 GB

@@ -7,11 +7,11 @@ from pydantic import BaseModel, ConfigDict
 
 from doc_intel.ingestion.schemas import ElementType
 
-DENSE_DIM = 1024  # BAAI/bge-m3
+DENSE_DIM = 1024  # EMBEDDING_DIMENSIONS default; the Qdrant `dense` vector size
 
 
 class SparseVector(BaseModel):
-    """BGE-M3 learned lexical weights: token ids and their weights."""
+    """Lexical term weights (BM25, `embeddings/sparse.py`): hashed token ids and weights."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -22,13 +22,17 @@ class SparseVector(BaseModel):
 class Embedding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    dense: list[float]  # DENSE_DIM floats, L2-normalized
+    dense: list[float]  # EMBEDDING_DIMENSIONS floats, L2-normalized
     sparse: SparseVector
 
 
 class Embedder(Protocol):
-    def embed(self, texts: list[str]) -> list[Embedding]:
-        """One `Embedding` per text, same order; `[]` for `[]`. Sync: call via asyncio.to_thread."""
+    async def embed_documents(self, texts: list[str]) -> list[Embedding]:
+        """One `Embedding` per chunk text, same order; `[]` for `[]`."""
+        ...
+
+    async def embed_query(self, text: str) -> Embedding:
+        """A search query (instruction-aware where the model wants one)."""
         ...
 
 

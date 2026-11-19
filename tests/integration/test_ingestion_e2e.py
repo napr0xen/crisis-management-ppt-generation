@@ -128,7 +128,8 @@ async def test_unparseable_file_fails_document_after_last_attempt(
     assert (doc.status, doc.error_code) == ("failed", "parse_error")
 
 
-@pytest.mark.slow  # real BGE-M3 via the app lifespan
+@pytest.mark.slow  # real Ollama qwen3-embedding via the app lifespan
+@pytest.mark.llm
 def test_app_lifespan_runs_the_worker(migrated_db, user_a):
     settings = Settings(job_concurrency=1)
     with TestClient(create_app(settings)) as client:

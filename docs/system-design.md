@@ -10,7 +10,7 @@ Table, column, and path names come from [data-model.md](data-model.md); endpoint
 | `db/` | async SQLAlchemy 2.0 models and tenant-scoped repositories | `session.py`, `models.py`, `repo.py` |
 | `storage/` | `StorageBackend` protocol + local implementation | `base.py`, `local.py` |
 | `ingestion/` | upload validation, parse → chunk | `schemas.py` (`ParsedElement`, `ParsedDocument`, `ChunkPayload`), `upload.py` (format/magic/size checks, sha256, storage keys), `docling_parser.py`, `native_parsers.py`, `chunker.py`, `pipeline.py` |
-| `embeddings/` | BGE-M3 dense+sparse, optional reranker | `bge_m3.py`, `reranker.py` |
+| `embeddings/` | dense via Ollama, BM25 sparse, optional reranker | `schemas.py`, `ollama.py`, `sparse.py`, `reranker.py` |
 | `vector/` | **only** Qdrant access point | `qdrant_store.py` |
 | `llm/` | provider-agnostic gateway, prompts | `gateway.py`, `prompts/*.md` |
 | `templates/` | Stage 1 anchor extraction, Stage 2 IR build + validation | `anchors_pptx.py`, `anchors_docx.py`, `anchors_xlsx.py`, `ir_builder.py`, `schemas.py` |
@@ -48,17 +48,17 @@ Outside the package: `integrations/openwebui/doc_intel_pipe.py` (the Pipe Functi
 3. Write the parser output to `parsed/{document_id}.json` with `overwrite=True`, so a retry after a crash can rewrite it.
    Headings (Docling section headers/titles, Markdown `#` lines) set `section_heading` **and** are emitted as text, because the layout model sometimes labels body text as a header.
 4. **Chunker** (`chunker.py`):
-   - text items under the same heading are packed up to `CHUNK_MAX_TOKENS=512` BGE-M3 tokens (target ~400) and never cross a section boundary;
+   - text items under the same heading are packed up to `CHUNK_MAX_TOKENS=512` tokens (`CHUNK_TOKENIZER`) (target ~400) and never cross a section boundary;
    - each table is its own chunk (`element_type = 'table'`), serialized as Markdown; tables longer than 512 tokens are split by rows, with the header row repeated;
    - `chunk_index` is 0-based and contiguous per document.
-5. Embed in batches of 16 (BGE-M3, fp16, MPS). Then delete the document's existing points (a retry may yield fewer chunks), upsert into `doc_chunks`, and set `status = 'indexed'` with `page_count` and `chunk_count`. A document deleted meanwhile has its points and parsed JSON removed, and the job ends without retrying.
+5. Embed in batches of 32: dense from Ollama `qwen3-embedding` (raw chunk text), sparse BM25 locally. Then delete the document's existing points (a retry may yield fewer chunks), upsert into `doc_chunks`, and set `status = 'indexed'` with `page_count` and `chunk_count`. A document deleted meanwhile has its points and parsed JSON removed, and the job ends without retrying.
 
 Any failure sets `status = 'failed'` and `error_code` (e.g. `parse_error`, `ocr_error`, `embed_error`). No document text is logged.
 
 ## 3. Retrieval (shared by Q&A and mapping)
 
 `Retriever(embedder, store, reranker | None).search(ctx: TenantContext, query: str, document_ids: list[UUID] | None = None, k=20)` (`mapping/retriever.py`):
-1. Embed the query with BGE-M3 (dense + sparse).
+1. Embed the query: dense from Ollama with Qwen3's retrieval instruction prefixed, sparse BM25 from the raw query words.
 2. `qdrant_store.hybrid_search`: prefetch `dense` limit 40 and `sparse` limit 40, both with the tenant filter, fused with RRF, limit `k`.
 3. If `RERANKER_ENABLED`, rerank to top 8; otherwise take the top 8 fused hits.
 4. Return a `Hit(chunk_id, document_id, filename, page_number, section_heading, element_type, text, score)` per result.

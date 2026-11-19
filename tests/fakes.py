@@ -32,6 +32,10 @@ class FakeEmbedder:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
-    def embed(self, texts: list[str]) -> list[Embedding]:
+    async def embed_documents(self, texts: list[str]) -> list[Embedding]:
         self.calls.append(list(texts))
         return [_embed(t) for t in texts]
+
+    async def embed_query(self, text: str) -> Embedding:
+        self.calls.append([text])
+        return _embed(text)

@@ -31,7 +31,7 @@ class FakeEmbedder:
         self.fail = fail
         self.calls: list[list[str]] = []
 
-    def embed(self, texts: list[str]) -> list[Embedding]:
+    async def embed_documents(self, texts: list[str]) -> list[Embedding]:
         self.calls.append(texts)
         if self.fail:
             raise RuntimeError("model crashed")

@@ -20,8 +20,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_upload_mb: int = 100
     chunk_max_tokens: int = 512
-    embedding_model: str = "BAAI/bge-m3"
-    embedding_device: str = "mps"  # mps | cpu
+    embedding_base_url: str = "http://localhost:11434"  # Ollama
+    embedding_model: str = "qwen3-embedding:0.6b"
+    embedding_dimensions: int = 1024  # sent to Ollama (Matryoshka); must match the collection
+    chunk_tokenizer: str = "Qwen/Qwen3-Embedding-0.6B"  # HF tokenizer that sizes chunks
+    reranker_device: str = "mps"  # mps | cpu, for the optional local reranker
     reranker_enabled: bool = False
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     qdrant_collection: str = "doc_chunks"  # tests use their own collection

@@ -51,7 +51,7 @@ async def test_ensure_collection_is_idempotent_and_configured(vector_store):
     info = await vector_store._client.get_collection(vector_store._collection)
     dense = info.config.params.vectors["dense"]
     assert (dense.size, dense.distance.value) == (DENSE_DIM, "Cosine")
-    assert info.config.params.sparse_vectors["sparse"].modifier in (None, "none")
+    assert info.config.params.sparse_vectors["sparse"].modifier == "idf"  # BM25 (ADR-011)
     schema = info.payload_schema
     for key in ("user_id", "project_id", "document_id", "element_type"):
         assert schema[key].data_type.value == "keyword"
@@ -169,3 +169,26 @@ async def test_blank_tenant_is_rejected_by_every_method(vector_store, bad):
         await vector_store.retrieve(bad, [chunk_id(doc, 0)])
     with pytest.raises(ValueError):
         await vector_store.delete_document_points(bad, doc)
+
+
+async def test_ensure_collection_refuses_a_collection_built_for_other_vectors():
+    """Old vectors (e.g. another dense size or no IDF) would silently rank garbage."""
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client import models as qm
+
+    from doc_intel.core.config import get_settings
+    from doc_intel.vector.qdrant_store import QdrantStore
+
+    client = AsyncQdrantClient(url=get_settings().qdrant_url)
+    name = f"doc_chunks_test_mismatch_{uuid.uuid4().hex[:8]}"
+    await client.create_collection(
+        name,
+        vectors_config={"dense": qm.VectorParams(size=8, distance=qm.Distance.COSINE)},
+        sparse_vectors_config={"sparse": qm.SparseVectorParams()},
+    )
+    try:
+        with pytest.raises(RuntimeError, match="re-ingest"):
+            await QdrantStore(client, name).ensure_collection()
+    finally:
+        await client.delete_collection(name)
+        await client.close()

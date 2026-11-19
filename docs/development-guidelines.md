@@ -41,7 +41,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 ## 4. Async conventions
 
 - FastAPI handlers, DB (SQLAlchemy 2.0 async + `asyncpg`), Qdrant (`AsyncQdrantClient`), and HTTP (`httpx.AsyncClient`) are async.
-- CPU/GPU-bound work (Docling, BGE-M3, reranker, writers) runs via `await asyncio.to_thread(...)`. Never call it directly in the event loop.
+- CPU/GPU-bound work (Docling, chunk tokenizing, reranker, writers) runs via `await asyncio.to_thread(...)`; embeddings are async HTTP calls to Ollama. Never call it directly in the event loop.
 - One `httpx.AsyncClient`, DB engine, and Qdrant client per process, created in `main.py` lifespan and injected through dependencies.
 - No fire-and-forget `asyncio.create_task` outside `jobs/worker.py`. Long work goes into `jobs`.
 - **One transaction per request.**
@@ -89,8 +89,11 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `LLM_MODEL` | `qwen2.5:14b-instruct` | |
 | `LLM_API_KEY` | empty | required for `openai`/`anthropic` |
 | `LLM_NUM_CTX` | `8192` | Ollama context window |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` | |
-| `EMBEDDING_DEVICE` | `mps` | `mps` \| `cpu` |
+| `EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama |
+| `EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | any Ollama embedding model; changing it needs a re-ingest |
+| `EMBEDDING_DIMENSIONS` | `1024` | sent to Ollama (Matryoshka); must match the Qdrant collection |
+| `CHUNK_TOKENIZER` | `Qwen/Qwen3-Embedding-0.6B` | Hugging Face tokenizer that sizes chunks |
+| `RERANKER_DEVICE` | `mps` | `mps` \| `cpu` |
 | `RERANKER_ENABLED` | `false` | |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | |
 | `CHUNK_MAX_TOKENS` | `512` | |

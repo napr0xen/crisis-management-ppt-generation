@@ -163,10 +163,12 @@ def test_docling_fixtures_fit(parser, source):
 
 
 @pytest.mark.slow
-def test_bge_m3_tokenizer_limit():
+def test_production_tokenizer_limit():
     from tokenizers import Tokenizer
 
-    tok = Tokenizer.from_pretrained("BAAI/bge-m3")
+    from doc_intel.core.config import get_settings
+
+    tok = Tokenizer.from_pretrained(get_settings().chunk_tokenizer)
 
     def count(t: str) -> int:
         return len(tok.encode(t).ids)

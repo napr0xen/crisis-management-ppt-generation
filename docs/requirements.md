@@ -11,7 +11,7 @@ Names: [data-model.md](data-model.md), [api-specification.md](api-specification.
 | FR-1 | Users interact only through Open WebUI chat. A thin Pipe Function forwards `user_id`, `chat_id`, `messages`, and file references to the backend and shows live status via `__event_emitter__`. |
 | FR-2 | Internal Open WebUI task calls (`### Task:` title/tag/follow-up generation) are ignored by the Pipe. |
 | FR-3 | Each chat maps to one project (`projects.openwebui_chat_id`). All documents, runs, and artifacts are scoped to that project. |
-| FR-4 | Uploaded files are stored immutably, parsed, structurally chunked, embedded (BGE-M3 dense + sparse), and indexed in Qdrant with `document_id`, `filename`, `page_number`, `section_heading`, `element_type`, `chunk_index`. |
+| FR-4 | Uploaded files are stored immutably, parsed, structurally chunked, embedded (Ollama `qwen3-embedding` dense + BM25 sparse), and indexed in Qdrant with `document_id`, `filename`, `page_number`, `section_heading`, `element_type`, `chunk_index`. |
 | FR-5 | Re-uploading identical content in a project is deduplicated (`sha256`). |
 | FR-6 | Users ask questions in chat. Answers cite `filename` + `page_number` with verbatim quotes. Any citation that fails verification is removed. With no verified citation, the answer is "not found". |
 | FR-7 | The user names the target template in natural language. If zero or several documents match, the backend lists the candidates and asks for confirmation before doing anything. |
