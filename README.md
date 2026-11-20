@@ -39,7 +39,7 @@ cp .env.example .env          # set POSTGRES_PASSWORD (also in DATABASE_URL), PI
 docker compose up -d          # Open WebUI :3000, Postgres :5432, Qdrant :6333 (localhost only)
 uv sync
 uv run alembic upgrade head
-uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000 --no-access-log
 curl 127.0.0.1:8000/v1/health # {"status":"ok","postgres":"ok","qdrant":"ok",...}
 uv run pytest                 # integration tests use a throwaway doc_intel_test database
 ```
@@ -48,7 +48,7 @@ uv run pytest                 # integration tests use a throwaway doc_intel_test
 
 The Pipe is the only bridge between Open WebUI and the backend. Its code is [integrations/openwebui/doc_intel_pipe.py](integrations/openwebui/doc_intel_pipe.py).
 
-1. Start the services and the API on the host (see Quick start): `docker compose up -d`, then `uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000`.
+1. Start the services and the API on the host (see Quick start): `docker compose up -d`, then `uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000 --no-access-log`.
 2. Open http://localhost:3000 → **Admin Panel → Functions → "+"** (new function). Paste the whole content of `integrations/openwebui/doc_intel_pipe.py`, save, and enable the function.
 3. Open the function's **Valves** (gear icon) and set:
    - `BACKEND_URL` = `http://host.docker.internal:8000`

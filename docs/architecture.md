@@ -162,4 +162,25 @@ Rules this budget implies:
 - Docling and the reranker are loaded lazily and released when idle;
 - use the 7B model if the reranker is enabled.
 
-Measured in Phase 12.
+### Measured (Phase 12, 2026-11-21)
+
+Measured on the target machine with `qwen3:14b` (`LLM_NUM_CTX=8192`) and `qwen3-embedding:0.6b`, reranker off, `JOB_CONCURRENCY=1`, by `tests/eval/test_perf.py` (`uv run pytest -m perf -s tests/eval/test_perf.py`; numbers in the git-ignored `tests/eval/report.json["perf"]`).
+
+| Consumer | Budget (GB) | Measured | Source |
+|---|---|---|---|
+| Ollama `qwen3:14b` (8k ctx) | 10.0 | 10 GB | `ollama ps`, 100% GPU |
+| Ollama `qwen3-embedding:0.6b` (1k ctx) | 0.8 | 813 MB | `ollama ps` |
+| Docker containers | 3.0 (VM) | Open WebUI 1.16 GiB, Qdrant 0.78 GiB, Postgres 0.12 GiB (2.06 GiB) | `docker stats`, after the run |
+| Python process, peak (incl. Docling models) | 0.5 + 2.0 | 1.56 GB peak RSS | `resource.getrusage` |
+
+So the mapping subtotal stays inside the 19.3 GB estimate, and Docling's real cost (~1.1 GB above idle) is below its 2.0 GB allowance.
+
+NFR-3 latency targets ([requirements.md](requirements.md)), all met:
+
+| Target | Limit | Measured |
+|---|---|---|
+| Ingest a 50-page text PDF (parse, chunk, embed, upsert; 150 chunks) | ≤ 3 min | 23.7 s, Docling model load included |
+| Q&A answer (5 questions) | ≤ 20 s | p50 10.5 s, max 13.5 s |
+| Map a 30-field template over 5 sources | ≤ 10 min | 250.6 s (about 8.4 s per field) |
+
+`shortcut: the PDF is synthetic text (no OCR or tables) and the 30 fields come from the eval set; re-measure with a scanned PDF and a real deck if users report slow runs.`

@@ -221,7 +221,7 @@ def test_citation_filename_and_quote_are_escaped() -> None:
     out = render_answer(Answer(answer_markdown="Ans [1]", citations=[cit], found=True))
     _no_live_markup(out)
     assert "![x](https://evil" not in out
-    assert "\\!\\[x\\]\\(https://evil/p.png\\)" in out
+    assert "\\!\\[x\\]\\(https:\\/\\/evil/p.png\\)" in out
     assert "Ans [1]" in out and "[1] a" in out
 
 
@@ -311,8 +311,40 @@ def test_render_library_escapes_name_and_description() -> None:
 
     evil = "![x](http://evil/p.png)"
     out = render_library([LibraryTemplate(name=evil, format="pptx", description=evil)])
-    assert evil not in out and "\\!\\[x\\]\\(http://evil/p.png\\)" in out
+    assert evil not in out and "\\!\\[x\\]\\(http:\\/\\/evil/p.png\\)" in out
 
 
 def test_help_text_mentions_the_library() -> None:
     assert "make a powerpoint out of this" in HELP_TEXT
+
+
+def test_no_fence_newline_or_bare_url_survives_escaping() -> None:
+    from doc_intel.chat.summary import md
+
+    out = md("a.pdf\n~~~html\n<img src=https://evil/x>")
+    assert "\n" not in out and "~~~" not in out and "://" not in out
+    assert "\\<img" in out and "\\~\\~\\~" in out
+    answer = render_answer(
+        Answer(
+            answer_markdown="```html\n<img src=x>\n``` see https://evil/x", citations=[], found=True
+        )
+    )
+    assert "```" not in answer and "https://" not in answer
+    assert "<img" not in answer.replace("\\<img", "")
+
+
+def test_render_edits_names_every_op_by_label() -> None:
+    from doc_intel.chat.edits import EditsIn
+    from doc_intel.chat.summary import render_edits
+
+    ops = EditsIn(
+        edits=[
+            {"op": "set_value", "field_id": "a", "value": "Ann ![x](https://e/p.png)"},
+            {"op": "choose_candidate", "field_id": "b", "candidate_index": 1},
+            {"op": "clear", "field_id": "zz"},
+        ]
+    ).edits
+    lines = render_edits(ops, _ir("a", "b"))
+    assert lines[0].startswith("- Set **Label a** to Ann") and "![" not in lines[0]
+    assert lines[1] == "- Used value 2 for **Label b**"
+    assert lines[2] == "- Cleared **zz**"

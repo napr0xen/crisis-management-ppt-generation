@@ -29,12 +29,12 @@ Outside the package: `integrations/openwebui/doc_intel_pipe.py` (the Pipe Functi
 ## 2. Ingestion
 
 1. `POST …/documents` or `POST /v1/pipe/files`:
-   - validate the extension against the format allow-list, check the magic bytes, enforce `MAX_UPLOAD_MB`;
+   - validate the extension against the format allow-list, check the magic bytes, enforce `MAX_UPLOAD_MB`; an OOXML file over 512 MB unzipped, or with an `.xml`/`.rels` part over 32 MB, is `413` (Phase 12);
    - compute `sha256` and deduplicate on `(project_id, sha256)`;
    - `StorageBackend.put_bytes(uploads/{document_id}/original.{ext})`;
    - insert `documents` with `status = 'uploaded'`;
    - enqueue `ingest_document`.
-2. The worker sets `parsing`, then picks a parser by extension:
+2. The worker sets `parsing`, then picks a parser by extension. Docling stops at `MAX_PAGES = 1000` pages (the document fails with `parse_error`), so one huge file cannot hold the single worker for hours (Phase 12):
 
 | Ext | Parser | `page_number` | `section_heading` |
 |---|---|---|---|
@@ -350,7 +350,7 @@ Example (conflict):
 
 Engine results always have `provenance = rag`.
 
-`shortcut: heuristic confidence tiers, calibrate against the eval set in Phase 12.`
+Calibration (Phase 12, eval set of 5 templates, 39 fields, `qwen3:14b`): tier 0.9 was correct for 12 of 12 values and tier 0.8 for 9 of 9. No `partial` rows occurred. The tiers stay as they are: the order holds and no tier over-promises. `shortcut: calibrated on 21 values; recalibrate once the eval set or a live run gives partial rows or a wrong 0.9 value.`
 
 ## 7. Mapping engine (Stage 3)
 
@@ -517,7 +517,7 @@ Common rules:
      `shortcut: the only pptx/docx/xlsx in a chat is mapped without asking; a source memo of that format then becomes the template (re-adding it needs DELETE), drop this rule if users hit it.`
      `shortcut: the list number refers to the current document order; an upload between the list and the reply can shift it, upgrade with pending_action.`
    - `chitchat` → the fixed help text (`HELP_TEXT`). No answer call is made; the routing call still runs.
-   - `edit` (Phase 11) → the project's latest `completed` mapping run is the parent (none → "There is no generated document to edit yet."). `parse_edits` turns the last user message into `EditOp`s, then the same path as `POST …/edits` (`start_edit_run`) creates the new run and the Pipe waits on its `render_artifact` job. The reply is "Applied N edit(s). This is version V." followed by `render_summary` for the new run. A rejected edit replies "I could not apply that edit: <reason>" and creates nothing.
+   - `edit` (Phase 11) → the project's latest `completed` mapping run is the parent (none → "There is no generated document to edit yet."). `parse_edits` turns the last user message into `EditOp`s, then the same path as `POST …/edits` (`start_edit_run`) creates the new run and the Pipe waits on its `render_artifact` job. The reply is "Applied N edit(s). This is version V.", one line per applied op by field label (`render_edits`: "Set **Owner** to Ann", "Used value 2 for **Customers**", "Cleared **Date**"; labels and values escaped), then `render_summary` for the new run. Naming every op makes an edit the user did not ask for (prompt injection through a quoted value) visible. `shortcut: choose_candidate and clear have no deterministic check against the user's words (set_value does, ADR-013), add a label match if injected edits show up.` A rejected edit replies "I could not apply that edit: <reason>" and creates nothing.
 5. **Q&A** (`qa.py`):
    1. Retrieve. No hits → the "not found" answer below, without an LLM call. A search failure → `503 upstream_unavailable`.
    2. Make one LLM call (prompt `llm/prompts/qa.md`) with JSON output `{"answer_markdown": "… [1] …", "citations": [{"marker": 1, "chunk_id": "…", "quote": "…"}]}`. Each hit is shown as `[chunk_id | filename | p.N | section]` followed by its text.
@@ -529,10 +529,10 @@ Common rules:
 6. **Summary** (`summary.py`):
    - counts by status;
    - every `missing` field (label + reason);
-   - every `conflict` (each candidate value + citations);
+   - every `conflict` (each candidate value + citations, numbered from 1 so the user can say "use the second value");
    - `partial` fields and warnings;
    - the signed download link.
-   - Escaping: document-derived text (filenames, quotes, values, labels, and the filenames in skip and upload-failure messages, in the backend and in the Pipe) is markdown-escaped with `md()`, so an image or link inside a document cannot make Open WebUI fetch anything. The LLM answer keeps emphasis, lists and tables, but every backslash, bracket and angle bracket in it is escaped and only plain `[n]` markers are restored (never one followed by `(`, `[` or `:`), so no inline or reference-style link, image, definition or raw HTML can form (`_answer_md`).
+   - Escaping: document-derived text (filenames, quotes, values, labels, and the filenames in skip and upload-failure messages, in the backend and in the Pipe) is markdown-escaped with `md()`, so an image or link inside a document cannot make Open WebUI fetch anything. `md()` also folds the text onto one line, escapes `~` and backticks (no code fence, which Open WebUI may open as a live HTML artifact), and writes `://` as `:\/\/` (no bare-URL autolink) (Phase 12). The LLM answer keeps emphasis, lists and tables, but every backslash, bracket and angle bracket in it is escaped and only plain `[n]` markers are restored (never one followed by `(`, `[` or `:`), so no inline or reference-style link, image, definition or raw HTML can form (`_answer_md`). Backticks and `~` are escaped too (no fence), and `://` becomes `:\/\/` (Phase 12).
 
 ## 10. Conversational edits (`chat/edits.py`)
 
@@ -559,4 +559,4 @@ Applying an edit (`start_edit_run` in `api/v1/mapping_runs.py`, shared by the en
 
 The parent run is never modified.
 
-**Chat parsing (`parse_edits`).** One JSON LLM call (prompt `llm/prompts/edits.md`) sees the run's field list (`field_id | label | status | current value`, clipped), each conflict's numbered candidates (value and filename), and the last user message. It returns flat ops `{op, field_id, value, candidate_index}`. An op missing its argument is rejected. A `set_value` value must appear in the last user message as whole words (`normalize`d, so a cut-down `1200` does not match `12000`), so the model can't invent a value the user never wrote ([ADR-013](DECISIONS.md#adr-013--chat-edits-take-values-only-from-the-users-message)). `shortcut: an edit always targets the latest completed run in the chat; add an explicit version reference ("edit v1") if users ask for it.`
+**Chat parsing (`parse_edits`).** One JSON LLM call (prompt `llm/prompts/edits.md`) sees the run's field list (`field_id | label | status | current value`, clipped), each conflict's candidates (value and filename) numbered from 1, the same numbers the chat summary shows (the model's number minus 1 is the API's `candidate_index`), and the last user message. It returns flat ops `{op, field_id, value, candidate_index}`. An op missing its argument is rejected. A `set_value` value must appear in the last user message as whole words (`normalize`d, so a cut-down `1200` does not match `12000`), so the model can't invent a value the user never wrote ([ADR-013](DECISIONS.md#adr-013--chat-edits-take-values-only-from-the-users-message)). `shortcut: an edit always targets the latest completed run in the chat; add an explicit version reference ("edit v1") if users ask for it.`

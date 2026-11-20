@@ -62,6 +62,13 @@ atexit.register(shutil.rmtree, os.environ["STORAGE_ROOT"], ignore_errors=True)
 AUTH = {"Authorization": f"Bearer {PIPE_SECRET}"}
 
 
+def qdrant_api_key() -> str | None:
+    from doc_intel.core.config import get_settings
+
+    key = get_settings().qdrant_api_key
+    return (key.get_secret_value() or None) if key else None
+
+
 def headers(user_id: str) -> dict[str, str]:
     return {**AUTH, "X-OWUI-User-Id": user_id}
 
@@ -187,7 +194,7 @@ def qdrant_collection() -> str:
     assert settings.qdrant_collection == f"doc_chunks_test{_RUN_SUFFIX}"
 
     async def recreate() -> None:
-        client = AsyncQdrantClient(url=settings.qdrant_url)
+        client = AsyncQdrantClient(url=settings.qdrant_url, api_key=qdrant_api_key())
         try:
             await client.delete_collection(settings.qdrant_collection)
             await QdrantStore(client, settings.qdrant_collection).ensure_collection()
@@ -206,6 +213,6 @@ async def vector_store(qdrant_collection):
     from doc_intel.core.config import get_settings
     from doc_intel.vector.qdrant_store import QdrantStore
 
-    client = AsyncQdrantClient(url=get_settings().qdrant_url)
+    client = AsyncQdrantClient(url=get_settings().qdrant_url, api_key=qdrant_api_key())
     yield QdrantStore(client, qdrant_collection)
     await client.close()

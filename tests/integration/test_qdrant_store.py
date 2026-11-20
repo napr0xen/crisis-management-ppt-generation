@@ -13,6 +13,7 @@ from doc_intel.embeddings.schemas import DENSE_DIM, Embedding, Hit, SparseVector
 from doc_intel.ingestion.schemas import ChunkPayload
 from doc_intel.main import create_app
 from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
+from tests.conftest import qdrant_api_key
 
 pytestmark = pytest.mark.integration
 
@@ -52,7 +53,7 @@ async def seed(store, ctx, doc, element_types=("text", "text", "text")) -> list[
 @pytest.fixture
 async def wrong_dims_collection():
     """A collection left by another embedding setup (8-dim dense vectors)."""
-    client = AsyncQdrantClient(url=get_settings().qdrant_url)
+    client = AsyncQdrantClient(url=get_settings().qdrant_url, api_key=qdrant_api_key())
     name = f"doc_chunks_test_wrong_dims_{uuid.uuid4().hex[:8]}"
     await client.create_collection(
         name,
@@ -214,7 +215,7 @@ async def test_ensure_collection_refuses_a_collection_built_for_other_vectors():
     from doc_intel.core.config import get_settings
     from doc_intel.vector.qdrant_store import QdrantStore
 
-    client = AsyncQdrantClient(url=get_settings().qdrant_url)
+    client = AsyncQdrantClient(url=get_settings().qdrant_url, api_key=qdrant_api_key())
     name = f"doc_chunks_test_mismatch_{uuid.uuid4().hex[:8]}"
     await client.create_collection(
         name,

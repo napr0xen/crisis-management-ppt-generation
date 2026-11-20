@@ -31,7 +31,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 9 | Template library | **Complete** |
 | 10 | Universal mapping fixes | automated gate passed, live test pending |
 | 11 | Conversational edits & run versioning | automated gate passed, live test pending |
-| 12 | Hardening, evaluation & audit | pending |
+| 12 | Hardening, evaluation & audit | automated gate passed, live test pending |
 
 ---
 
@@ -126,6 +126,15 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - validator rejects unknown/duplicate anchors and invalid `write_mode`;
   - an IR built for each fixture passes the validator.
 - **Checkpoints:** `/ponytail-audit` (whole repo).
+- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 172 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest --cov=src/doc_intel` 1196 passed, 1 deselected (`perf`), coverage 98%.
+  - Eval (hard gates pass): Q&A and mapping 0 fabricated citations, 100% citation verification; unanswerable 100% "not found"; absent fields 100% `missing`; seeded conflicts 5 of 5; field accuracy 95.5%; source recall@8 100% ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)).
+  - NFR-3 and RAM measured and recorded in [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory): 50-page ingest 23.7 s, Q&A max 13.5 s, 30 fields over 5 sources 250.6 s; all targets met.
+  - Confidence tiers calibrated on the eval set (0.9: 12/12 correct, 0.8: 9/9), kept unchanged ([system-design.md § 6](system-design.md#6-fieldmappingresult)).
+  - `tests/security/test_log_redaction.py`: a sentinel in documents, filenames, labels, chat, LLM replies and edit values never reaches structlog, stdlib logs or stdout across every job handler, chat intent and error path.
+  - Security review (no critical/high): fixed escaping of code fences, `~`, newlines and bare URLs (backend `md()`/`_answer_md` and the Pipe); edit replies list every applied op; optional `QDRANT_API_KEY`; Docling `MAX_PAGES = 1000`; 32 MB cap per OOXML XML part on upload; chat questions capped at 2,000 chars; `--no-access-log` in the run command (signed download URLs no longer in access logs). Left as known: uploads spooled before auth (existing shortcut), `/v1/health` does not flag a remote embedding/LLM URL, router auto-confirms the only template-capable document (existing shortcut), `/docs` served without auth.
+  - `/ponytail-audit`: no must-fix; fixed 1-based conflict candidate numbers in chat, tenant test for `latest_completed_mapping_run`, size caps on edit ops.
+  - README quick start verified on a clean clone of `phase-11-conversational-edits`: `uv sync`, `alembic upgrade head`, `uvicorn`, `/v1/health` all `ok`.
+  - [ ] manual: live Open WebUI pass (see Phase 10 and 11 manual items), plus: a source whose text contains a ```html fence and a `https://` URL renders as plain text in a Q&A answer; optionally set `QDRANT_API_KEY` in `.env`, `docker compose up -d`, restart the API, and confirm `/v1/health` and a Q&A still work.
 - **Status:** Complete (2026-11-19). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 117 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 535 passed (Phases 1-5).
   - Live smoke: qwen3:14b built a valid TemplateIR for the pptx/docx/xlsx fixtures (19-60 s per template).
   - Known limits:
@@ -258,3 +267,12 @@ Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped agains
   - eval hard gates pass (0 fabricated citations, 100% citation verification);
   - measured numbers recorded in `docs/architecture.md`.
 - **Checkpoints:** `/ponytail-audit` (whole repo).
+- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 172 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest --cov=src/doc_intel` 1196 passed, 1 deselected (`perf`), coverage 98%.
+  - Eval (hard gates pass): Q&A and mapping 0 fabricated citations, 100% citation verification; unanswerable 100% "not found"; absent fields 100% `missing`; seeded conflicts 5 of 5; field accuracy 95.5%; source recall@8 100% ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)).
+  - NFR-3 and RAM measured and recorded in [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory): 50-page ingest 23.7 s, Q&A max 13.5 s, 30 fields over 5 sources 250.6 s; all targets met.
+  - Confidence tiers calibrated on the eval set (0.9: 12/12 correct, 0.8: 9/9), kept unchanged ([system-design.md § 6](system-design.md#6-fieldmappingresult)).
+  - `tests/security/test_log_redaction.py`: a sentinel in documents, filenames, labels, chat, LLM replies and edit values never reaches structlog, stdlib logs or stdout across every job handler, chat intent and error path.
+  - Security review (no critical/high): fixed escaping of code fences, `~`, newlines and bare URLs (backend `md()`/`_answer_md` and the Pipe); edit replies list every applied op; optional `QDRANT_API_KEY`; Docling `MAX_PAGES = 1000`; 32 MB cap per OOXML XML part on upload; chat questions capped at 2,000 chars; `--no-access-log` in the run command (signed download URLs no longer in access logs). Left as known: uploads spooled before auth (existing shortcut), `/v1/health` does not flag a remote embedding/LLM URL, router auto-confirms the only template-capable document (existing shortcut), `/docs` served without auth.
+  - `/ponytail-audit`: no must-fix; fixed 1-based conflict candidate numbers in chat, tenant test for `latest_completed_mapping_run`, size caps on edit ops.
+  - README quick start verified on a clean clone of `phase-11-conversational-edits`: `uv sync`, `alembic upgrade head`, `uvicorn`, `/v1/health` all `ok`.
+  - [ ] manual: live Open WebUI pass (see Phase 10 and 11 manual items), plus: a source whose text contains a ```html fence and a `https://` URL renders as plain text in a Q&A answer; optionally set `QDRANT_API_KEY` in `.env`, `docker compose up -d`, restart the API, and confirm `/v1/health` and a Q&A still work.

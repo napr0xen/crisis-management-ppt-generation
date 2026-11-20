@@ -85,6 +85,7 @@ async def test_chat_edit_creates_version_two_with_a_download_link(
         assert kinds == sorted(kinds, key=["status", "delta", "error", "done"].index)
         text = "\n".join(d["content"] for e, d in frames if e == "delta")
         assert "Applied 1 edit(s). This is version 2." in text
+        assert "- Set **Owner** to Ann" in text
         assert "[Download the filled template](" in text
         done = frames[-1][1]
         async with sm() as s:

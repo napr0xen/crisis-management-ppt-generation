@@ -21,6 +21,7 @@ MIME_TYPES = {
 # shortcut: zip metadata can understate sizes, so this stops honest-looking bombs only; parse in a
 # memory-limited subprocess if hostile uploads become a real threat.
 MAX_UNZIPPED_BYTES = 512 * 1024 * 1024  # an XML part this large would not fit a parser's memory
+MAX_XML_PART_BYTES = 32 * 1024 * 1024  # same as the template per-part cap
 OOXML_MAIN_PART = {
     "docx": "word/document.xml",
     "pptx": "ppt/presentation.xml",
@@ -50,6 +51,14 @@ def _content_matches(ext: str, data: bytes) -> bool:
             return False
         if sum(m.file_size for m in members) > MAX_UNZIPPED_BYTES:
             raise PayloadTooLarge("Unzipped content is too large.")
+        # one huge XML part becomes a multi-GB lxml tree in the parser (media parts may be big)
+        # shortcut: by part name; an XML part declared under another name in [Content_Types].xml
+        # escapes this cap (the 512 MB total still holds), check content types if that appears.
+        if any(
+            m.file_size > MAX_XML_PART_BYTES and m.filename.endswith((".xml", ".rels"))
+            for m in members
+        ):
+            raise PayloadTooLarge("A part of the file is too large.")
         return {"[Content_Types].xml", OOXML_MAIN_PART[ext]} <= {m.filename for m in members}
     if b"\x00" in data:
         return False

@@ -123,7 +123,12 @@ async def test_mapping_functions_are_tenant_scoped(session, user_a, user_b):
     from tests.integration.test_mapping_repo import add_doc, seed_ir
 
     ctx, ir = await seed_ir(session, user_a)
+    done = await repo.create_mapping_run(
+        session, ctx, template_ir_id=ir.id, document_ids=[], status="completed"
+    )
     run = await repo.create_mapping_run(session, ctx, template_ir_id=ir.id, document_ids=[])
+    # the newer, not completed run is never an edit's parent
+    assert (await repo.latest_completed_mapping_run(session, ctx)).id == done.id
     doc_id = await add_doc(session, ctx)
     other_project = await repo.create_project(session, user_a, "A2")
     for wrong in (
@@ -138,6 +143,7 @@ async def test_mapping_functions_are_tenant_scoped(session, user_a, user_b):
             with pytest.raises(NotFound):
                 await call
         assert await repo.get_documents(session, wrong, [doc_id]) == []
+        assert await repo.latest_completed_mapping_run(session, wrong) is None
         assert await repo.indexed_source_document_ids(session, wrong) == []
     assert (await repo.get_mapping_run(session, ctx, run.id)).status == "queued"
     assert await repo.indexed_source_document_ids(session, ctx) == [doc_id]

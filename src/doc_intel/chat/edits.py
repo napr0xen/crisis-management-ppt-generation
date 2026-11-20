@@ -24,21 +24,25 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+FieldId = Annotated[str, Field(max_length=64)]  # the IR field_id pattern's limit
+MAX_VALUE_CHARS = 10_000
+
+
 class SetValue(_Strict):
     op: Literal["set_value"]
-    field_id: str
+    field_id: FieldId
     value: Value
 
 
 class ChooseCandidate(_Strict):
     op: Literal["choose_candidate"]
-    field_id: str
+    field_id: FieldId
     candidate_index: int = Field(ge=0)
 
 
 class Clear(_Strict):
     op: Literal["clear"]
-    field_id: str
+    field_id: FieldId
 
 
 EditOp = Annotated[SetValue | ChooseCandidate | Clear, Field(discriminator="op")]
@@ -60,6 +64,8 @@ def _strings(value: Value) -> list[str] | None:
 
 
 def _coerce(index: int, value: Value, expected_type: str) -> Value:
+    if len(str(value)) > MAX_VALUE_CHARS:
+        raise _bad(index, "the value is too long.")
     if expected_type == "text":
         if isinstance(value, str) and value.strip():
             return value
@@ -170,9 +176,10 @@ async def parse_edits(
         if r.conflict_details:
             lines += [
                 f"  {n}: {_clip(c.value)} ({c.evidence[0].filename})"
-                for n, c in enumerate(r.conflict_details.candidates)
+                for n, c in enumerate(r.conflict_details.candidates, start=1)
             ]
-    last = next((m.content for m in reversed(messages) if m.role == "user"), "")
+    # last 2,000 chars, as for Q&A questions: the field list must stay inside LLM_NUM_CTX
+    last = next((m.content for m in reversed(messages) if m.role == "user"), "")[-2000:]
     prompt = [
         {"role": "system", "content": load_prompt("edits")},
         {"role": "user", "content": "Fields:\n" + "\n".join(lines) + f"\n\nMessage:\n{last}"},
@@ -181,6 +188,8 @@ async def parse_edits(
     ops: list[EditOp] = []
     keys: set[object] = set()
     for i, e in enumerate((await complete_json(llm, prompt, _LLMEdits)).edits):
+        if len(e.field_id) > 64:  # never a field: keep pydantic errors (and the text) out
+            raise _bad(i, "unknown field_id.")
         field = fields.get(e.field_id)
         key = (share_key(field) if field else None) or e.field_id
         if key in keys:  # the model repeated a field or a token sibling: the first op wins
@@ -198,11 +207,14 @@ async def parse_edits(
                 )
             ops.append(SetValue(op="set_value", field_id=e.field_id, value=e.value))
         elif e.op == "choose_candidate":
-            if e.candidate_index is None or e.candidate_index < 0:
+            # the chat summary and the prompt number candidates from 1; the API index is 0-based
+            if e.candidate_index is None or e.candidate_index < 1:
                 raise _bad(i, "choose_candidate needs a candidate index.")
             ops.append(
                 ChooseCandidate(
-                    op="choose_candidate", field_id=e.field_id, candidate_index=e.candidate_index
+                    op="choose_candidate",
+                    field_id=e.field_id,
+                    candidate_index=e.candidate_index - 1,
                 )
             )
         else:

@@ -48,11 +48,13 @@ select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "RUF"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+addopts = "-m 'not perf'"
 markers = [
   "integration: needs the Docker Compose stack (Postgres, Qdrant)",
   "llm: needs Ollama and models",
   "eval: RAG/mapping evaluation",
   "slow: slow tests",
+  "perf: NFR-3 performance run on the real stack (skipped by default)",
 ]
 
 [dependency-groups]

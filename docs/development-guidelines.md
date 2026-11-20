@@ -27,7 +27,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
   - never edit `uv.lock` by hand;
   - never `pip install`.
 - Lint/format: `uv run ruff check .` and `uv run ruff format .`. Ruff rule sets: `E,F,I,B,UP,S,ASYNC,RUF`, line length 100.
-- Run the API: `uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000`.
+- Run the API: `uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000 --no-access-log`.
 - Infra: `docker compose up -d` (Open WebUI, Postgres, Qdrant). Ollama runs natively (`ollama serve`).
 - Dependencies: don't add a package for something a few lines or the stdlib can do. Every new dependency is mentioned in the PR description.
 
@@ -79,6 +79,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 |---|---|---|
 | `DATABASE_URL` | `postgresql+asyncpg://doc_intel:doc_intel@127.0.0.1:5432/doc_intel` | app DB |
 | `QDRANT_URL` | `http://127.0.0.1:6333` | |
+| `QDRANT_API_KEY` | empty (no auth) | also read by Docker Compose as Qdrant's `QDRANT__SERVICE__API_KEY`; set it so only the backend can read vectors (Open WebUI shares the Docker network). Changing it recreates the Qdrant container on the next `docker compose up -d`; data stays in the volume |
 | `QDRANT_COLLECTION` | `doc_chunks` | tests set `doc_chunks_test` |
 | `STORAGE_ROOT` | `./data/storage` | `LocalStorage` root |
 | `PIPE_SHARED_SECRET` | — (required, ≥ 32 chars) | bearer secret shared with the Pipe |
@@ -106,7 +107,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `CONFLICT_MARKER` | `[CONFLICT: See Chat Summary]` | |
 | `LOG_LEVEL` | `INFO` | |
 
-Docker Compose has its own variables in the same `.env`: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `OPENWEBUI_IMAGE_TAG`, `QDRANT_IMAGE_TAG`. `Settings` fails fast at startup if a required variable is missing.
+Docker Compose has its own variables in the same `.env`: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `OPENWEBUI_IMAGE_TAG`, `QDRANT_IMAGE_TAG`, and it shares `QDRANT_API_KEY` with the backend. `Settings` fails fast at startup if a required variable is missing.
 
 ## 9. Prompts
 

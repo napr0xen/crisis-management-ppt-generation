@@ -6,6 +6,8 @@ Field accuracy is tracked, not gated. Merges its results into tests/eval/report.
 """
 
 import json
+import statistics
+import time
 import uuid
 from pathlib import Path
 
@@ -87,7 +89,9 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
 
             for raw in case["template"]["fields"]:
                 field = IRField.model_validate(raw)
+                started = time.perf_counter()
                 result = await map_field(ctx, field, doc_ids, retriever, llm)
+                latency = time.perf_counter() - started
                 expected = case["expected"][field.field_id]
                 fabricated = [
                     e.quote
@@ -100,12 +104,15 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
                         "field_id": field.field_id,
                         "expected_status": expected["status"],
                         "status": result.status,
+                        "confidence": result.confidence,
+                        "latency_s": round(latency, 2),
                         "missing_reason": result.missing_reason,
                         "evidence_count": len(_quotes(result)),
                         "fabricated_citations": len(fabricated),
                         "value_correct": (
                             _matches(result.value, expected["value"])
-                            if expected["status"] == "populated" and result.status == "populated"
+                            if expected["status"] == "populated"
+                            and result.status in ("populated", "partial")
                             else None
                         ),
                     }
@@ -116,6 +123,15 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
     present = [r for r in rows if r["expected_status"] == "populated"]
     total_evidence = sum(r["evidence_count"] for r in rows)
     fabricated = sum(r["fabricated_citations"] for r in rows)
+    answered = [r for r in rows if r["status"] in ("populated", "partial")]
+    calibration = {}
+    for tier in sorted({r["confidence"] for r in answered}, reverse=True):
+        tier_rows = [r for r in answered if r["confidence"] == tier]
+        calibration[str(tier)] = {
+            "count": len(tier_rows),
+            "fraction_correct": sum(bool(r["value_correct"]) for r in tier_rows) / len(tier_rows),
+        }
+    latencies = [r["latency_s"] for r in rows]
     summary = {
         "model": settings.llm_model,
         "fabricated_citations": fabricated,
@@ -123,7 +139,13 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
         "seeded_conflicts_detected": sum(r["status"] == "conflict" for r in conflicts)
         / len(conflicts),
         "absent_missing": sum(r["status"] == "missing" for r in absent) / len(absent),
-        "field_accuracy": sum(bool(r["value_correct"]) for r in present) / len(present),
+        "field_accuracy": sum(
+            bool(r["value_correct"]) and r["status"] == "populated" for r in present
+        )
+        / len(present),
+        "calibration": calibration,
+        "latency_p50_s": statistics.median(latencies),
+        "latency_max_s": max(latencies),
         "rows": rows,
     }
     _write_report("mapping", summary)

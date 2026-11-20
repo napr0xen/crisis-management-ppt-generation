@@ -34,8 +34,7 @@ def find_tokens(text: str) -> list[str]:
 def _check_zip(data: bytes) -> None:
     # lxml/openpyxl memory scales with part size; together with zipfile reading at most the
     # declared size this bounds extraction memory.
-    # shortcut: limits apply to template extraction only; source ingestion keeps the 512 MB
-    # declared-total cap (ingestion/upload.py), add per-part caps there if Docling OOMs.
+    # Uploads already cap XML-named parts at 32 MB (ingestion/upload.py); here every part counts.
     try:
         infos = zipfile.ZipFile(BytesIO(data)).infolist()
     except Exception as exc:

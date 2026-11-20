@@ -165,7 +165,7 @@ async def test_upload_failure_message_escapes_the_filename() -> None:
 
     h = Harness(handler)
     text = await h.run(msgs(), files=[{"id": "f1", "name": "![t](https://tracker.example/p.png)"}])
-    assert "![t](" not in text and "\\!\\[t\\]\\(https://tracker.example/p.png\\)" in text
+    assert "![t](" not in text and "\\!\\[t\\]\\(https:\\/\\/tracker.example/p.png\\)" in text
 
 
 async def test_upload_failure_message_and_exclusion() -> None:

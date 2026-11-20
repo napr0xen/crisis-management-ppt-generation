@@ -56,9 +56,11 @@ class QdrantStore:
         self._ready = False  # collection known to exist with its indexes
 
     @classmethod
-    def connect(cls, url: str, collection: str, dense_dim: int = DENSE_DIM) -> "QdrantStore":
+    def connect(
+        cls, url: str, collection: str, dense_dim: int = DENSE_DIM, api_key: str | None = None
+    ) -> "QdrantStore":
         """Build the client here, so no other module ever imports qdrant_client."""
-        return cls(AsyncQdrantClient(url=url), collection, dense_dim)
+        return cls(AsyncQdrantClient(url=url, api_key=api_key or None), collection, dense_dim)
 
     async def close(self) -> None:
         await self._client.close()

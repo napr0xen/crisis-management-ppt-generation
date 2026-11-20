@@ -126,3 +126,21 @@ def test_unzip_cap_default_is_512_mb():
     from doc_intel.ingestion.upload import MAX_UNZIPPED_BYTES
 
     assert MAX_UNZIPPED_BYTES == 512 * 1024 * 1024
+
+
+def test_one_oversized_xml_part_is_413_but_big_media_is_not(monkeypatch):
+    from doc_intel.ingestion import upload
+
+    monkeypatch.setattr(upload, "MAX_XML_PART_BYTES", 1_000)
+
+    def docx(part: str) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("[Content_Types].xml", "<x/>")
+            z.writestr("word/document.xml", "<x/>")
+            z.writestr(part, b"0" * 2_000)
+        return buf.getvalue()
+
+    with pytest.raises(PayloadTooLarge):
+        validate_upload("a.docx", docx("word/styles.xml"), LIMIT * 100)
+    assert validate_upload("a.docx", docx("word/media/clip.mp4"), LIMIT * 100).ext == "docx"

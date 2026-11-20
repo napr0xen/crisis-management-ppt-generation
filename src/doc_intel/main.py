@@ -84,8 +84,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.sessionmaker = async_sessionmaker(app.state.engine, expire_on_commit=False)
         app.state.storage = LocalStorage(settings.storage_root)
         # Closed below by this reference: tests may swap app.state.vector_store for a fake.
+        key = settings.qdrant_api_key
         store = QdrantStore.connect(
-            settings.qdrant_url, settings.qdrant_collection, settings.embedding_dimensions
+            settings.qdrant_url,
+            settings.qdrant_collection,
+            settings.embedding_dimensions,
+            key.get_secret_value() if key else None,
         )
         app.state.vector_store = store
         try:

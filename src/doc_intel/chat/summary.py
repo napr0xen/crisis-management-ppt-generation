@@ -3,6 +3,7 @@
 import re
 from typing import Any
 
+from doc_intel.chat.edits import EditOp
 from doc_intel.chat.qa import Answer
 from doc_intel.chat.router import TEMPLATE_FORMATS, doc_format
 from doc_intel.db.models import Document, LibraryTemplate
@@ -43,10 +44,14 @@ _WARNINGS = {
 def md(text: str) -> str:
     """Escape markdown/HTML metacharacters: Open WebUI renders document-derived text, so a quote
     like `![x](https://evil/p.png)` would otherwise fire an image request."""
-    return re.sub(r"([\\`*_\[\]()!<>#|])", r"\\\1", text)
+    # one line, `~` escaped: no fence (an Open WebUI html artifact) can open; `:\/\/` breaks
+    # bare-URL autolinks
+    text = re.sub(r"([\\`*_\[\]()!<>#|~])", r"\\\1", " ".join(text.split()))
+    return text.replace("://", r":\/\/")
 
 
-_ANSWER_META = re.compile(r"([\\\[\]<>])")
+# backticks and `~` too: a fence would make the escapes literal and its HTML live
+_ANSWER_META = re.compile(r"([\\\[\]<>`~])")
 # a plain [n] marker, never one that would open an inline link, a reference link or a definition
 _MARKER = re.compile(r"\\\[(\d+)\\\](?![(:]|\\\[)")
 
@@ -57,7 +62,7 @@ def _answer_md(text: str) -> str:
     # cosmetic: drop inline images and keep inline link text; the escaping below is the guard
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    return _MARKER.sub(r"[\1]", _ANSWER_META.sub(r"\\\1", text))
+    return _MARKER.sub(r"[\1]", _ANSWER_META.sub(r"\\\1", text)).replace("://", r":\/\/")
 
 
 def _clip(text: str, limit: int) -> str:
@@ -86,6 +91,21 @@ def render_answer(answer: Answer) -> str:
         for c in sorted(answer.citations, key=lambda c: c.marker)
     ]
     return body + "\n\n**Sources**\n\n" + "\n".join(lines)
+
+
+def render_edits(ops: list[EditOp], ir: TemplateIR) -> list[str]:
+    """One line per applied edit op, by field label (labels and values escaped)."""
+    labels = {f.field_id: f.label for f in ir.fields}
+    lines = []
+    for op in ops:
+        name = f"**{md(labels.get(op.field_id, op.field_id))}**"
+        if op.op == "set_value":
+            lines.append(f"- Set {name} to {_value(op.value)}")
+        elif op.op == "choose_candidate":
+            lines.append(f"- Used value {op.candidate_index + 1} for {name}")
+        else:
+            lines.append(f"- Cleared {name}")
+    return lines
 
 
 def render_summary(
@@ -124,7 +144,10 @@ def render_summary(
         out.append("\n**Conflicts**")
         for r, details in conflicts:
             out.append(f"- {label(r.field_id)}")
-            out += [f"  - {_value(c.value)} ({cites(c.evidence)})" for c in details.candidates]
+            out += [
+                f"  {n}. {_value(c.value)} ({cites(c.evidence)})"
+                for n, c in enumerate(details.candidates, start=1)
+            ]
         out.append(
             "\nConflicts are never auto-resolved: reply with the value to use, for example "
             '"use the first value for customers affected".'

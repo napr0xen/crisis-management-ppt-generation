@@ -161,3 +161,11 @@ def test_md_atx_heading_rules(line, heading):
         assert body.section_heading is None
     else:
         assert body.section_heading == heading
+
+
+def test_pdf_over_the_page_cap_fails(monkeypatch):
+    from doc_intel.ingestion import docling_parser
+
+    monkeypatch.setattr(docling_parser, "MAX_PAGES", 1)
+    with pytest.raises(Exception):  # noqa: B017 (Docling's own error type; pipeline wraps it)
+        parse_pdf(sources.text_pdf())

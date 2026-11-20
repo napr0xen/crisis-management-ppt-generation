@@ -26,6 +26,7 @@ from doc_intel.chat.summary import (
     md,
     render_answer,
     render_candidates,
+    render_edits,
     render_library,
     render_summary,
 )
@@ -43,6 +44,7 @@ log = structlog.get_logger()
 router = APIRouter(prefix="/pipe")
 
 POLL_INTERVAL_S = 1.0
+QUESTION_CHARS = 2000
 
 SseEvent = Literal["status", "delta", "error", "done"]
 
@@ -263,7 +265,8 @@ async def _flow(
 
     if intent.intent == "qa":
         user_messages = [m for m in body.messages if m.role == "user"]
-        question = (user_messages or body.messages)[-1].content
+        # the same cap as POST /query: a long paste must not push the prompt past LLM_NUM_CTX
+        question = (user_messages or body.messages)[-1].content[-QUESTION_CHARS:]
         result = await answer(ctx, question, None, app.state.retriever, app.state.llm)
         deltas.append(render_answer(result))
     elif intent.intent == "chitchat":
@@ -399,7 +402,13 @@ async def _edit(
         yield frame
     if box[0] is None or box[0].status == "failed":
         raise _job_failed(box[0])
-    header = f"Applied {len(ops)} edit(s). This is version {run.version}."
+    # Every applied op is named, so an edit the user did not ask for (prompt injection through a
+    # quoted value) is visible; the parent version stays downloadable.
+    # shortcut: choose_candidate and clear have no deterministic check against the user's words
+    # (set_value does, ADR-013), add a label match if injected edits show up.
+    header = "\n".join(
+        [f"Applied {len(ops)} edit(s). This is version {run.version}.", *render_edits(ops, ir)]
+    )
     await _finish(request, ctx, run.id, parent.template_ir_id, deltas, out, header)
 
 

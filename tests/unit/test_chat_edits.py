@@ -247,14 +247,18 @@ async def test_parse_edits_maps_reply_and_prompts_with_field_list() -> None:
     }
     llm = _llm(
         {"op": "set_value", "field_id": "who", "value": "Ann"},
-        {"op": "choose_candidate", "field_id": "title", "candidate_index": 0},
+        {"op": "choose_candidate", "field_id": "title", "candidate_index": 1},
         {"op": "clear", "field_id": "when"},
     )
     ops = await parse_edits(llm, _msgs("set who to Ann, use the first title"), ir, results)
     assert [o.op for o in ops] == ["set_value", "choose_candidate", "clear"]
     assert ops[0].value == "Ann" and ops[1].candidate_index == 0
     user = llm.calls[0][0][-1]["content"]
-    assert "who | Who | populated | Bob" in user and "0: first (a.pdf)" in user
+    assert (
+        "who | Who | populated | Bob" in user
+        and "1: first (a.pdf)" in user
+        and "2: second (a.pdf)" in user
+    )
     assert "set who to Ann" in user
     assert len(llm.calls) == 1
 
@@ -318,3 +322,25 @@ async def test_parse_edits_rejects_a_cut_down_value(value) -> None:
     llm = _llm({"op": "set_value", "field_id": "n", "value": value})
     with pytest.raises(ValidationFailed):
         await parse_edits(llm, _msgs("set n to 12000 or 12,500"), ir, {"n": _result("n")})
+
+
+async def test_parse_edits_candidate_numbers_start_at_one() -> None:
+    ir, results = _ir(_field("title")), {"title": _conflict("title")}
+    llm = _llm({"op": "choose_candidate", "field_id": "title", "candidate_index": 2})
+    ops = await parse_edits(llm, _msgs("use the second value"), ir, results)
+    assert ops[0].candidate_index == 1
+    assert apply_edits(ir, results, ops)["title"].value == "second"
+    llm = _llm({"op": "choose_candidate", "field_id": "title", "candidate_index": 0})
+    with pytest.raises(ValidationFailed):
+        await parse_edits(llm, _msgs("use value 0"), ir, results)
+
+
+async def test_oversized_field_ids_and_values_are_422() -> None:
+    with pytest.raises(ValidationError):
+        EditsIn(edits=[{"op": "clear", "field_id": "x" * 65}])
+    ir, results = _ir(_field("who")), {"who": _result("who")}
+    with pytest.raises(ValidationFailed):
+        apply_edits(ir, results, _ops(_set("who", "a" * 10_001)))
+    llm = _llm({"op": "clear", "field_id": "x" * 65})
+    with pytest.raises(ValidationFailed):
+        await parse_edits(llm, _msgs("clear it"), ir, results)

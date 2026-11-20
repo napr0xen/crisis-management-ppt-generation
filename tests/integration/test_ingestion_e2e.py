@@ -23,7 +23,7 @@ from doc_intel.main import create_app
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.local import LocalStorage
 from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
-from tests.conftest import headers
+from tests.conftest import headers, qdrant_api_key
 from tests.fakes import FakeEmbedder, FakeLLM
 from tests.fixtures import sources
 
@@ -40,7 +40,9 @@ def _upload(client, user, project_id, name, data):
 
 def _store() -> QdrantStore:
     settings = get_settings()
-    return QdrantStore.connect(settings.qdrant_url, settings.qdrant_collection)
+    return QdrantStore.connect(
+        settings.qdrant_url, settings.qdrant_collection, api_key=qdrant_api_key()
+    )
 
 
 async def _process(migrated_db, rounds=1):

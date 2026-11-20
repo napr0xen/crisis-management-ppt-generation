@@ -5,6 +5,8 @@ for every unanswerable question. Merges its results into tests/eval/report.json[
 """
 
 import json
+import statistics
+import time
 import uuid
 from pathlib import Path
 
@@ -60,7 +62,11 @@ async def test_qa_eval_grounded_answers_and_refusals(vector_store):
 
         rows = []
         for case in cases:
+            started = time.perf_counter()
             out = await qa.answer(ctx, case["question"], None, retriever, llm)
+            latency = time.perf_counter() - started
+            expected_files = {s["filename"] for s in case["expected_sources"]}
+            top8 = await retriever.search(ctx, case["question"])
             fabricated = [
                 c.marker
                 for c in out.citations
@@ -72,22 +78,29 @@ async def test_qa_eval_grounded_answers_and_refusals(vector_store):
                     "question": case["question"],
                     "answerable": case["answerable"],
                     "found": out.found,
+                    "citations": len(out.citations),
                     "fabricated_citations": len(fabricated),
+                    "latency_s": round(latency, 2),
+                    "retrieved_expected": any(h.filename in expected_files for h in top8),
                     "think_leaked": "<think>" in out.answer_markdown,
                     "contains_expected": bool(expected)
                     and _squash(expected) in _squash(out.answer_markdown),
-                    "source_hit": any(
-                        c.filename in {s["filename"] for s in case["expected_sources"]}
-                        for c in out.citations
-                    ),
+                    "source_hit": any(c.filename in expected_files for c in out.citations),
                 }
             )
 
     answerable = [r for r in rows if r["answerable"]]
     unanswerable = [r for r in rows if not r["answerable"]]
+    fabricated = sum(r["fabricated_citations"] for r in rows)
+    total_citations = sum(r["citations"] for r in rows)
+    latencies = [r["latency_s"] for r in rows]
     summary = {
         "model": settings.llm_model,
-        "fabricated_citations": sum(r["fabricated_citations"] for r in rows),
+        "fabricated_citations": fabricated,
+        "citation_verification_rate": 1 - fabricated / total_citations if total_citations else 1.0,
+        "source_recall_at_8": sum(r["retrieved_expected"] for r in answerable) / len(answerable),
+        "latency_p50_s": statistics.median(latencies),
+        "latency_max_s": max(latencies),
         "unanswerable_not_found": sum(not r["found"] for r in unanswerable) / len(unanswerable),
         "answered": sum(r["found"] for r in answerable) / len(answerable),
         "answer_contains_expected": sum(r["contains_expected"] for r in answerable)
@@ -100,6 +113,7 @@ async def test_qa_eval_grounded_answers_and_refusals(vector_store):
     print(json.dumps({k: v for k, v in summary.items() if k != "rows"}, indent=2))
 
     assert summary["fabricated_citations"] == 0
+    assert summary["citation_verification_rate"] == 1.0
     assert not any(r["think_leaked"] for r in rows)
     assert [r["question"] for r in unanswerable if r["found"]] == []
     assert summary["answered"] >= MIN_ANSWERED

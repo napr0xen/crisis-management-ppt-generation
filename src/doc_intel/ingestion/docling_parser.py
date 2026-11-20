@@ -22,15 +22,20 @@ def _converter() -> DocumentConverter:
     )
 
 
+# shortcut: a fixed page cap, not a time budget; add a per-job timeout if smaller files stall.
+MAX_PAGES = 1000
+
+
 def _clean(text: str) -> str:
     return " ".join(text.split())
 
 
 def _parse(data: bytes, ext: str) -> ParsedDocument:
     # The name only tells Docling the format; the real filename never reaches the parser.
-    doc = (
-        _converter().convert(DocumentStream(name=f"document.{ext}", stream=BytesIO(data))).document
-    )
+    # Over MAX_PAGES Docling raises, so the document fails instead of holding the single worker
+    # for hours (layout + OCR per page).
+    stream = DocumentStream(name=f"document.{ext}", stream=BytesIO(data))
+    doc = _converter().convert(stream, max_num_pages=MAX_PAGES).document
     elements: list[ParsedElement] = []
     heading: str | None = None
     for item, _level in doc.iterate_items():

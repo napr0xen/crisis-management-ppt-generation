@@ -303,7 +303,7 @@ async def test_skip_message_escapes_the_filename(client, user_a, monkeypatch):
         client, user_a, files=[("ghost-id", "![t](https://tracker.example/p.png).pdf")]
     )
     skip = next(d["content"] for e, d in frames if e == "delta" and "skipped" in d["content"])
-    assert "![t](" not in skip and "\\!\\[t\\]\\(https://tracker.example/p.png\\).pdf" in skip
+    assert "![t](" not in skip and "\\!\\[t\\]\\(https:\\/\\/tracker.example/p.png\\).pdf" in skip
 
 
 async def test_map_template_without_a_choice_lists_candidates(client, session, user_a, monkeypatch):

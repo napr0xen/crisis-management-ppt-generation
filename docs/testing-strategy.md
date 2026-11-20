@@ -16,7 +16,7 @@ tests/
     └── eval/      # *.jsonl datasets + expected outputs
 ```
 
-pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollama + models), `eval`, `slow`.
+pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollama + models), `eval`, `slow`, `perf` (NFR-3 timings and RAM, minutes long; excluded by default via `addopts = "-m 'not perf'"`, run with `uv run pytest -m perf -s tests/eval/test_perf.py`).
 
 | Command | When |
 |---|---|
@@ -99,7 +99,19 @@ Datasets (synthetic, versioned in `tests/fixtures/eval/`):
 | Field accuracy | `populated` values matching expected (normalized) | ≥ 80% (soft, tracked) |
 | Source recall@8 | expected source chunk in retrieval top 8 | ≥ 90% (soft, tracked) |
 
-The eval run writes `tests/eval/report.json` (git-ignored), one top-level key per eval (`qa`, `mapping`), and prints a summary table. Phase 12 records the numbers in the PR.
+The eval run writes `tests/eval/report.json` (git-ignored), one top-level key per eval (`qa`, `mapping`, and `perf` for `test_perf.py`), and prints a summary table. Each row also records `latency_s`; mapping rows record `confidence`, and the mapping summary has a `calibration` table (count and fraction correct per confidence tier).
+
+Phase 12 results (2026-11-21, `qwen3:14b`; 15 questions, 5 templates with 39 fields):
+
+| Metric | Gate | Result |
+|---|---|---|
+| Fabricated citations (Q&A, mapping) | = 0 | 0, 0 |
+| Citation verification rate (Q&A, mapping) | = 100% | 100%, 100% |
+| Unanswerable handling | ≥ 95% | 100% |
+| Absent-field handling | ≥ 95% | 100% |
+| Seeded conflicts detected | 100% | 100% (5 of 5) |
+| Field accuracy | ≥ 80% soft | 95.5% (21 of 22); the miss is a title that appears only as the source's first heading (`not_found_by_llm`, so `missing`, never a wrong value) |
+| Source recall@8 | ≥ 90% soft | 100% |
 
 ## 6. Template fidelity tests (`tests/integration/test_writers_*.py`)
 

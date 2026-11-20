@@ -17,12 +17,13 @@ import httpx
 from pydantic import BaseModel, Field
 
 MAX_MESSAGES = 20
-_MD_META = re.compile(r"([\\`*_\[\]()!<>#|])")
+_MD_META = re.compile(r"([\\`*_\[\]()!<>#|~])")
 
 
 def _md(text: str) -> str:
-    """Escape markdown in a filename: Open WebUI renders the reply, so `![x](url)` would load."""
-    return _MD_META.sub(r"\\\1", text)
+    """Escape markdown in a filename: Open WebUI renders the reply, so `![x](url)` would load.
+    Same rules as the backend's `md()`: one line, no fence, no bare-URL autolink."""
+    return _MD_META.sub(r"\\\1", " ".join(text.split())).replace("://", r":\/\/")
 
 
 def _text(content: object) -> str:
