@@ -13,13 +13,14 @@ Table, column, and path names come from [data-model.md](data-model.md); endpoint
 | `embeddings/` | dense via Ollama, BM25 sparse, optional reranker | `schemas.py`, `ollama.py`, `sparse.py`, `reranker.py` |
 | `vector/` | **only** Qdrant access point | `qdrant_store.py` |
 | `llm/` | provider-agnostic gateway, prompts | `gateway.py`, `prompts/*.md` |
-| `templates/` | Stage 1 anchor extraction, Stage 2 IR build + validation | `anchors_pptx.py`, `anchors_docx.py`, `anchors_xlsx.py`, `ir_builder.py`, `schemas.py` |
+| `templates/` | Stage 1 anchor extraction, Stage 2 IR build + validation | `anchors_pptx.py`, `anchors_docx.py`, `anchors_xlsx.py`, `ir_builder.py`, `schemas.py`, `library.py` (library `register` + copy-on-use `adopt`, Phase 9) |
 | `mapping/` | Stage 3 retrieval, extraction, verification, status resolution | `retriever.py`, `extractor.py`, `verifier.py`, `engine.py`, `schemas.py` |
 | `writers/` | Stage 4 surgical writers + markers | `pptx_writer.py`, `docx_writer.py`, `xlsx_writer.py`, `markers.py`, `runs.py` (shared `w:`/`a:` paragraph and run rules) |
-| `chat/` | Pipe chat orchestration: intent routing, Q&A, summaries, edits | `router.py`, `qa.py`, `summary.py`, `edits.py` |
+| `chat/` | Pipe chat orchestration: intent routing, Q&A, summaries, library choice, edits | `router.py`, `qa.py`, `summary.py`, `library.py` (`library_choice`), `edits.py` |
 | `jobs/` | Postgres queue worker + handlers per `jobs.kind` | `worker.py`, `handlers.py` |
 | `api/v1/` | FastAPI routers, request/response models | `health.py`, `pipe.py`, `projects.py`, `documents.py`, `jobs.py`, `query.py`, `templates.py`, `mapping_runs.py`, `artifacts.py` |
 | `main.py` | app factory, lifespan (DB pool, Qdrant client, worker start) | |
+| `cli.py` | operator CLI for the template library: `seed-template`, `list-templates`, `show-template`, `remove-template` | |
 
 Outside the package: `integrations/openwebui/doc_intel_pipe.py` (the Pipe Function, pasted into Open WebUI) and `migrations/` (Alembic).
 
@@ -135,6 +136,13 @@ The AnchorMap is sent in **batches**, not one prompt: a whole AnchorMap can outg
 - each batch holds at most `MAX_BATCH_ANCHORS = 40` anchors and at most `MAX_BATCH_CHARS = 12,000` characters of compact JSON (~3.5k tokens; `ir_builder.py`), and never mixes groups. A table larger than either cap is split in row order.
 
 Batches run sequentially, and each is validated against its own anchors only. Cells of a table already owned by a `fill_table_rows` field from an earlier batch are not sent again. The fields are then merged in order. A `field_id` already used by an earlier batch is renamed `{id[:60]}_{n}` with the smallest free `n ≥ 2`, and the merged IR is validated once more against the full AnchorMap.
+
+**Safe repair** (`ir_builder._repair`, cause: a real deck whose slide 2 "table" was drawn with separate `shape_text` boxes failed `ir_invalid` twice). Before validation, every LLM reply (first and retry) gets three mechanical slips dropped, in this order:
+1. `fill_table_rows` on an anchor that is not a `table_cell`;
+2. `replace_token` on an anchor with no `tokens` that is not a placeholder (a static label);
+3. exact duplicates of an earlier field's `(anchor_id, write_mode, constraints.token)`; the first one is kept.
+
+Repair only removes fields, so it can never fabricate one. Dropped fields leave their anchors as template text, and the count is logged as `ir_repaired` (`dropped`, `anchor_count`). Everything else stays a validation error and goes through the retry below. That includes invented anchors, unknown tokens on tokened anchors, `replace_token` on an empty placeholder, and mixed write modes on one anchor. The prompt also says that a table drawn with `shape_text` boxes is not a table: each fillable box is its own `shape_text` field, and its static label boxes are skipped.
 
 Each invalid batch gets 1 LLM retry: the original prompt, the previous draft echoed back as the assistant turn (cut to `RETRY_ECHO_CHARS` = 1,500 characters so the retry still fits `LLM_NUM_CTX`), and the validation errors. If that retry also fails, the `extract_template` job fails with `ir_invalid`, and the errors are logged as `ir_invalid` (`errors`, `anchor_count`). The errors name only field ids, anchor ids, write modes, anchor kinds and counts, never document or token text. Job progress before each batch is `{"stage": "ir", "done": i, "total": n, "part": "slide 3"}`; `part` is `slide N` or `sheet N` (the sheet's position, never its name), and absent for docx.
 
@@ -342,7 +350,7 @@ Example (conflict):
 
 Engine results always have `provenance = rag`.
 
-`shortcut: heuristic confidence tiers, calibrate against the eval set in Phase 10.`
+`shortcut: heuristic confidence tiers, calibrate against the eval set in Phase 11.`
 
 ## 7. Mapping engine (Stage 3)
 
@@ -354,7 +362,7 @@ queued ─▶ retrieving ─▶ extracting ─▶ verifying ─▶ rendering ─
    └───────────┴─────────────┴─────────────┴────────────┴──▶ failed
 ```
 
-`run_mapping` sets `extracting` when the field loop starts, then commits `results`, `summary` and `verifying` in one transaction. It then renders: it sets `rendering` (commit), writes the file, and commits the `artifacts` row together with `completed`, `finished_at` and the writer warnings appended to `summary.warnings`. `retrieving` is not used (each field is retrieved, extracted and verified in turn). A retried job whose run is `verifying`/`rendering` only renders; a `completed` run returns its artifact. `render_artifact` (payload `{mapping_run_id}`) runs the same render for a `verifying`/`rendering` run (Phase 9 edits enqueue it). Failure hooks: `run_mapping` marks any run that is not `completed`/`failed` as `failed`; `render_artifact` only fails `verifying`/`rendering` runs. `finished_at` is set at `completed` or `failed`.
+`run_mapping` sets `extracting` when the field loop starts, then commits `results`, `summary` and `verifying` in one transaction. It then renders: it sets `rendering` (commit), writes the file, and commits the `artifacts` row together with `completed`, `finished_at` and the writer warnings appended to `summary.warnings`. `retrieving` is not used (each field is retrieved, extracted and verified in turn). A retried job whose run is `verifying`/`rendering` only renders; a `completed` run returns its artifact. `render_artifact` (payload `{mapping_run_id}`) runs the same render for a `verifying`/`rendering` run (Phase 10 edits enqueue it). Failure hooks: `run_mapping` marks any run that is not `completed`/`failed` as `failed`; `render_artifact` only fails `verifying`/`rendering` runs. `finished_at` is set at `completed` or `failed`.
 
 A retried job recomputes every field; a run that is no longer `queued`/`retrieving`/`extracting` is returned unchanged. When the job fails for good, the `run_mapping` failure hook marks the run `failed`.
 
@@ -487,20 +495,25 @@ Common rules:
 3. Wait on every project document still `uploaded` or `parsing` (the 200 newest, referenced or not), on its `ingest_document` job, streaming progress as `status` events. A failed ingest adds a `delta` ("I could not read X, so I skipped it.") and the turn continues. The wait covers the whole project because a template pick purges Qdrant points. Each poll is 1 s (`POLL_INTERVAL_S`); a `status` is sent only when its text changes, otherwise a `: keep-alive` comment.
    `shortcut: no server-side wait cap; a stuck or disabled worker (JOB_CONCURRENCY=0) holds the stream until the client disconnects or TIMEOUT_S, add a cap if that happens.`
    `shortcut: disconnect is only noticed between polls; route/answer/start_template run to completion, run the flow as a cancellable task if Ollama time is wasted.`
-4. **Intent routing** (`router.py`, prompt `llm/prompts/router.md`): one LLM call with JSON output `{"intent": "qa"|"map_template"|"chitchat", "template_document_id": uuid|null, "candidates": [uuid]}`. Phase 8 intents are `qa`, `map_template` and `chitchat`; `edit` arrives in Phase 9. The handler receives `{intent, template_document_id}`: ids from both fields are checked against the project's pptx/docx/xlsx documents, de-duplicated. Only when exactly one remains is it considered for mapping. It sees the last 10 messages, each cut to its **last 1,500 characters**, so long run summaries can't push the prompt past `LLM_NUM_CTX` (Ollama silently drops the start of an over-long prompt, which is where the instructions are). It also sees the project's document list (ids, filenames, roles, formats). No document text goes into this call.
+4. **Intent routing** (`router.py`, prompt `llm/prompts/router.md`): one LLM call with JSON output `{"intent": "qa"|"map_template"|"chitchat", "template_document_id": uuid|null, "candidates": [uuid], "format": "pptx"|"docx"|"xlsx"|null}`. `format` is the output format the user asked for ("powerpoint" → `pptx`, "word" → `docx`, "excel" → `xlsx`); a value outside those three is dropped. Phase 8 intents are `qa`, `map_template` and `chitchat`; `edit` arrives in Phase 9. The handler receives `{intent, template_document_id}`: ids from both fields are checked against the project's pptx/docx/xlsx documents, de-duplicated. Only when exactly one remains is it considered for mapping. It sees the last 10 messages, each cut to its **last 1,500 characters**, so long run summaries can't push the prompt past `LLM_NUM_CTX` (Ollama silently drops the start of an over-long prompt, which is where the instructions are). It also sees the project's document list (ids, filenames, roles, formats), minus library copies (`role = 'template'` documents whose `sha256` is a library template's). Those are reached only through the library. No document text goes into this call.
    - `qa` → `qa.py`.
+   - `map_template` resolves the template in this order (Phase 9):
+     1. **Library choice** (`chat/library.py`). Either the last user message names a library template (case-insensitive, word boundaries; if several match, the unique longest name wins), or it holds a number and the last assistant message has the line `N. <md(name)> (<format>)` from a library list. Resolving by the rendered line means list order and filtering can't shift the choice. → `adopt` the template (copy-on-use, [data-model.md § library_templates](data-model.md#library_templates)), add the delta "Using the library template **name**.", and go straight to the mapping run: no `extract_template`, no LLM call for the IR.
+     2. **A confirmed uploaded template** (`template_document_id`) → the flow below.
+     3. **Uploaded template-capable documents of the requested format** exist (any format when `format` is null), or the library is empty → `render_candidates`, as before.
+     4. **Otherwise the library.** If `format` is set and exactly one library template has it, run that one (as in 1). Otherwise reply with `render_library`: a numbered list `N. name (format): description` (description clipped to 200 chars; name and description escaped with `md()`) of the library templates of that format, or all of them when none match, asking for a number or a name.
    - `map_template` with exactly one candidate that passes the confirmation guard:
      1. set `role = 'template'` and delete that document's points;
      2. run `extract_template` (it reuses the existing `templates` row and latest IR if this template was mapped before), then create a `mapping_runs` row (`trigger = 'initial'`, `document_ids` = all `indexed` sources) and run `run_mapping`;
      3. stream progress and finish with `summary.py`.
      `shortcut: concurrent turns in one chat (regenerate, double send) can start duplicate extraction/mapping runs, add a per-project lock if that happens.`
-   - The confirmation guard: a template is mapped only when it is already `role = 'template'`, or it is the only pptx/docx/xlsx document in the project, or its filename appears in the last user message (case-insensitive), or the last user message contains its number in the numbered list. Otherwise the document keeps its role and points.
+   - The confirmation guard: candidates are first narrowed to the requested `format`, so a source DOCX is never auto-confirmed for "make a powerpoint out of this". A template is mapped only when it is already `role = 'template'`, or it is the only pptx/docx/xlsx document of the requested format in the project, or its filename appears in the last user message (case-insensitive), or the last user message contains its number in the numbered list. Otherwise the document keeps its role and points.
    - `map_template` with zero or several candidates, or one that is not confirmed → reply with a numbered list of the template-capable documents (`render_candidates`) and ask the user to choose. With no template-capable document, the reply asks for a PPTX, DOCX or XLSX upload.
      `shortcut: stateless confirmation via chat history, add projects.pending_action if routing proves unreliable.`
      `shortcut: the only pptx/docx/xlsx in a chat is mapped without asking; a source memo of that format then becomes the template (re-adding it needs DELETE), drop this rule if users hit it.`
      `shortcut: the list number refers to the current document order; an upload between the list and the reply can shift it, upgrade with pending_action.`
    - `chitchat` → the fixed help text (`HELP_TEXT`). No answer call is made; the routing call still runs.
-   - `edit` (Phase 9) → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
+   - `edit` (Phase 10) → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
 5. **Q&A** (`qa.py`):
    1. Retrieve. No hits → the "not found" answer below, without an LLM call. A search failure → `503 upstream_unavailable`.
    2. Make one LLM call (prompt `llm/prompts/qa.md`) with JSON output `{"answer_markdown": "… [1] …", "citations": [{"marker": 1, "chunk_id": "…", "quote": "…"}]}`. Each hit is shown as `[chunk_id | filename | p.N | section]` followed by its text.

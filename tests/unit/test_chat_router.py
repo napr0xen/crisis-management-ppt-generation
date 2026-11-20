@@ -14,12 +14,15 @@ def _doc(filename: str, key_ext: str, role: str = "source") -> Document:
     return Document(id=doc_id, filename=filename, role=role, storage_key=f"u/p/{doc_id}.{key_ext}")
 
 
-def _reply(intent: str, template: object = None, candidates: list | None = None) -> str:
+def _reply(
+    intent: str, template: object = None, candidates: list | None = None, fmt: str | None = None
+) -> str:
     return json.dumps(
         {
             "intent": intent,
             "template_document_id": template and str(template),
             "candidates": [str(c) for c in candidates or []],
+            "format": fmt,
         }
     )
 
@@ -159,3 +162,45 @@ async def test_only_template_format_document_is_confirmed() -> None:
     pdf, a = _doc("n.pdf", "pdf"), _doc("a.pptx", "pptx")
     result = await _pick(["fill the template"], [pdf, a], a)
     assert result.template_document_id == a.id
+
+
+# ------------------------------------------- output format (library templates, Phase 9)
+
+
+@pytest.mark.parametrize(
+    "raw, expected", [("pptx", "pptx"), ("PPTX", "pptx"), ("pdf", None), ("", None), (None, None)]
+)
+async def test_format_is_parsed_and_invalid_is_ignored(raw, expected) -> None:
+    result = await route(FakeLLM(_reply("map_template", fmt=raw)), _msgs("make it"), [])
+    assert result.format == expected
+
+
+async def test_source_docx_is_not_auto_confirmed_for_a_pptx_request() -> None:
+    docx = _doc("memo.docx", "docx")
+    llm = FakeLLM(_reply("map_template", template=docx.id, candidates=[docx.id], fmt="pptx"))
+    result = await route(llm, _msgs("make a powerpoint out of this"), [docx])
+    assert result.intent == "map_template" and result.format == "pptx"
+    assert result.template_document_id is None
+
+
+@pytest.mark.parametrize("fmt", [None, "pptx"])
+async def test_single_pptx_is_still_auto_confirmed(fmt) -> None:
+    pdf, pptx = _doc("n.pdf", "pdf"), _doc("a.pptx", "pptx")
+    llm = FakeLLM(_reply("map_template", template=pptx.id, fmt=fmt))
+    result = await route(llm, _msgs("fill it"), [pdf, pptx])
+    assert result.template_document_id == pptx.id
+
+
+async def test_format_filter_leaves_list_numbers_on_the_unfiltered_order() -> None:
+    a, b = _doc("a.pptx", "pptx"), _doc("b.pptx", "pptx")
+    llm = FakeLLM(_reply("map_template", template=b.id, fmt="pptx"))
+    assert (await route(llm, _msgs("1"), [a, b])).template_document_id is None
+    llm = FakeLLM(_reply("map_template", template=b.id, fmt="pptx"))
+    assert (await route(llm, _msgs("2"), [a, b])).template_document_id == b.id
+
+
+async def test_format_filter_drops_other_format_candidates() -> None:
+    docx, pptx = _doc("m.docx", "docx"), _doc("a.pptx", "pptx")
+    llm = FakeLLM(_reply("map_template", candidates=[docx.id, pptx.id], fmt="pptx"))
+    result = await route(llm, _msgs("make a deck"), [docx, pptx])
+    assert result.template_document_id == pptx.id

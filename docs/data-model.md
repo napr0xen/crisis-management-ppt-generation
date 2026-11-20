@@ -13,6 +13,7 @@ Stores and ownership: see [ADR-008](DECISIONS.md#adr-008--persistence-boundaries
 - **Tenant rule.** Every table except `projects` has `user_id` and `project_id` plus the composite FK `(project_id, user_id) REFERENCES projects(id, user_id) ON DELETE CASCADE`. Every repository query filters `WHERE user_id = :user_id AND project_id = :project_id`, with two named exceptions:
   1. the signed download looks up `artifacts.id`, then checks `user_id` through the HMAC;
   2. the job queue (`jobs/worker.py`): claiming the next job and startup recovery span all tenants, and touch only queue state. Everything after the claim uses the job's `user_id`/`project_id`.
+  3. `library_templates` is a global, read-only catalog with no tenant keys. Only the CLI writes it; chat reads it to list templates and to copy one into the caller's project (`adopt`). It is never joined to tenant rows, and nothing in a tenant row references it.
 - Migrations: Alembic in `migrations/` (from Phase 1).
 - **Non-tenant FKs and deletes.**
   - `templates.document_id` → `documents` and `template_irs.template_id` → `templates` are `ON DELETE CASCADE`.
@@ -117,6 +118,33 @@ The row is written when `extract_template` succeeds. Before that, the job is the
 
 `UNIQUE (template_id, version)`. Rows are immutable. `shortcut: v1 flows only ever create version 1 (extract_template reuses the latest IR); add an explicit re-extract action that inserts max(version) + 1 when users need to regenerate an IR.`
 
+### `library_templates`
+
+Reusable templates shared by every user (Phase 9). Registered with the CLI (`seed-template`), which builds the `AnchorMap` and `TemplateIR` once, so chat runs skip `extract_template`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | also the `template_id` inside `ir` |
+| `name` | text NOT NULL UNIQUE | shown in the chat picker (1..100 chars) |
+| `description` | text NOT NULL DEFAULT `''` | shown in the chat picker (up to 500 chars) |
+| `category` | text NULL | free label (up to 50 chars), CLI only |
+| `format` | text NOT NULL | `pptx` \| `docx` \| `xlsx` |
+| `filename` | text NOT NULL | original filename; becomes the copied document's `filename` |
+| `sha256` | char(64) NOT NULL UNIQUE | |
+| `size_bytes` | bigint NOT NULL | |
+| `storage_key` | text NOT NULL | `library/{id}/original.{ext}` |
+| `anchor_map` | jsonb NOT NULL | `AnchorMap` |
+| `anchor_count` | int NOT NULL | |
+| `ir` | jsonb NOT NULL | `TemplateIR` (version 1) |
+| `created_at` | timestamptz | |
+
+**Copy-on-use.** When a chat picks a library template, `adopt` copies it into the caller's project in one transaction:
+1. the bytes go to `uploads/{document_id}/original.{ext}`;
+2. a `documents` row is inserted (`role = 'template'`, `status = 'indexed'`, no Qdrant points);
+3. a `templates` row and a `template_irs` v1 row are inserted, with `ir.template_id` rewritten to the new `templates.id`.
+
+From then on everything is the caller's own data. Mapping runs, artifacts and later edits never reference `library_templates`, so removing a library template doesn't affect existing runs. A second pick in the same project finds the copy by `(project_id, sha256)` and reuses its IR. If the same bytes are already a *source* document in the project, the pick is `409`.
+
 ### `mapping_runs`
 
 | Column | Type | Notes |
@@ -156,8 +184,8 @@ Index `(user_id, project_id, created_at DESC)`.
 
 | Column | Shape | Defined in |
 |---|---|---|
-| `templates.anchor_map` | `AnchorMap` | [system-design.md § AnchorMap](system-design.md#4-anchormap) |
-| `template_irs.ir` | `TemplateIR` | [system-design.md § TemplateIR](system-design.md#5-templateir) |
+| `templates.anchor_map`, `library_templates.anchor_map` | `AnchorMap` | [system-design.md § AnchorMap](system-design.md#4-anchormap) |
+| `template_irs.ir`, `library_templates.ir` | `TemplateIR` | [system-design.md § TemplateIR](system-design.md#5-templateir) |
 | `mapping_runs.results` | object of `FieldMappingResult` keyed by `field_id` | [system-design.md § FieldMappingResult](system-design.md#6-fieldmappingresult) |
 | `mapping_runs.edits` | array of `EditOp` | [api-specification.md § Edits](api-specification.md#post-v1projectsproject_idmapping-runsrun_idedits) |
 
@@ -201,15 +229,16 @@ Accessed only through `src/doc_intel/vector/qdrant_store.py`.
 ```
 data/
 ├── storage/                                   # STORAGE_ROOT
-│   └── users/{user_id}/projects/{project_id}/
-│       ├── uploads/{document_id}/original.{ext}   # immutable, write-once
-│       ├── parsed/{document_id}.json              # parser output, derived, overwritable on retry
-│       └── artifacts/{artifact_id}.{ext}          # immutable rendered output
+│   ├── users/{user_id}/projects/{project_id}/
+│   │   ├── uploads/{document_id}/original.{ext}   # immutable, write-once
+│   │   ├── parsed/{document_id}.json              # parser output, derived, overwritable on retry
+│   │   └── artifacts/{artifact_id}.{ext}          # immutable rendered output
+│   └── library/{library_template_id}/original.{ext}  # library templates, written by the CLI
 ```
 
 PostgreSQL, Qdrant, and Open WebUI data live in Docker **named volumes** (`pgdata`, `qdrant_data`, `openwebui_data` in `docker-compose.yml`), not under `./data/`. Bind mounts on macOS hit Postgres permission/fsync issues. `docker compose down -v` deletes them.
 
 - `{ext}` ∈ `pdf docx pptx xlsx txt csv md`.
 - `StorageBackend.put_bytes(key, data, overwrite=False)` refuses to overwrite an existing key. `uploads/` and `artifacts/` are always written with `overwrite=False`. `parsed/` is derived data and is written with `overwrite=True`, so a retried ingest job can rewrite it.
-- `delete` is used only when a document or project is deleted.
+- `delete` is used only when a document or project is deleted, or a library template is removed (`remove-template`).
 - `data/` is git-ignored.

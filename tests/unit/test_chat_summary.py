@@ -285,3 +285,29 @@ def test_answer_keeps_markdown_emphasis_and_lists() -> None:
     md = "**Total** is *high*\n\n- one [1]\n- two [2]\n\n| a | b |"
     out = render_answer(Answer(answer_markdown=md, citations=[], found=True))
     assert out == md
+
+
+def test_render_library_lists_format_and_clips_description() -> None:
+    from doc_intel.chat.summary import render_library
+    from doc_intel.db.models import LibraryTemplate
+
+    a = LibraryTemplate(name="Deck", format="pptx", description="d" * 300)
+    b = LibraryTemplate(name="Memo", format="docx", description="")
+    out = render_library([a, b])
+    assert out.startswith("No template is attached to this chat. Which library template")
+    assert "1. Deck (pptx): " + "d" * 200 + "..." in out and "d" * 201 not in out
+    assert "\n2. Memo (docx)\n" in out
+    assert out.endswith("Reply with the number or the name of the template.")
+
+
+def test_render_library_escapes_name_and_description() -> None:
+    from doc_intel.chat.summary import render_library
+    from doc_intel.db.models import LibraryTemplate
+
+    evil = "![x](http://evil/p.png)"
+    out = render_library([LibraryTemplate(name=evil, format="pptx", description=evil)])
+    assert evil not in out and "\\!\\[x\\]\\(http://evil/p.png\\)" in out
+
+
+def test_help_text_mentions_the_library() -> None:
+    assert "make a powerpoint out of this" in HELP_TEXT

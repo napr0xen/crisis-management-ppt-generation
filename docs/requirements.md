@@ -25,6 +25,7 @@ Names: [data-model.md](data-model.md), [api-specification.md](api-specification.
 | FR-15 | Artifacts download via signed, user-scoped, expiring URLs (default 15 min). |
 | FR-16 | Users can delete a document; its vectors and stored files are removed. |
 | FR-17 | The LLM provider is swappable via `.env` (`ollama` default, `openai` = any OpenAI-compatible endpoint) with no code change. `anthropic` is planned, not built (ADR-005). |
+| FR-18 | Operators register reusable PPTX/DOCX/XLSX library templates with the CLI; registration extracts the IR once. With no suitable template in the chat, asking for a presentation, document or spreadsheet offers the library as a numbered list (name, format, description). The user picks by number or name, or the only template of the requested format runs directly. Library templates are read-only; the copy, runs and artifacts belong to the user's project (ADR-012). |
 
 ## 2. Supported formats
 
@@ -45,7 +46,7 @@ Max upload: `MAX_UPLOAD_MB=100`. Legacy binary formats (`.doc`, `.ppt`, `.xls`) 
 |---|---|
 | NFR-1 | **Local-first.** With default config no document content leaves the machine. Cloud LLM providers must be set explicitly in `.env`, and `/v1/health` reports the active provider. |
 | NFR-2 | Runs on a MacBook Pro M5 Pro with 24 GB unified memory within the budget in [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory). |
-| NFR-3 | Performance targets (measured in Phase 10, M5 Pro, 14B model):<br>• ingest a 50-page text PDF ≤ 3 min<br>• Q&A answer ≤ 20 s<br>• map a 30-field template over 5 sources ≤ 10 min |
+| NFR-3 | Performance targets (measured in Phase 11, M5 Pro, 14B model):<br>• ingest a 50-page text PDF ≤ 3 min<br>• Q&A answer ≤ 20 s<br>• map a 30-field template over 5 sources ≤ 10 min |
 | NFR-4 | Jobs survive a backend restart: all `running` jobs are re-queued at startup (up to 3 attempts), and retries are idempotent. |
 | NFR-5 | Uploads and artifacts are immutable. Every run and IR version is reproducible from stored rows and files. |
 | NFR-6 | Logs are structured JSON and never contain document text, chunk text, prompts, completions, filenames, or secrets. |

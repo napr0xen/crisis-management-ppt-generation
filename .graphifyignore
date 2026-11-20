@@ -1,0 +1,10 @@
+.venv/
+.env*
+data/
+graphify-out/
+.handoff/
+__pycache__/
+*.pptx
+*.pdf
+*.docx
+*.xlsx

@@ -4,7 +4,7 @@ A local-first, domain-agnostic RAG platform. You chat in **Open WebUI**: upload 
 
 > The repo name reflects the first use case (crisis-management slide decks). Nothing in the platform is domain-specific.
 
-**Status:** Phases 1-7 complete (foundation, ingestion, embeddings + Qdrant, grounded Q&A, template intelligence, evidence mapping, surgical PPTX/DOCX/XLSX writers with signed downloads). Phase 8 (Open WebUI Pipe) is in progress: implementation and automated tests done; manual Open WebUI end-to-end pending. See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
+**Status:** Phases 1-9 complete (foundation, ingestion, embeddings + Qdrant, grounded Q&A, template intelligence, evidence mapping, surgical PPTX/DOCX/XLSX writers with signed downloads, Open WebUI Pipe, template library). See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
 
 ## How it works
 
@@ -56,6 +56,14 @@ The Pipe is the only bridge between Open WebUI and the backend. Its code is [int
    - `TIMEOUT_S` = `1800`
 4. Turn off Open WebUI's built-in file handling for the Pipe model, so it does not inject file text itself: **Workspace → Models → edit the Pipe model → Capabilities**, untick **File Context** and **Builtin Tools** (`meta.capabilities` `file_context: false`, `builtin_tools: false`). The API alternative is `POST /api/v1/models/create` with `id` set to the Pipe id. See [architecture.md § 5](docs/architecture.md#5-open-webui-pipe-design).
 5. Use it: start a new chat, select the Pipe model, attach your documents and a template, and say "fill the template". The summary ends with a download link to `http://127.0.0.1:8000/...`. Open that link in the host browser; it expires, so download the file soon.
+6. Template library (optional): register reusable templates once, so users can attach only source documents and say "make a powerpoint out of this". Registration extracts the template fields up front (Ollama must be running), so chat runs skip that step.
+   ```bash
+   uv run python -m doc_intel.cli seed-template path/to/deck.pptx --name "Procurement Review" --description "Quarterly procurement status deck"
+   uv run python -m doc_intel.cli list-templates
+   uv run python -m doc_intel.cli show-template <id>
+   uv run python -m doc_intel.cli remove-template <id>
+   ```
+   `--name` and `--description` are what users see in the chat picker. A template attached to the chat always takes precedence over the library.
 
 Conventions: [docs/development-guidelines.md](docs/development-guidelines.md).
 
@@ -68,9 +76,9 @@ Conventions: [docs/development-guidelines.md](docs/development-guidelines.md).
 | [system-design.md](docs/system-design.md) | modules, `AnchorMap`, `TemplateIR`, `FieldMappingResult`, state machine, writers |
 | [data-model.md](docs/data-model.md) | PostgreSQL schema, Qdrant collection, storage layout |
 | [api-specification.md](docs/api-specification.md) | endpoints, auth headers, SSE events, schemas |
-| [implementation-roadmap.md](docs/implementation-roadmap.md) | phases 0–10 with entry/exit gates |
+| [implementation-roadmap.md](docs/implementation-roadmap.md) | phases 0–11 with entry/exit gates |
 | [development-guidelines.md](docs/development-guidelines.md) | layout, typing, async, errors, logging, config, git |
 | [testing-strategy.md](docs/testing-strategy.md) | unit, integration, isolation, RAG eval, template fidelity |
-| [DECISIONS.md](docs/DECISIONS.md) | ADR-001 … ADR-010 |
+| [DECISIONS.md](docs/DECISIONS.md) | ADR-001 … ADR-012 |
 
 Contributor and agent rules: [CLAUDE.md](CLAUDE.md).

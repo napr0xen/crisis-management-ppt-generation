@@ -11,7 +11,7 @@ Work only on the current phase. A phase is **done** only when every exit-gate co
 5. `/ecc:verify`: run the exit gate. If not installed, use the `ecc:verification-loop` skill.
 6. `/ecc:update-docs`: docs and code must agree.
 7. `/ponytail-review` on the phase diff.
-8. Phases 5 and 10 only: `/ponytail-audit` on the whole repo.
+8. Phases 5 and 11 only: `/ponytail-audit` on the whole repo.
 
 Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --check . && uv run pytest tests/unit` green.
 
@@ -28,8 +28,9 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 6 | Mapping engine | **Complete** |
 | 7 | Surgical writers & artifacts | **Complete** |
 | 8 | Open WebUI Pipe & chat orchestration | **Complete** |
-| 9 | Conversational edits & run versioning | pending |
-| 10 | Hardening, evaluation & audit | pending |
+| 9 | Template library | **Complete** |
+| 10 | Conversational edits & run versioning | pending |
+| 11 | Hardening, evaluation & audit | pending |
 
 ---
 
@@ -196,9 +197,26 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - manual end-to-end in Open WebUI recorded in the PR: upload 3 sources + 1 pptx, "fill the template" → summary + working download link.
 - **Status:** Complete (2026-11-20). Gate: `uv run ruff check .` and `uv run ruff format --check .` clean; `uv run alembic check` clean; `uv run pytest` 1034 passed (Phases 1-8). Manual end-to-end in Open WebUI v0.13.4 (no PR, recorded here): 1 source (4-page PDF) + 1 ten-slide pptx, not the 3 sources the exit item names; "fill the template" → extract (10 slide batches), map 46 populated / 1 partial / 18 missing / 0 conflict, rendered with 0 warnings, downloaded deck opens cleanly. Live testing drove: per-slide IR batches with an anchor and size cap, Ollama `num_predict`, multi-token `replace_token` anchors, `(shape_id, kind)` pptx keys, skipped decorative shapes, shape `pos`, stricter answer and filename escaping.
 
-## Phase 9: Conversational edits & run versioning
+## Phase 9: Template library
+
+Inserted after Phase 8 (cause: users should be able to generate a deck or document from source files alone, without uploading a template each time). Edits and hardening moved to Phases 10 and 11.
 
 - **Entry:** Phase 8 done.
+- **Deliverables:**
+  - `library_templates` table (migration `0002_library_templates`) and `library/{id}/original.{ext}` storage;
+  - `templates/library.py`: `register` (anchor map + IR built once, at registration) and `adopt` (copy-on-use into the caller's project);
+  - CLI `uv run python -m doc_intel.cli seed-template | list-templates | show-template | remove-template`;
+  - chat selection: router `format` field, `chat/library.py` (`library_choice`), `render_library`, library path in `POST /v1/pipe/chat`.
+- **Exit:**
+  - Tests: registration stores file + cached IR and rejects duplicates before any LLM call; adopting copies into the caller's tenant with no LLM call and no `extract_template` job; a second adopt reuses the copy; another user's ids return 404; removing a library template leaves earlier runs and artifacts intact;
+  - chat: numbered library list, number and name selection, single format match runs directly, uploaded templates keep precedence, a source DOCX is not auto-confirmed for "make a powerpoint", names and descriptions escaped with `md()`;
+  - manual: seed a pptx, attach only a source PDF/DOCX in Open WebUI, "make a powerpoint out of this" → summary + working download link.
+- **Phase 5 change** (cause: seeding a second real deck failed `ir_invalid` twice on a table drawn with `shape_text` boxes): `ir_builder` drops three safe model slips before validation (`fill_table_rows` on a non-table anchor, `replace_token` on a static 0-token label, exact `(anchor_id, write_mode, token)` duplicates); the prompt says shape-drawn tables are separate `shape_text` fields.
+- **Status:** Complete (2026-11-21). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 165 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1086 passed (Phases 1-9). Manual end-to-end in Open WebUI: two pptx templates seeded with the CLI (the second needed the Phase 5 change above); a new chat with only a source PDF, "make a powerpoint out of this" → numbered library list, the pick ran `run_mapping` on the cached IR with no `extract_template` job and returned a working download. Known gap: some `[...]` tokens stayed unreplaced in that deck; diagnosed separately.
+
+## Phase 10: Conversational edits & run versioning
+
+- **Entry:** Phase 9 done.
 - **Deliverables:**
   - `chat/edits.py`;
   - `POST …/mapping-runs/{run_id}/edits`;
@@ -208,9 +226,9 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - Tests: every `EditOp` and its validation errors (422, nothing applied); parent run unchanged; version increments; `choose_candidate` only on `conflict`;
   - end-to-end chat edit produces v2 artifact.
 
-## Phase 10: Hardening, evaluation & audit
+## Phase 11: Hardening, evaluation & audit
 
-- **Entry:** Phase 9 done.
+- **Entry:** Phase 10 done.
 - **Deliverables:**
   - full eval suite + report;
   - RAM and latency measurements against [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory) and NFR-3;

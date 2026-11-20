@@ -235,3 +235,28 @@ class Artifact(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = _ts()
+
+
+class LibraryTemplate(Base):
+    """Global read-only catalog of template files with a prebuilt AnchorMap and IR.
+
+    Tenancy exception: no user_id/project_id. Written only by the operator CLI; users get a
+    per-project copy through `templates.library.adopt`.
+    """
+
+    __tablename__ = "library_templates"
+    __table_args__ = (_in("format", "pptx", "docx", "xlsx"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    category: Mapped[str | None] = mapped_column(Text)
+    format: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    anchor_map: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    anchor_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    ir: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = _ts()

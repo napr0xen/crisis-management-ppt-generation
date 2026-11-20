@@ -48,7 +48,7 @@ class _CrossEncoder:
 class BGEReranker:
     """Loads the model on first non-empty `rerank()`.
 
-    shortcut: stays resident once loaded (+1.5 GB), release when idle if Phase 10 memory needs it.
+    shortcut: stays resident once loaded (+1.5 GB), release when idle if Phase 11 memory needs it.
     """
 
     def __init__(self, model_name: str, device: str) -> None:

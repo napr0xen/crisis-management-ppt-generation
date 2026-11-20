@@ -6,12 +6,13 @@ Rules:
 - One field per fillable anchor: `is_placeholder` true, tokens, blanks, empty cells or paragraphs, instructional text such as "Click to add ...". Skip static labels, finished titles, headings and boilerplate: an anchor with `is_placeholder` false, no tokens and text that already reads as final is not a field.
 - Skip, never fields: visual or non-data slots (`[Company Logo]`, `[Logo]`, `[Icon]`, `[Image]`, `[Chart]`, `[Insert chart]`), slide numbers, and instructions to the template author (e.g. "Replace all bracketed ...").
 - Table header cells (`row` 0) are labels, never fields.
+- `fill_table_rows` and `fill_cell` are only for anchors whose `kind` is `table_cell` (native tables; `fill_cell` also `sheet_cell`). A "table" drawn with separate `shape_text` boxes is not a table: make each fillable box its own `shape_text` field (`replace_token` if it has `tokens`, `replace_text` only if it is empty, a placeholder or instructional) and skip its static label boxes (`tokens` empty and `is_placeholder` false).
 - Fill each table one way only: either one `fill_table_rows` field on its row 1, col 0 anchor (for lists of rows) or `fill_cell` fields on single body cells. Never both for the same table.
 - Never invent anchors. Copy `anchor_id` exactly from the list; use each anchor at most once, except an anchor with several `tokens`: give it exactly one `replace_token` field per distinct token (never two for the same token, never mixed with another write mode).
 - `field_id`: unique, lowercase snake_case, matching `^[a-z][a-z0-9_]{0,63}$`.
 - `write_mode`:
   - `replace_text` for shape_text, paragraph, header_paragraph, footer_paragraph, content_control, table_cell.
-  - an anchor with `tokens` must use `replace_token` (never `replace_text`), with `constraints.token` set to exactly one of them, so the text around the token is kept; use `replace_token` only for anchors with `tokens`.
+  - an anchor with `tokens` must use `replace_token` (never `replace_text`), with `constraints.token` set to exactly one of them, so the text around the token is kept; `replace_token` only on anchors with non-empty `tokens`, and never two fields for the same (`anchor_id`, token).
   - `fill_cell` for table_cell and sheet_cell; a table_cell with `tokens` also uses `replace_token`.
   - `fill_table_rows` only on a table anchor at row 1, col 0; set `constraints.columns` to the header names.
 - `field_id`, `label` and `description` name the slide topic and the nearest static heading or card title (e.g. `total_spend_value`, "Total spend KPI value on the Executive summary slide"); never generic ("Value 1", "The first value to be inserted"). Ordered slots with no own title (e.g. three upcoming awards) state the slide topic and the exact ordinal (first, second, third) in label and description.

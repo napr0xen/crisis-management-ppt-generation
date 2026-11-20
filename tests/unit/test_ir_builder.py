@@ -13,6 +13,7 @@ from doc_intel.templates.ir_builder import (
     BatchDraft,
     _batches,
     _compact,
+    _repair,
     build_ir,
     validate,
 )
@@ -531,3 +532,99 @@ def test_batches_are_capped_by_prompt_size_not_only_anchor_count():
     assert [a for _, b in batches for a in b] == anchors  # order kept, nothing dropped
     for _, batch in batches:
         assert len(_compact(AnchorMap(format="docx", anchors=batch))) <= MAX_BATCH_CHARS
+
+
+def _box(i, tokens=(), placeholder=False, text="x"):
+    a = _anchor(f"pptx:s2:sp{i}", "shape_text", tokens=tokens, text=text)
+    return a.model_copy(update={"is_placeholder": placeholder})
+
+
+def _recon_map():
+    return AnchorMap(
+        format="pptx",
+        anchors=[
+            _box(26, text="Opening"),  # static labels
+            _box(32, text="Closing"),
+            _box(30, tokens=["[Amount]"], text="[Amount]"),
+            _box(31, tokens=["[Amount]"], text="[Amount]"),
+            _box(40, placeholder=True, text=""),
+        ],
+    )
+
+
+def _amount(fid, anchor):
+    return _field(fid, anchor, "replace_token", token="[Amount]")
+
+
+def _slips():
+    return [
+        _field("rows", "pptx:s2:sp26", "fill_table_rows"),  # fill_table_rows on a shape_text
+        _amount("label_tok", "pptx:s2:sp32"),  # replace_token on a static label
+        _amount("opening", "pptx:s2:sp30"),
+        _amount("opening_note", "pptx:s2:sp30"),  # exact duplicate
+        _amount("closing", "pptx:s2:sp31"),
+        _field("notes", "pptx:s2:sp40"),
+    ]
+
+
+async def test_slide_two_slips_are_repaired_without_a_retry():
+    llm = FakeLLM(_reply(*_slips()))
+    with capture_logs() as logs:
+        ir = await build_ir(llm, _recon_map(), TID)
+    assert len(llm.calls) == 1
+    assert [f.field_id for f in ir.fields] == ["opening", "closing", "notes"]
+    (event,) = [e for e in logs if e["event"] == "ir_repaired"]
+    assert event["dropped"] == 3 and event["anchor_count"] == 5
+    assert set(event) - {"dropped", "anchor_count", "event", "log_level"} == set()
+
+
+async def test_repair_applies_to_the_retry_reply_too():
+    amap = _recon_map()
+    llm = FakeLLM(
+        _reply(_field("a", "invented")),
+        _reply(_amount("opening", "pptx:s2:sp30"), _amount("label_tok", "pptx:s2:sp26")),
+    )
+    ir = await build_ir(llm, amap, TID)
+    assert len(llm.calls) == 2 and [f.field_id for f in ir.fields] == ["opening"]
+
+
+def _placeholder_zero_token():
+    return AnchorMap(format="docx", anchors=[_box(1, placeholder=True, text="")])
+
+
+@pytest.mark.parametrize(
+    ("amap", "fields"),
+    [
+        (AMAP, [_field("a", "invented")]),
+        (AMAP, [_field("a", "tok", "replace_token", token="{{nope}}")]),
+        (
+            _placeholder_zero_token(),
+            [_field("a", "pptx:s2:sp1", "replace_token", token="[X]")],
+        ),
+        (
+            MULTI_MAP,
+            [_tok("who", "[Presenter Name]"), _field("txt", "pptx:s1:sp1", "replace_text")],
+        ),
+    ],
+)
+async def test_real_errors_stay_strict(amap, fields):
+    bad = _reply(*fields)
+    llm = FakeLLM(bad, bad)
+    with pytest.raises(IRInvalid):
+        await build_ir(llm, amap, TID)
+    assert len(llm.calls) == 2
+
+
+def test_repair_keeps_what_validate_must_judge():
+    amap = AnchorMap(
+        format="pptx",
+        anchors=[_box(1, tokens=["[A]", "[B]"]), _cell("pptx:s1:sp9:r1c0", 1, 0)],
+    )
+    fields = [
+        _tok("a", "[A]", "pptx:s2:sp1"),
+        _tok("b", "[B]", "pptx:s2:sp1"),
+        _field("ghost", "nowhere", "fill_table_rows"),
+        _field("rows", "pptx:s1:sp9:r1c0", "fill_table_rows"),
+    ]
+    draft = BatchDraft(fields=fields)
+    assert _repair(draft, amap).fields == fields

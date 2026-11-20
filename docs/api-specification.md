@@ -140,7 +140,7 @@ Response: `text/event-stream`.
 - Unknown `openwebui_file_id`s and failed ingests are not errors: each becomes a `delta` warning that names the file, and the turn continues.
 - A failed `extract_template` or mapping job ends the turn with `error`, then `done`.
 
-Routing behavior is described in [system-design.md § 9](system-design.md#9-chat-orchestration-chat). The Pipe drops internal `### Task:` requests before calling this endpoint.
+Routing behavior, including the template library choice (Phase 9), is described in [system-design.md § 9](system-design.md#9-chat-orchestration-chat). Library templates are managed only through the CLI (`uv run python -m doc_intel.cli seed-template PATH --name NAME [--description TEXT] [--category TEXT]`, `list-templates`, `show-template ID`, `remove-template ID`). No HTTP endpoint exposes them (ADR-012). The Pipe drops internal `### Task:` requests before calling this endpoint.
 
 ---
 

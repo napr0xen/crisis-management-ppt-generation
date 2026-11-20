@@ -86,3 +86,7 @@ def parsed_key(ctx: TenantContext, document_id: uuid.UUID) -> str:
 
 def artifact_key(ctx: TenantContext, artifact_id: uuid.UUID, ext: str) -> str:
     return f"{_project_prefix(ctx)}/artifacts/{artifact_id}.{ext}"
+
+
+def library_key(template_id: uuid.UUID, ext: str) -> str:
+    return f"library/{template_id}/original.{ext}"

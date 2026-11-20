@@ -156,6 +156,23 @@ async def empty_queue(migrated_db):
     await engine.dispose()
 
 
+@pytest.fixture
+async def clean_library(migrated_db):
+    """The library catalog is global: empty it before and after, so no test sees another's."""
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from doc_intel.db.models import LibraryTemplate
+
+    engine = create_async_engine(migrated_db)
+    for phase in ("before", "after"):
+        async with engine.begin() as conn:
+            await conn.execute(delete(LibraryTemplate))
+        if phase == "before":
+            yield
+    await engine.dispose()
+
+
 @pytest.fixture(scope="session")
 def qdrant_collection() -> str:
     """Fresh `doc_chunks_test` collection, recreated once per run. Never the dev collection."""

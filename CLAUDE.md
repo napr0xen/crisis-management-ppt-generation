@@ -11,10 +11,10 @@ Project: local-first, domain-agnostic **Document Intelligence & Template Mapping
 | `docs/system-design.md` | modules, `AnchorMap`, `TemplateIR`, `FieldMappingResult`, state machine, writers |
 | `docs/architecture.md` | components, data flows, Pipe design, 24 GB RAM budget |
 | `docs/requirements.md` | FR/NFR, formats, security rules, out of scope |
-| `docs/implementation-roadmap.md` | phases 0–10, entry/exit gates, status |
+| `docs/implementation-roadmap.md` | phases 0–11, entry/exit gates, status |
 | `docs/development-guidelines.md` | layout, typing, async, errors, logging, `.env` vars, git |
 | `docs/testing-strategy.md` | test layers, security gates, eval metrics, fidelity checks |
-| `docs/DECISIONS.md` | ADR-001…ADR-011 |
+| `docs/DECISIONS.md` | ADR-001…ADR-012 |
 
 Never invent a table, column, endpoint, env var, or path name: use the docs. If code and docs disagree, fix whichever is wrong **in the same commit**.
 
@@ -22,7 +22,7 @@ Never invent a table, column, endpoint, env var, or path name: use the docs. If 
 
 All code lives in `src/doc_intel/`:
 - packages `core/`, `db/`, `storage/`, `ingestion/`, `embeddings/`, `vector/`, `llm/`, `templates/`, `mapping/`, `writers/`, `chat/`, `jobs/`, `api/v1/`;
-- entry point `main.py`.
+- entry point `main.py`; operator CLI `cli.py` (template library).
 
 Elsewhere:
 - Pipe: `integrations/openwebui/doc_intel_pipe.py`;
@@ -30,6 +30,12 @@ Elsewhere:
 - tests: `tests/{unit,integration,security,eval,fixtures}/`.
 
 Stack: Python 3.12 via `uv`, lint/format with `ruff`, Docker Compose for Open WebUI + PostgreSQL 16 + Qdrant, Ollama native.
+
+## Codebase Navigation (Graphify)
+
+- Before grepping, read `graphify-out/GRAPH_REPORT.md`, then use `graphify query "<question>"`, `graphify explain "<symbol>"` or `graphify path "A" "B"` to find the files that matter. Open only those.
+- After code changes pass the gates, refresh the graph with `/graphify --update`.
+- `graphify-out/` is git-ignored and never staged.
 
 ## Workflow (every phase)
 
@@ -54,7 +60,7 @@ Work **only** on the current phase in `docs/implementation-roadmap.md`. Don't bu
 **Ponytail (mandatory):**
 - `/ponytail full` during implementation: the smallest complete change, no speculative code;
 - `/ponytail-review` at the end of every phase;
-- `/ponytail-audit` at Phases 5 and 10;
+- `/ponytail-audit` at Phases 5 and 11;
 - known limits get a comment: `# shortcut: <the limit>, <when to upgrade>`.
 
 ## Guardrails (non-negotiable)

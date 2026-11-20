@@ -205,3 +205,20 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 - **Sparse quality:** hashed BM25 is a lexical baseline, not BGE-M3's learned weights. The Phase 3 smoke test still finds the expected chunk in the top 8 for 10 of 10 queries.
 - **Dependency:** ingestion and search now need Ollama running, which they need anyway for the LLM (Phase 4).
 
+## ADR-012 — Global template library with copy-on-use
+
+**Status:** Accepted
+
+**Context.** Users want a deck or document generated from source files alone ("make a powerpoint out of this"), without uploading a template each time. Extracting a 10-slide template's IR takes about 6 minutes on qwen3:14b. Every tenant table carries `(user_id, project_id)` with a composite FK to `projects` (ADR-009), so a shared template can't live in those tables without a fake owner.
+
+**Decision.**
+- A global `library_templates` table holds the file reference, `AnchorMap` and `TemplateIR`, built once when the operator registers it with the CLI (`seed-template`). It is the third named exception to the tenant rule. It is read-only to chat and never joined to tenant rows.
+- **Copy-on-use:** picking a library template in chat copies its bytes, `documents`, `templates` and `template_irs` rows into the caller's project in one transaction (`templates/library.py`, `adopt`), then starts `run_mapping` on the copied IR. Job handlers, writers, artifacts and edits stay unchanged and fully tenant-scoped.
+- Registration is CLI-only. There is no admin role, and the Pipe's shared secret is not an admin credential, so no API endpoint can add or remove shared templates.
+- Chat resolution order: an explicit library name or a number reply to a library list, then a confirmed uploaded template, then uploaded candidates of the requested format, then the library (one format match runs, otherwise a numbered list). The router's new `format` field narrows uploaded candidates, so a source DOCX is not taken as the template for "make a powerpoint".
+
+**Trade-offs.**
+- The template bytes and IR are duplicated per project that uses them (a few MB and a JSON row). In exchange, removing or replacing a library template never breaks a user's runs, and no handler reads across tenants.
+- An IR copied into a project doesn't pick up later improvements to the library entry: re-registering under a new name is the upgrade path.
+- Picking a library template whose exact bytes are already a source document in the chat returns `409`. The user fills that document by its filename instead.
+

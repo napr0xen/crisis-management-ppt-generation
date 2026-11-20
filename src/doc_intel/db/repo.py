@@ -18,6 +18,7 @@ from doc_intel.db.models import (
     Artifact,
     Document,
     Job,
+    LibraryTemplate,
     MappingRun,
     Project,
     Template,
@@ -96,18 +97,20 @@ async def create_document(
     size_bytes: int,
     sha256: str,
     storage_key: str,
+    role: str = "source",
+    status: str = "uploaded",
 ) -> Document:
     document = Document(
         id=document_id,
         user_id=ctx.user_id,
         project_id=ctx.project_id,
-        role="source",
+        role=role,
         filename=filename,
         mime_type=mime_type,
         size_bytes=size_bytes,
         sha256=sha256,
         storage_key=storage_key,
-        status="uploaded",
+        status=status,
     )
     session.add(document)
     await session.flush()
@@ -507,3 +510,51 @@ async def latest_job_for_document(
         .order_by(Job.created_at.desc(), Job.id.desc())
         .limit(1)
     )
+
+
+# Library catalog: global and read-only for users (data-model.md tenancy exception). Unscoped by
+# design; the only callers are the operator CLI and `templates.library.adopt`.
+
+
+async def list_library_templates(session: AsyncSession) -> list[LibraryTemplate]:
+    rows = await session.scalars(
+        select(LibraryTemplate).order_by(LibraryTemplate.name, LibraryTemplate.id)
+    )
+    return list(rows)
+
+
+async def get_library_template(session: AsyncSession, template_id: uuid.UUID) -> LibraryTemplate:
+    row = await session.get(LibraryTemplate, template_id)
+    if row is None:
+        raise NotFound()
+    return row
+
+
+async def find_library_template(
+    session: AsyncSession, *, name: str, sha256: str
+) -> LibraryTemplate | None:
+    """A template with this name or these exact bytes, to fail fast before the LLM call."""
+    return await session.scalar(
+        select(LibraryTemplate)
+        .where((LibraryTemplate.name == name) | (LibraryTemplate.sha256 == sha256))
+        .limit(1)
+    )
+
+
+async def create_library_template(session: AsyncSession, **values: Any) -> LibraryTemplate:
+    row = LibraryTemplate(**values)
+    try:
+        async with session.begin_nested():
+            session.add(row)
+            await session.flush()
+    except IntegrityError as exc:
+        raise Conflict("A library template with this name or file already exists.") from exc
+    await session.refresh(row)
+    return row
+
+
+async def delete_library_template(session: AsyncSession, template_id: uuid.UUID) -> LibraryTemplate:
+    row = await get_library_template(session, template_id)
+    await session.delete(row)
+    await session.flush()
+    return row

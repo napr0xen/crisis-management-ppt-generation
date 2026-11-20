@@ -162,4 +162,4 @@ Rules this budget implies:
 - Docling and the reranker are loaded lazily and released when idle;
 - use the 7B model if the reranker is enabled.
 
-Measured in Phase 10.
+Measured in Phase 11.

@@ -197,12 +197,36 @@ def _batches(amap: AnchorMap) -> list[tuple[str | None, list[Anchor]]]:
     return out
 
 
+def _repair(draft: BatchDraft, amap: AnchorMap) -> BatchDraft:
+    """Drop model slips that are safe to drop: removing a field never fabricates one."""
+    anchors = {a.anchor_id: a for a in amap.anchors}
+    kept: list[IRField] = []
+    seen: set[tuple[str, str, str | None]] = set()
+    for f in draft.fields:
+        a = anchors.get(f.anchor_id)
+        if a and f.write_mode == "fill_table_rows" and a.kind != "table_cell":
+            continue
+        if a and f.write_mode == "replace_token" and not a.tokens and not a.is_placeholder:
+            continue
+        key = (f.anchor_id, f.write_mode, f.constraints.token)
+        if a and key in seen:
+            continue
+        seen.add(key)
+        kept.append(f)
+    if len(kept) < len(draft.fields):
+        log.info(
+            "ir_repaired", dropped=len(draft.fields) - len(kept), anchor_count=len(amap.anchors)
+        )
+        return draft.model_copy(update={"fields": kept})
+    return draft
+
+
 async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
     messages: Messages = [
         {"role": "system", "content": load_prompt("template_ir")},
         {"role": "user", "content": f"Template anchors:\n\n{_compact(sub)}"},
     ]
-    draft = await complete_json(llm, messages, BatchDraft)
+    draft = _repair(await complete_json(llm, messages, BatchDraft), sub)
     errors = validate(draft, sub)
     if errors:
         listing = "\n".join(f"- {e}" for e in errors)
@@ -216,7 +240,7 @@ async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
                 "Reply with the corrected full JSON.",
             },
         ]
-        draft = await complete_json(llm, messages, BatchDraft)
+        draft = _repair(await complete_json(llm, messages, BatchDraft), sub)
         errors = validate(draft, sub)
         if errors:
             log.warning("ir_invalid", errors=_loggable(errors), anchor_count=len(sub.anchors))

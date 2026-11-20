@@ -99,7 +99,7 @@ Datasets (synthetic, versioned in `tests/fixtures/eval/`):
 | Field accuracy | `populated` values matching expected (normalized) | ≥ 80% (soft, tracked) |
 | Source recall@8 | expected source chunk in retrieval top 8 | ≥ 90% (soft, tracked) |
 
-The eval run writes `tests/eval/report.json` (git-ignored), one top-level key per eval (`qa`, `mapping`), and prints a summary table. Phase 10 records the numbers in the PR.
+The eval run writes `tests/eval/report.json` (git-ignored), one top-level key per eval (`qa`, `mapping`), and prints a summary table. Phase 11 records the numbers in the PR.
 
 ## 6. Template fidelity tests (`tests/integration/test_writers_*.py`)
 

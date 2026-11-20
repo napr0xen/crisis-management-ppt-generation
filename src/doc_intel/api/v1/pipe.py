@@ -17,22 +17,25 @@ from doc_intel.api.v1.artifacts import artifact_out
 from doc_intel.api.v1.documents import store_upload
 from doc_intel.api.v1.mapping_runs import start_mapping_run
 from doc_intel.api.v1.templates import start_template
+from doc_intel.chat.library import library_choice
 from doc_intel.chat.qa import answer
-from doc_intel.chat.router import ChatMessage, route
+from doc_intel.chat.router import TEMPLATE_FORMATS, ChatMessage, doc_format, route
 from doc_intel.chat.summary import (
     HELP_TEXT,
     md,
     render_answer,
     render_candidates,
+    render_library,
     render_summary,
 )
 from doc_intel.core.errors import AppError, UpstreamUnavailable, ValidationFailed
 from doc_intel.core.security import USER_ID_RE, UserId
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.db import repo
-from doc_intel.db.models import Job
+from doc_intel.db.models import Job, LibraryTemplate
 from doc_intel.db.session import Session
 from doc_intel.mapping.schemas import FieldMappingResult
+from doc_intel.templates.library import adopt
 from doc_intel.templates.schemas import TemplateIR
 
 log = structlog.get_logger()
@@ -251,7 +254,11 @@ async def _flow(
 
     async with sessionmaker.begin() as session:
         documents = await repo.list_documents(session, ctx, 200)
-    intent = await route(app.state.llm, body.messages, documents)
+        library = await repo.list_library_templates(session)
+    # A library copy is reached only through the library, never as an uploaded template.
+    lib_shas = {t.sha256 for t in library}
+    visible = [d for d in documents if not (d.role == "template" and d.sha256 in lib_shas)]
+    intent = await route(app.state.llm, body.messages, visible)
 
     if intent.intent == "qa":
         user_messages = [m for m in body.messages if m.role == "user"]
@@ -260,11 +267,30 @@ async def _flow(
         deltas.append(render_answer(result))
     elif intent.intent == "chitchat":
         deltas.append(HELP_TEXT)
-    elif intent.template_document_id is None:
-        deltas.append(render_candidates(documents))
-    else:
+    # A number reply to our library list wins; a library name yields to a confirmed upload.
+    elif chosen := library_choice(
+        library, body.messages, by_name=intent.template_document_id is None
+    ):
+        async for frame in _map_library(request, ctx, chosen, deltas, out):
+            yield frame
+    elif intent.template_document_id is not None:
         async for frame in _map_template(request, ctx, intent.template_document_id, deltas, out):
             yield frame
+    elif (
+        any(
+            doc_format(d) in TEMPLATE_FORMATS and intent.format in (None, doc_format(d))
+            for d in visible
+        )
+        or not library
+    ):
+        deltas.append(render_candidates(visible))
+    else:
+        matches = [t for t in library if intent.format in (None, t.format)]
+        if intent.format and len(matches) == 1:
+            async for frame in _map_library(request, ctx, matches[0], deltas, out):
+                yield frame
+        else:
+            deltas.append(render_library(matches or library))
 
 
 async def _map_template(
@@ -287,8 +313,38 @@ async def _map_template(
         yield frame
     if box[0] is None or box[0].status == "failed":
         raise _job_failed(box[0])
-    ir_id = uuid.UUID(box[0].result["template_ir_id"])
+    async for frame in _run_mapping(
+        request, ctx, uuid.UUID(box[0].result["template_ir_id"]), deltas, out
+    ):
+        yield frame
 
+
+async def _map_library(
+    request: Request,
+    ctx: TenantContext,
+    lib: LibraryTemplate,
+    deltas: list[str],
+    out: dict[str, str | None],
+) -> AsyncIterator[str]:
+    """Copy the library template into the project (no LLM call), then map it."""
+    app = request.app
+    deltas.append(f"Using the library template **{md(lib.name)}**.")
+    async with app.state.sessionmaker.begin() as session:
+        ir_id = await adopt(session, ctx, app.state.storage, lib.id)
+    async for frame in _run_mapping(request, ctx, ir_id, deltas, out):
+        yield frame
+
+
+async def _run_mapping(
+    request: Request,
+    ctx: TenantContext,
+    ir_id: uuid.UUID,
+    deltas: list[str],
+    out: dict[str, str | None],
+) -> AsyncIterator[str]:
+    app = request.app
+    sessionmaker = app.state.sessionmaker
+    box: list[Job | None] = []
     async with sessionmaker.begin() as session:
         run, job = await start_mapping_run(session, ctx, ir_id, None)
     out["mapping_run_id"] = str(run.id)

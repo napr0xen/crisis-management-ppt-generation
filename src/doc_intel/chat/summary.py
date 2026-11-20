@@ -5,7 +5,7 @@ from typing import Any
 
 from doc_intel.chat.qa import Answer
 from doc_intel.chat.router import TEMPLATE_FORMATS, doc_format
-from doc_intel.db.models import Document
+from doc_intel.db.models import Document, LibraryTemplate
 from doc_intel.mapping.schemas import Evidence, FieldMappingResult, Value
 from doc_intel.templates.schemas import TemplateIR
 
@@ -14,7 +14,9 @@ HELP_TEXT = (
     "- Attach documents (PDF, DOCX, PPTX, XLSX, TXT, CSV, MD) and ask a question. "
     "Answers come with cited sources.\n"
     '- Attach a PPTX, DOCX or XLSX template and say "fill the template". I fill it from your '
-    "documents and give you a summary and a download link.\n\n"
+    "documents and give you a summary and a download link.\n"
+    "- Without an attached template, ask for one, for example "
+    '"make a powerpoint out of this", and pick a template from the library.\n\n'
     "A value is only filled in when it is backed by a verified quote from your documents."
 )
 
@@ -149,4 +151,19 @@ def render_candidates(documents: list[Document]) -> str:
         "Which template should I fill?\n\n"
         + "\n".join(lines)
         + "\n\nReply with the number or the filename of the template to fill."
+    )
+
+
+def render_library(templates: list[LibraryTemplate]) -> str:
+    """Numbered library templates to pick from. `library_choice` resolves a number reply by
+    matching these exact line starts, so change both together."""
+    lines = [
+        f"{i}. {md(t.name)} ({t.format})"
+        + (f": {md(_clip(t.description, 200))}" if t.description else "")
+        for i, t in enumerate(templates, 1)
+    ]
+    return (
+        "No template is attached to this chat. Which library template should I use?\n\n"
+        + "\n".join(lines)
+        + "\n\nReply with the number or the name of the template."
     )
