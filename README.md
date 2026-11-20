@@ -64,6 +64,7 @@ The Pipe is the only bridge between Open WebUI and the backend. Its code is [int
    uv run python -m doc_intel.cli remove-template <id>
    ```
    `--name` and `--description` are what users see in the chat picker. A template attached to the chat always takes precedence over the library.
+7. Edits: after a filled document, correct it in the same chat, for example "set the owner to Ann", "use the first value for customers affected" or "clear the date". Each edit renders a new version (`…_v2.pptx`) with its own download link; earlier versions stay downloadable. A typed value must be written in your message: the model never fills one in for you.
 
 Conventions: [docs/development-guidelines.md](docs/development-guidelines.md).
 

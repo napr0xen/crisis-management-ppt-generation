@@ -222,3 +222,18 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 - An IR copied into a project doesn't pick up later improvements to the library entry: re-registering under a new name is the upgrade path.
 - Picking a library template whose exact bytes are already a source document in the chat returns `409`. The user fills that document by its filename instead.
 
+## ADR-013 — Chat edits take values only from the user's message
+
+**Status:** Accepted
+
+**Context.** FR-14 lets users edit a filled template in chat. A `set_value` result is `populated` with `provenance = user` and no evidence, so it bypasses quote verification. The ops are parsed from the chat by the local LLM, which could put a value the user never wrote into the document.
+
+**Decision.**
+- `parse_edits` (`chat/edits.py`) rejects a `set_value` whose value does not appear in the last user message as whole words (after `normalize`), so a cut-down `1200` does not pass inside `12000`. The edit is not applied and the reply says the new value must be written in the message.
+- `choose_candidate` only picks one of the verified conflict candidates, and `clear` writes the missing marker, so neither can introduce a value.
+- `POST …/mapping-runs/{run_id}/edits` takes the ops directly (an API client is the user), so the check applies only to chat.
+- An edit always targets the chat's latest `completed` run and creates a new run and artifact. The parent run is never modified.
+
+**Trade-offs.**
+- A paraphrased value ("make it two million" for `2000000`) is rejected. The user writes the value itself instead.
+- The edit LLM sees the field list, current values and conflict candidates, which is document-derived text. It stays inside the local LLM call and is never logged.

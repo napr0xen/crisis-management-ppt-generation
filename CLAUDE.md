@@ -14,7 +14,7 @@ Project: local-first, domain-agnostic **Document Intelligence & Template Mapping
 | `docs/implementation-roadmap.md` | phases 0–12, entry/exit gates, status |
 | `docs/development-guidelines.md` | layout, typing, async, errors, logging, `.env` vars, git |
 | `docs/testing-strategy.md` | test layers, security gates, eval metrics, fidelity checks |
-| `docs/DECISIONS.md` | ADR-001…ADR-012 |
+| `docs/DECISIONS.md` | ADR-001…ADR-013 |
 
 Never invent a table, column, endpoint, env var, or path name: use the docs. If code and docs disagree, fix whichever is wrong **in the same commit**.
 

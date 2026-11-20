@@ -1,7 +1,7 @@
 """Intent routing for `POST /v1/pipe/chat` (system-design § 9.4).
 
 One JSON LLM call over the last messages and the project's document list (ids, filenames,
-roles). No document text is sent. Phase 8 intents: qa, map_template, chitchat (edit is Phase 11).
+roles). No document text is sent. Intents: qa, map_template, chitchat, edit.
 """
 
 import re
@@ -26,14 +26,14 @@ class ChatMessage(BaseModel):
 
 
 class Intent(BaseModel):
-    intent: Literal["qa", "map_template", "chitchat"]
+    intent: Literal["qa", "map_template", "chitchat", "edit"]
     template_document_id: uuid.UUID | None = None
     format: Literal["pptx", "docx", "xlsx"] | None = None  # the output format the user asked for
 
 
 class _LLMIntent(BaseModel):
     # str ids: one malformed id must not fail the whole reply.
-    intent: Literal["qa", "map_template", "chitchat"]
+    intent: Literal["qa", "map_template", "chitchat", "edit"]
     template_document_id: str | None = None
     candidates: list[str] = []
     format: str | None = None

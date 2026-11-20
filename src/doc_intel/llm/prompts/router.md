@@ -6,6 +6,7 @@ Intents:
 - `qa`: the user asks a question about the content of the uploaded documents.
 - `map_template`: the user wants a template (PPTX, DOCX or XLSX) filled or generated from the documents. This includes a reply that confirms a choice from a numbered list of templates offered earlier in the conversation, such as "2", "use the pptx" or a filename.
 - `map_template` also covers asking to generate a presentation, document or spreadsheet from the documents, such as "make a powerpoint out of this", even when no template is uploaded. A reply that chooses from a numbered list of library templates (by number or name) is `map_template` too; library templates are not in the document list, so `candidates` stays empty for them.
+- `edit`: the user wants to change the document generated earlier in this chat: set or correct a field's value, choose one of the conflicting values, or clear a field.
 - `chitchat`: greetings, thanks, questions about what you can do, or anything else.
 
 Rules:

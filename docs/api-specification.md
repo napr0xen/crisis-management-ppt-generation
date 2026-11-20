@@ -139,6 +139,7 @@ Response: `text/event-stream`.
 - While it waits on a job, the stream sends a `: keep-alive` comment line when the status text has not changed. Clients ignore lines starting with `:`.
 - Unknown `openwebui_file_id`s and failed ingests are not errors: each becomes a `delta` warning that names the file, and the turn continues.
 - A failed `extract_template` or mapping job ends the turn with `error`, then `done`.
+- An edit turn (Phase 11) waits on the new run's `render_artifact` job; `done` carries the new `mapping_run_id` and `artifact_id`. A rejected edit is a `delta`, not an `error`.
 
 Routing behavior, including the template library choice (Phase 9), is described in [system-design.md § 9](system-design.md#9-chat-orchestration-chat). Library templates are managed only through the CLI (`uv run python -m doc_intel.cli seed-template PATH --name NAME [--description TEXT] [--category TEXT]`, `list-templates`, `show-template ID`, `remove-template ID`). No HTTP endpoint exposes them (ADR-012). The Pipe drops internal `### Task:` requests before calling this endpoint.
 
@@ -287,14 +288,16 @@ Applies edits **on top of `{run_id}`**, creating a new run (see [system-design.m
 }
 ```
 
-`EditOp` validation:
-- `field_id` must exist in the run's IR;
+`edits`: 1 to 50 ops. `EditOp` validation:
+- `field_id` must exist in the run's IR, at most once per request (fields sharing one repeated token count as one, see [system-design.md § 10](system-design.md#10-conversational-edits-chateditspy));
 - `choose_candidate` requires the field to be `conflict` and `0 <= candidate_index < len(candidates)`;
-- `set_value` requires `value`.
+- `set_value` requires `value` of the field's shape: a non-empty string for `text`; a string or list of strings for `paragraphs`/`bullet_list`; a number or a string that states exactly one number or date for `number`/`currency`/`percent`/`date`; a list of rows for `table`.
 
 Any violation → `422` and nothing is applied.
 
-`202`: `{"mapping_run_id": "uuid (new)", "version": 2, "job_id": "uuid"}`.
+`202`: `{"mapping_run_id": "uuid (new)", "version": 2, "job_id": "uuid"}`. The new run starts at `status = 'rendering'` and its `render_artifact` job writes the next artifact.
+
+Errors: `404` unknown run or another tenant's run; `409` the run is not `completed`, or the version could not be allocated after one retry; `422` as above.
 
 ---
 

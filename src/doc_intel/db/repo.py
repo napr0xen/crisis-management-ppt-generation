@@ -340,6 +340,12 @@ async def create_mapping_run(
     *,
     template_ir_id: uuid.UUID,
     document_ids: list[uuid.UUID],
+    trigger: str = "initial",
+    parent_run_id: uuid.UUID | None = None,
+    status: str = "queued",
+    results: dict[str, Any] | None = None,
+    summary: dict[str, Any] | None = None,
+    edits: list[dict[str, Any]] | None = None,
 ) -> MappingRun:
     """Next version for this IR. A concurrent insert of the same version loses the UNIQUE race:
     retry once with a fresh max, then `Conflict`."""
@@ -356,9 +362,13 @@ async def create_mapping_run(
             project_id=ctx.project_id,
             template_ir_id=template_ir_id,
             version=version,
-            trigger="initial",
-            status="queued",
+            trigger=trigger,
+            parent_run_id=parent_run_id,
+            status=status,
             document_ids=document_ids,
+            results=results or {},
+            summary=summary or {},
+            edits=edits,
         )
         try:
             async with session.begin_nested():
@@ -378,6 +388,21 @@ async def get_mapping_run(
     if run is None:
         raise NotFound()
     return run
+
+
+async def latest_completed_mapping_run(
+    session: AsyncSession, ctx: TenantContext
+) -> MappingRun | None:
+    return await session.scalar(
+        select(MappingRun)
+        .where(
+            MappingRun.user_id == ctx.user_id,
+            MappingRun.project_id == ctx.project_id,
+            MappingRun.status == "completed",
+        )
+        .order_by(MappingRun.created_at.desc(), MappingRun.id.desc())
+        .limit(1)
+    )
 
 
 async def update_mapping_run(

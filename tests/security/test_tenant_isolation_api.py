@@ -30,6 +30,7 @@ CHILD_ROUTES = [
     ("GET", "/v1/projects/{p}/templates/{d}"),
     ("GET", "/v1/projects/{p}/templates/{d}/irs/1"),
     ("GET", "/v1/projects/{p}/mapping-runs/{j}"),
+    ("POST", "/v1/projects/{p}/mapping-runs/{j}/edits"),
 ]
 PROJECT_ROUTES = [
     ("GET", "/v1/projects/{p}/documents"),
@@ -63,6 +64,9 @@ def test_other_users_document_and_job_ids_are_404_identical_to_random(
         path = template.format(p=pid, d=did, j=jid)
         if path.endswith("/templates"):  # JSON body: B names A's document
             return client.request(method, path, headers=hdrs, json={"document_id": str(did)})
+        if path.endswith("/edits"):  # valid body: only the run id is foreign
+            body = {"edits": [{"op": "clear", "field_id": "a"}]}
+            return client.request(method, path, headers=hdrs, json=body)
         if path.endswith("/mapping-runs"):  # B names an id that is not B's template IR
             return client.request(method, path, headers=hdrs, json={"template_ir_id": str(did)})
         return client.request(method, path, headers=hdrs, files={"file": ("r.pdf", b"%PDF-x")})

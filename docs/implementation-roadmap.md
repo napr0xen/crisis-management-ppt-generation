@@ -29,8 +29,8 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 7 | Surgical writers & artifacts | **Complete** |
 | 8 | Open WebUI Pipe & chat orchestration | **Complete** |
 | 9 | Template library | **Complete** |
-| 10 | Universal mapping fixes | in progress |
-| 11 | Conversational edits & run versioning | pending |
+| 10 | Universal mapping fixes | automated gate passed, live test pending |
+| 11 | Conversational edits & run versioning | automated gate passed, live test pending |
 | 12 | Hardening, evaluation & audit | pending |
 
 ---
@@ -240,6 +240,8 @@ Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped agains
 - **Exit:**
   - Tests: every `EditOp` and its validation errors (422, nothing applied); parent run unchanged; version increments; `choose_candidate` only on `conflict`;
   - end-to-end chat edit produces v2 artifact.
+- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 170 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1178 passed (Phases 1-11). Covered: `chat/edits.py` (`apply_edits`, `parse_edits`, prompt `edits.md`), `POST …/mapping-runs/{run_id}/edits` (`start_edit_run`), router `edit` intent, Pipe edit turn (`render_artifact` → `_v2` artifact), repeated-token siblings share an edit, chat `set_value` must quote the user's words (ADR-013). No migration (the columns existed since Phase 1).
+  - [ ] manual: in Open WebUI, after a filled deck, "set <field> to <value>" → v2 download with the value; "use the first value for <conflict field>" → v3; "clear <field>" → missing marker; a value not written in the message is refused; the v1 link still downloads.
 
 ## Phase 12: Hardening, evaluation & audit
 

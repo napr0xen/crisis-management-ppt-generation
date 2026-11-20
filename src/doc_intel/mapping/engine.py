@@ -35,6 +35,13 @@ _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
 CONF_TYPED, CONF_TEXT, CONF_PARTIAL = 0.9, 0.8, 0.5
 
 
+def share_key(field: IRField) -> tuple[str, str, str] | None:
+    """Fields with an equal key are one repeated token: they share one answer and one edit. The
+    label is in the key because generic blanks ("____", "XXX") repeat with different meanings."""
+    token = field.constraints.token if field.write_mode == "replace_token" else None
+    return (token, field.expected_type, field.label.casefold()) if token else None
+
+
 def field_query(field: IRField) -> str:
     field = bounded_field(field)  # template-derived text must not size the embedding query
     return f"{field.label} — {field.description} ({' > '.join(field.section_path)})"

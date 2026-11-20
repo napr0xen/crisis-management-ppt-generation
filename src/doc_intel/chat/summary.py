@@ -16,7 +16,10 @@ HELP_TEXT = (
     '- Attach a PPTX, DOCX or XLSX template and say "fill the template". I fill it from your '
     "documents and give you a summary and a download link.\n"
     "- Without an attached template, ask for one, for example "
-    '"make a powerpoint out of this", and pick a template from the library.\n\n'
+    '"make a powerpoint out of this", and pick a template from the library.\n'
+    '- After a template is filled, edit it in chat, for example "set the owner to Ann", '
+    '"use the first value for customers affected" or "clear the date". Each edit makes a new '
+    "version; earlier versions stay downloadable.\n\n"
     "A value is only filled in when it is backed by a verified quote from your documents."
 )
 
@@ -122,7 +125,10 @@ def render_summary(
         for r, details in conflicts:
             out.append(f"- {label(r.field_id)}")
             out += [f"  - {_value(c.value)} ({cites(c.evidence)})" for c in details.candidates]
-        out.append("\nConflicts are never auto-resolved: please choose the correct value.")
+        out.append(
+            "\nConflicts are never auto-resolved: reply with the value to use, for example "
+            '"use the first value for customers affected".'
+        )
     if partial:
         out.append("\n**Partial**")
         out += [f"- {label(r.field_id)}: {_value(r.value)}" for r in partial if r.value is not None]

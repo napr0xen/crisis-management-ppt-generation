@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_intel.api.v1.artifacts import artifact_out
 from doc_intel.api.v1.documents import store_upload
-from doc_intel.api.v1.mapping_runs import start_mapping_run
+from doc_intel.api.v1.mapping_runs import start_edit_run, start_mapping_run
 from doc_intel.api.v1.templates import start_template
+from doc_intel.chat.edits import parse_edits
 from doc_intel.chat.library import library_choice
 from doc_intel.chat.qa import answer
 from doc_intel.chat.router import TEMPLATE_FORMATS, ChatMessage, doc_format, route
@@ -267,6 +268,9 @@ async def _flow(
         deltas.append(render_answer(result))
     elif intent.intent == "chitchat":
         deltas.append(HELP_TEXT)
+    elif intent.intent == "edit":
+        async for frame in _edit(request, ctx, body, deltas, out):
+            yield frame
     # A number reply to our library list wins; a library name yields to a confirmed upload.
     elif chosen := library_choice(
         library, body.messages, by_name=intent.template_document_id is None
@@ -352,15 +356,72 @@ async def _run_mapping(
         yield frame
     if box[0] is None or box[0].status == "failed":
         raise _job_failed(box[0])
+    await _finish(request, ctx, run.id, ir_id, deltas, out)
 
+
+async def _edit(
+    request: Request,
+    ctx: TenantContext,
+    body: PipeChatIn,
+    deltas: list[str],
+    out: dict[str, str | None],
+) -> AsyncIterator[str]:
+    """Apply the user's edit to the latest completed run as a new version (Phase 11)."""
+    app = request.app
+    sessionmaker = app.state.sessionmaker
+    # shortcut: an edit always targets the latest completed run in the chat; add an explicit
+    # version reference ("edit v1") if users ask for it.
     async with sessionmaker.begin() as session:
-        run = await repo.get_mapping_run(session, ctx, run.id)
+        parent = await repo.latest_completed_mapping_run(session, ctx)
+        ir_row = parent and await repo.get_template_ir_by_id(session, ctx, parent.template_ir_id)
+    if parent is None:
+        deltas.append(
+            "There is no generated document to edit yet. Ask me to fill a template first."
+        )
+        return
+    ir = TemplateIR.model_validate(ir_row.ir)
+    results = {k: FieldMappingResult.model_validate(v) for k, v in parent.results.items()}
+    try:
+        ops = await parse_edits(app.state.llm, body.messages, ir, results)
+        if not ops:
+            deltas.append("Tell me which field to change and its new value.")
+            return
+        async with sessionmaker.begin() as session:
+            run, job = await start_edit_run(session, ctx, parent.id, ops)
+    except ValidationFailed as exc:
+        deltas.append(f"I could not apply that edit: {md(exc.message)}")
+        return
+    out["mapping_run_id"] = str(run.id)
+    box: list[Job | None] = []
+    async for frame in _watch(
+        request, lambda s: repo.get_job(s, ctx, job.id), lambda _: "Rendering document", box
+    ):
+        yield frame
+    if box[0] is None or box[0].status == "failed":
+        raise _job_failed(box[0])
+    header = f"Applied {len(ops)} edit(s). This is version {run.version}."
+    await _finish(request, ctx, run.id, parent.template_ir_id, deltas, out, header)
+
+
+async def _finish(
+    request: Request,
+    ctx: TenantContext,
+    run_id: uuid.UUID,
+    ir_id: uuid.UUID,
+    deltas: list[str],
+    out: dict[str, str | None],
+    header: str | None = None,
+) -> None:
+    app = request.app
+    async with app.state.sessionmaker.begin() as session:
+        run = await repo.get_mapping_run(session, ctx, run_id)
         ir_row = await repo.get_template_ir_by_id(session, ctx, ir_id)
-        artifact = await repo.get_artifact_by_run(session, ctx, run.id)
+        artifact = await repo.get_artifact_by_run(session, ctx, run_id)
     if artifact is None:  # the run itself failed; run_mapping still succeeded as a job
         raise _job_failed(None)
     out["artifact_id"] = str(artifact.id)
     results = {k: FieldMappingResult.model_validate(v) for k, v in run.results.items()}
     ir = TemplateIR.model_validate(ir_row.ir)
     url = artifact_out(artifact, app.state.settings).download_url
-    deltas.append(render_summary(results, run.summary, ir, url))
+    summary = render_summary(results, run.summary, ir, url)
+    deltas.append(f"{header}\n\n{summary}" if header else summary)

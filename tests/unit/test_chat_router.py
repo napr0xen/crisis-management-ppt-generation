@@ -104,7 +104,7 @@ async def test_format_comes_from_storage_key_not_filename() -> None:
     assert result.template_document_id == real.id
 
 
-@pytest.mark.parametrize("intent", ["qa", "chitchat"])
+@pytest.mark.parametrize("intent", ["qa", "chitchat", "edit"])
 async def test_non_template_intents_return_no_ids(intent: str) -> None:
     pptx = _doc("deck.pptx", "pptx")
     result = await route(

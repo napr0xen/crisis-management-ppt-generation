@@ -92,6 +92,11 @@ def test_help_text_mentions_capabilities() -> None:
         assert word in HELP_TEXT
 
 
+def test_help_text_and_conflict_footer_explain_edits() -> None:
+    assert "new version" in HELP_TEXT and "clear the date" in HELP_TEXT and "<" not in HELP_TEXT
+    assert 'reply with the value to use, for example "use the first value' in _full()
+
+
 def test_summary_counts_and_sections() -> None:
     out = _full()
     assert "1 populated" in out and "1 partial" in out and "2 missing" in out

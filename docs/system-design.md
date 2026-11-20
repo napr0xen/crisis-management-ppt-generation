@@ -499,7 +499,7 @@ Common rules:
 3. Wait on every project document still `uploaded` or `parsing` (the 200 newest, referenced or not), on its `ingest_document` job, streaming progress as `status` events. A failed ingest adds a `delta` ("I could not read X, so I skipped it.") and the turn continues. The wait covers the whole project because a template pick purges Qdrant points. Each poll is 1 s (`POLL_INTERVAL_S`); a `status` is sent only when its text changes, otherwise a `: keep-alive` comment.
    `shortcut: no server-side wait cap; a stuck or disabled worker (JOB_CONCURRENCY=0) holds the stream until the client disconnects or TIMEOUT_S, add a cap if that happens.`
    `shortcut: disconnect is only noticed between polls; route/answer/start_template run to completion, run the flow as a cancellable task if Ollama time is wasted.`
-4. **Intent routing** (`router.py`, prompt `llm/prompts/router.md`): one LLM call with JSON output `{"intent": "qa"|"map_template"|"chitchat", "template_document_id": uuid|null, "candidates": [uuid], "format": "pptx"|"docx"|"xlsx"|null}`. `format` is the output format the user asked for ("powerpoint" → `pptx`, "word" → `docx`, "excel" → `xlsx`); a value outside those three is dropped. Phase 8 intents are `qa`, `map_template` and `chitchat`; `edit` arrives in Phase 9. The handler receives `{intent, template_document_id}`: ids from both fields are checked against the project's pptx/docx/xlsx documents, de-duplicated. Only when exactly one remains is it considered for mapping. It sees the last 10 messages, each cut to its **last 1,500 characters**, so long run summaries can't push the prompt past `LLM_NUM_CTX` (Ollama silently drops the start of an over-long prompt, which is where the instructions are). It also sees the project's document list (ids, filenames, roles, formats), minus library copies (`role = 'template'` documents whose `sha256` is a library template's). Those are reached only through the library. No document text goes into this call.
+4. **Intent routing** (`router.py`, prompt `llm/prompts/router.md`): one LLM call with JSON output `{"intent": "qa"|"map_template"|"edit"|"chitchat", "template_document_id": uuid|null, "candidates": [uuid], "format": "pptx"|"docx"|"xlsx"|null}`. `format` is the output format the user asked for ("powerpoint" → `pptx`, "word" → `docx`, "excel" → `xlsx`); a value outside those three is dropped. Intents are `qa`, `map_template`, `edit` (Phase 11) and `chitchat`. The handler receives `{intent, template_document_id}`: ids from both fields are checked against the project's pptx/docx/xlsx documents, de-duplicated. Only when exactly one remains is it considered for mapping. It sees the last 10 messages, each cut to its **last 1,500 characters**, so long run summaries can't push the prompt past `LLM_NUM_CTX` (Ollama silently drops the start of an over-long prompt, which is where the instructions are). It also sees the project's document list (ids, filenames, roles, formats), minus library copies (`role = 'template'` documents whose `sha256` is a library template's). Those are reached only through the library. No document text goes into this call.
    - `qa` → `qa.py`.
    - `map_template` resolves the template in this order (Phase 9):
      1. **Library choice** (`chat/library.py`). Either the last user message names a library template (case-insensitive, word boundaries; if several match, the unique longest name wins), or it holds a number and the last assistant message has the line `N. <md(name)> (<format>)` from a library list. Resolving by the rendered line means list order and filtering can't shift the choice. → `adopt` the template (copy-on-use, [data-model.md § library_templates](data-model.md#library_templates)), add the delta "Using the library template **name**.", and go straight to the mapping run: no `extract_template`, no LLM call for the IR.
@@ -517,7 +517,7 @@ Common rules:
      `shortcut: the only pptx/docx/xlsx in a chat is mapped without asking; a source memo of that format then becomes the template (re-adding it needs DELETE), drop this rule if users hit it.`
      `shortcut: the list number refers to the current document order; an upload between the list and the reply can shift it, upgrade with pending_action.`
    - `chitchat` → the fixed help text (`HELP_TEXT`). No answer call is made; the routing call still runs.
-   - `edit` (Phase 11) → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
+   - `edit` (Phase 11) → the project's latest `completed` mapping run is the parent (none → "There is no generated document to edit yet."). `parse_edits` turns the last user message into `EditOp`s, then the same path as `POST …/edits` (`start_edit_run`) creates the new run and the Pipe waits on its `render_artifact` job. The reply is "Applied N edit(s). This is version V." followed by `render_summary` for the new run. A rejected edit replies "I could not apply that edit: <reason>" and creates nothing.
 5. **Q&A** (`qa.py`):
    1. Retrieve. No hits → the "not found" answer below, without an LLM call. A search failure → `503 upstream_unavailable`.
    2. Make one LLM call (prompt `llm/prompts/qa.md`) with JSON output `{"answer_markdown": "… [1] …", "citations": [{"marker": 1, "chunk_id": "…", "quote": "…"}]}`. Each hit is shown as `[chunk_id | filename | p.N | section]` followed by its text.
@@ -540,14 +540,23 @@ Common rules:
 
 | `op` | Effect on the copied `FieldMappingResult` |
 |---|---|
-| `set_value` | `status=populated`, `value=<user value>`, `evidence=[]`, `provenance=user`, `confidence=1.0` |
-| `choose_candidate` | only valid on `conflict`: `status=populated`, `value`/`evidence` from `conflict_details.candidates[i]`, `provenance=rag`, `conflict_details=null` |
-| `clear` | `status=missing`, `value=null`, `evidence=[]`, `missing_reason=cleared_by_user` |
+| `set_value` | `status=populated`, `value=<user value>` (coerced, below), `evidence=[]`, `provenance=user`, `confidence=1.0` |
+| `choose_candidate` | only valid on `conflict`: `status=populated`, `value`/`evidence` from `conflict_details.candidates[i]`, `provenance=rag`, `conflict_details=null`, `confidence` 0.9 for typed fields and 0.8 otherwise (the candidates are verified) |
+| `clear` | `status=missing`, `value=null`, `evidence=[]`, `missing_reason=cleared_by_user`, `provenance=user`, `confidence=0.0` |
 
-Applying an edit:
-1. Copy the parent run's `results`.
-2. Apply the ops.
-3. Insert a new `mapping_runs` row: `trigger='edit'`, `parent_run_id`, `version = max(version for this template_ir_id) + 1` (retried once on a `UNIQUE` violation), `edits`, `status='rendering'`.
-4. Enqueue `render_artifact`.
+`set_value` coerces the value by the field's `expected_type`: `text` needs a non-empty string; `paragraphs`/`bullet_list` take a string (one item) or a list of strings; `number`/`currency`/`percent`/`date` must canonicalize to exactly one value (`canonical_value`, so `1.829.914,84` and `30 junio 2022` work) and are stored canonical (number, ISO date), which the xlsx writer needs; `table` needs a list of rows.
+
+Validation (`apply_edits`, pure): every op is checked before any is applied. An unknown `field_id`, the same field twice in one request, `choose_candidate` on a field that is not `conflict` or with an index out of range, or a value that does not coerce → `ValidationFailed` (422), and nothing is applied. Messages name the op index and the rule, never the value or field id.
+
+Repeated tokens: `replace_token` fields that `map_run` maps once (same `share_key`: token, `expected_type`, label) get the same edited result, so one edit changes the value on every slide. Naming two such fields in one request counts as a duplicate.
+
+Applying an edit (`start_edit_run` in `api/v1/mapping_runs.py`, shared by the endpoint and the Pipe):
+1. Load the parent run (tenant-scoped, `404` otherwise); it must be `completed` (`409`).
+2. Copy its `results` and apply the ops.
+3. Recompute `summary` with `summarize` (the parent's writer warnings are not carried over; rendering appends the new ones).
+4. Insert a new `mapping_runs` row: `trigger='edit'`, `parent_run_id`, the parent's `document_ids`, `version = max(version for this template_ir_id) + 1` (retried once on a `UNIQUE` violation), `edits`, `status='rendering'`.
+5. Enqueue `render_artifact`. The artifact is `{template stem}_v{version}.{ext}`; earlier artifacts stay downloadable.
 
 The parent run is never modified.
+
+**Chat parsing (`parse_edits`).** One JSON LLM call (prompt `llm/prompts/edits.md`) sees the run's field list (`field_id | label | status | current value`, clipped), each conflict's numbered candidates (value and filename), and the last user message. It returns flat ops `{op, field_id, value, candidate_index}`. An op missing its argument is rejected. A `set_value` value must appear in the last user message as whole words (`normalize`d, so a cut-down `1200` does not match `12000`), so the model can't invent a value the user never wrote ([ADR-013](DECISIONS.md#adr-013--chat-edits-take-values-only-from-the-users-message)). `shortcut: an edit always targets the latest completed run in the chat; add an explicit version reference ("edit v1") if users ask for it.`
