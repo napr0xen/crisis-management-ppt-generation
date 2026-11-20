@@ -4,7 +4,7 @@ A local-first, domain-agnostic RAG platform. You chat in **Open WebUI**: upload 
 
 > The repo name reflects the first use case (crisis-management slide decks). Nothing in the platform is domain-specific.
 
-**Status:** Phases 1-7 complete (foundation, ingestion, embeddings + Qdrant, grounded Q&A, template intelligence, evidence mapping, surgical PPTX/DOCX/XLSX writers with signed downloads); next is Phase 8 (Open WebUI Pipe). See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
+**Status:** Phases 1-7 complete (foundation, ingestion, embeddings + Qdrant, grounded Q&A, template intelligence, evidence mapping, surgical PPTX/DOCX/XLSX writers with signed downloads). Phase 8 (Open WebUI Pipe) is in progress: implementation and automated tests done; manual Open WebUI end-to-end pending. See [docs/implementation-roadmap.md](docs/implementation-roadmap.md).
 
 ## How it works
 
@@ -43,6 +43,19 @@ uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000
 curl 127.0.0.1:8000/v1/health # {"status":"ok","postgres":"ok","qdrant":"ok",...}
 uv run pytest                 # integration tests use a throwaway doc_intel_test database
 ```
+
+## Open WebUI Pipe setup
+
+The Pipe is the only bridge between Open WebUI and the backend. Its code is [integrations/openwebui/doc_intel_pipe.py](integrations/openwebui/doc_intel_pipe.py).
+
+1. Start the services and the API on the host (see Quick start): `docker compose up -d`, then `uv run uvicorn doc_intel.main:app --host 127.0.0.1 --port 8000`.
+2. Open http://localhost:3000 → **Admin Panel → Functions → "+"** (new function). Paste the whole content of `integrations/openwebui/doc_intel_pipe.py`, save, and enable the function.
+3. Open the function's **Valves** (gear icon) and set:
+   - `BACKEND_URL` = `http://host.docker.internal:8000`
+   - `PIPE_SHARED_SECRET` = the same value as `PIPE_SHARED_SECRET` in `.env` (at least 32 characters)
+   - `TIMEOUT_S` = `1800`
+4. Turn off Open WebUI's built-in file handling for the Pipe model, so it does not inject file text itself: **Workspace → Models → edit the Pipe model → Capabilities**, untick **File Context** and **Builtin Tools** (`meta.capabilities` `file_context: false`, `builtin_tools: false`). The API alternative is `POST /api/v1/models/create` with `id` set to the Pipe id. See [architecture.md § 5](docs/architecture.md#5-open-webui-pipe-design).
+5. Use it: start a new chat, select the Pipe model, attach your documents and a template, and say "fill the template". The summary ends with a download link to `http://127.0.0.1:8000/...`. Open that link in the host browser; it expires, so download the file soon.
 
 Conventions: [docs/development-guidelines.md](docs/development-guidelines.md).
 

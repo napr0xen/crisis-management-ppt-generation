@@ -81,7 +81,8 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
       "text": "Click to add situation summary",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": [50, 40]
     },
     {
       "anchor_id": "pptx:s5:sp4:r1c2",
@@ -90,7 +91,8 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": {"row": 1, "col": 2, "header": "Owner"}
+      "table": {"row": 1, "col": 2, "header": "Owner"},
+      "pos": [50, 70]
     }
   ]
 }
@@ -100,12 +102,12 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
 
 | Format | Kinds | Pattern |
 |---|---|---|
-| pptx | `shape_text`, `table_cell` | `pptx:s{slide}:sp{shape_id}`, `pptx:s{slide}:sp{shape_id}:r{row}c{col}` |
+| pptx | `shape_text`, `table_cell` | `pptx:s{slide}:sp{shape_id}[_{k}]`, `pptx:s{slide}:sp{shape_id}[_{k}]:r{row}c{col}` |
 | docx | `paragraph`, `table_cell`, `header_paragraph`, `footer_paragraph`, `content_control` | `docx:body:p{i}`, `docx:body:t{t}:r{row}c{col}`, `docx:sec{s}:header:p{i}`, `docx:sec{s}:footer:p{i}`, `docx:sdt:{tag}` |
 | xlsx | `sheet_cell` | `xlsx:{sheet_name}!{cell_ref}` (split on the **last** `!`) |
 
-**Selection rules.** Indexes are positions in the library's native collection, not counts of emitted anchors, so writers resolve them directly: `docx:body:p{i}` is `document.paragraphs[i]`, `t{t}` is `document.tables[t]`, and pptx uses `shape.shape_id`. Paragraph indexes are 0-based.
-- pptx: every shape with a text frame (group shapes are recursed) and every non-spanned table cell. An empty placeholder carries its layout prompt text as `text`.
+**Selection rules.** Indexes are positions in the library's native collection, not counts of emitted anchors, so writers resolve them directly: `docx:body:p{i}` is `document.paragraphs[i]`, `t{t}` is `document.tables[t]`, and pptx uses `shape.shape_id`. Paragraph indexes are 0-based. Real decks can repeat a `shape_id` on one slide, so pptx shapes are keyed by `(shape_id, kind)` in document order (`keyed_shapes()` in `anchors_pptx.py`, used by both the extractor and the writer): the first text shape and the first table with a given id are both `sp{shape_id}` (the writer tells them apart by `has_text_frame` vs `has_table`), and the k-th (k ≥ 2) shape of the same kind with that id is `sp{shape_id}_{k}`.
+- pptx: every shape with a text frame (group shapes are recursed) and every non-spanned table cell, except slide chrome and decoration: slide-number, footer, date and header placeholders without tokens, and empty non-placeholder text shapes (decorative boxes, icons, badges). Skipped shapes still count for `keyed_shapes()`, so keys never shift. An empty placeholder carries its layout prompt text as `text`. `pos` (pptx only, else `null`) is the shape's centre as `[x, y]` percent of the slide (table cells carry the table's), so the IR model can pair a placeholder with the heading next to it (`shortcut: group children use the group's child coordinates, transform via chOff/chExt if scaled groups mislead the IR`).
 - docx: headings are not anchors (they form `path`). A body paragraph is an anchor if it has text, or is empty directly under a heading. Table cells are deduplicated across merges (one anchor at the merge origin). Header and footer paragraphs with text count only for sections not linked to the previous one (first-page and even-page headers are skipped). Tagged `w:sdt` content controls in the body are anchors; untagged ones are skipped, and the first of a duplicate tag is kept. An inline content control overlaps its paragraph's anchor. Content controls around tables, rows or cells are not anchors, and a table whose rows all sit in row-level content controls has no anchors (its index still counts).
 - xlsx: candidates are non-formula cells holding a token, plus empty right and below neighbours of text label cells. Merged non-origin cells are never anchors.
 
@@ -117,9 +119,9 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
 
 ## 5. TemplateIR
 
-Stage 2. The LLM proposes fields from the AnchorMap, and `ir_builder.validate()` enforces:
+Stage 2. The LLM proposes fields from the AnchorMap (prompt `llm/prompts/template_ir.md`). The prompt makes it skip visual and non-data slots (logos, icons, images, charts), slide numbers and template-author instructions. Each `field_id`, `label` and `description` must name the slide topic and the nearest static heading (found via `pos`), or the exact ordinal for untitled ordered slots, never a generic "Value 1". `date` is only for a full calendar date; a month-and-year or quarter slot is `text`, so the source text is copied verbatim and no day is ever invented. `ir_builder.validate()` enforces:
 - every `anchor_id` exists in the AnchorMap;
-- no `anchor_id` is used twice;
+- no `anchor_id` is used twice, except by `replace_token` fields: an anchor with several tokens (e.g. `[Presenter Name], [Role] · [DD Month YYYY]`) gets one `replace_token` field per token, each `(anchor_id, constraints.token)` pair unique, and no other `write_mode` on that anchor;
 - `field_id`s are unique;
 - `write_mode` is allowed for the anchor kind (table below);
 - `replace_token` fields have `constraints.token` present in the anchor's `tokens`;
@@ -127,7 +129,14 @@ Stage 2. The LLM proposes fields from the AnchorMap, and `ir_builder.validate()`
 - a table filled by `fill_table_rows` has no other field on its cells;
 - a `replace_text` or `fill_cell` field on a text anchor whose anchor has `tokens` uses `replace_token`, unless the anchor text is exactly one token (so the text around a token is never deleted). xlsx `sheet_cell` is exempt.
 
-Invalid output gets 1 LLM retry, with the validation errors fed back. If it fails again, the `extract_template` job fails with `ir_invalid`. The fed-back errors name only field ids, anchor ids, write modes and anchor kinds, never document text.
+The AnchorMap is sent in **batches**, not one prompt: a whole AnchorMap can outgrow `LLM_NUM_CTX`, and Ollama silently drops the start of an over-long prompt, where the rules are. Measured: a 10-slide deck gave 212 anchors and a ~12.6k-token prompt. Batches are built like this:
+- anchors are grouped by slide (pptx), by sheet (xlsx) or as one group (docx);
+- a table's cells stay together;
+- each batch holds at most `MAX_BATCH_ANCHORS = 40` anchors (`ir_builder.py`) and never mixes groups. A table larger than that is split in row order.
+
+Batches run sequentially, and each is validated against its own anchors only. Cells of a table already owned by a `fill_table_rows` field from an earlier batch are not sent again. The fields are then merged in order. A `field_id` already used by an earlier batch is renamed `{id[:60]}_{n}` with the smallest free `n ≥ 2`, and the merged IR is validated once more against the full AnchorMap.
+
+Each invalid batch gets 1 LLM retry: the original prompt, the previous draft echoed back as the assistant turn (cut to `RETRY_ECHO_CHARS` = 1,500 characters so the retry still fits `LLM_NUM_CTX`), and the validation errors. If that retry also fails, the `extract_template` job fails with `ir_invalid`, and the errors are logged as `ir_invalid` (`errors`, `anchor_count`). The errors name only field ids, anchor ids, write modes, anchor kinds and counts, never document or token text. Job progress before each batch is `{"stage": "ir", "done": i, "total": n, "part": "slide 3"}`; `part` is `slide N` or `sheet N` (the sheet's position, never its name), and absent for docx.
 
 | `write_mode` | Allowed anchor kinds | Behavior |
 |---|---|---|
@@ -368,7 +377,7 @@ PENDING ─retrieve─▶ RETRIEVED ─extract─▶ EXTRACTED ─verify─▶ R
    - The query and the prompt use a bounded copy of the field: the last 4 `section_path` elements (120 chars each), at most 30 `columns`/`allowed_values` (80 chars each).
 2. **Extract.** The LLM gets the field spec and the hits (each labeled with its `chunk_id`), with JSON-schema output:
    `{"candidates": [{"value": …, "quotes": [{"chunk_id": "…", "quote": "…"}]}], "not_found": bool, "incomplete": bool}`.
-   The prompt says to copy quotes verbatim, use only the given chunks, and return `not_found` rather than guess.
+   The prompt says to copy quotes verbatim (the whole sentence or table row that states the value), use only the given chunks, and return `not_found` rather than guess. A field asking for one item of a list (an ordinal slot such as the first upcoming award, or a named item) gets only that item: other items of the same list are not conflicting values. Template placeholder text is never a value.
    The LLM `value` is a string for text/number/currency/percent/date, a list of strings for paragraphs/bullet_list, and a list of rows (lists of cell strings, body rows only, in `constraints.columns` order) for table. `not_found = true` wins over any candidates.
 3. **Verify** (`verifier.py`, deterministic).
    - `normalize(s)` = NFKC → casefold → map curly quotes and dashes to ASCII → replace `|` with a space (so a quoted Markdown table row matches its chunk) → collapse whitespace → strip.
@@ -390,13 +399,13 @@ PENDING ─retrieve─▶ RETRIEVED ─extract─▶ EXTRACTED ─verify─▶ R
       - a `table` row has fewer than `len(columns)` non-empty cells.
    6. A value longer than `max_chars` is still written; a warning (`{"field_id", "code": "max_chars_exceeded"}`) goes into `mapping_runs.summary.warnings`. Values are never silently truncated.
 
-Fields run sequentially (`JOB_CONCURRENCY=1`). `jobs.progress` is updated after each field. Progress is `{"stage": "mapping", "done": i, "total": n}`. Stored results are a historical snapshot: deleting a source later does not change them.
+Fields run sequentially (`JOB_CONCURRENCY=1`), one bounded LLM call each (at most 2 attempts, each reply capped by `num_predict`). `jobs.progress` is set before each field to `{"stage": "mapping", "done": i, "total": n, "field": "<field_id>"}` and after it to `{"stage": "mapping", "done": i + 1, "total": n}`. Stored results are a historical snapshot: deleting a source later does not change them.
 
 ## 8. Surgical writers (Stage 4)
 
 Common rules:
 - Copy the template `original.{ext}` into memory, mutate it, and write it as a new `artifacts/{artifact_id}.{ext}`. The upload is never changed.
-- `artifact_id = uuid5(fixed namespace, run_id)`, so a retry targets the same `artifacts/{artifact_id}.{ext}`. The file is written with `put_bytes(overwrite=False)` (atomic); `FileExistsError` means an earlier attempt crashed after writing, and that file is reused. The row, `completed` and `finished_at` commit in one transaction. If the project was deleted meanwhile, the file is removed and the job finishes. Writer errors (unresolvable anchor, bad content) are not retried.
+- `artifact_id = uuid5(fixed namespace, run_id)`, so a retry targets the same `artifacts/{artifact_id}.{ext}`. The file is written with `put_bytes(overwrite=False)` (atomic); `FileExistsError` means an earlier attempt crashed after writing, and that file is reused. The row, `completed` and `finished_at` commit in one transaction. If the project was deleted meanwhile, the file is removed and the job finishes. Writer errors (unresolvable anchor, bad content) are not retried: they are logged as `render_failed` with `error_type` and, for the writer's own codes, `code` (`anchor_unresolved`, `token_not_found`), never the message.
 - download `filename` = `{template stem}_v{version}.{ext}`; stem characters outside `[A-Za-z0-9._-]` become `_`, cut to 100, fallback `artifact` (`shortcut: non-ASCII names become "_"; add RFC 5987 filename* when users need them.`).
 - every target is resolved before the first write, so cloned paragraphs never shift later anchors.
 - markers: `{label}` is replaced literally (never `str.format`); XML-illegal characters are stripped from every value.
@@ -429,7 +438,7 @@ Common rules:
   - keep the first paragraph's `a:pPr` and its first run's `a:rPr`;
   - put the value in that run and delete the other runs;
   - extra items get a cloned paragraph (same `pPr`/`rPr`), and leftover original paragraphs are removed.
-- `replace_token`: first merge runs that the token spans (keeping the first run's `rPr`), then replace the token text in place.
+- `replace_token`: first merge runs that the token spans (keeping the first run's `rPr`), then replace the token text in place. Several `replace_token` fields on one anchor are applied one after another, longest token first (`render()` in `writers/__init__.py`), so a token that contains another (`____` inside `______`) is never broken by the shorter one.
 - Table cells work the same way inside `a:tc/a:txBody`.
 - Shapes, layouts, masters, notes, and media are never touched. No autofit changes. Text overflow is reported only through `max_chars_exceeded` (no font metrics).
 
@@ -474,23 +483,31 @@ Common rules:
 
 `POST /v1/pipe/chat`:
 1. Resolve or create the project for `(user_id, openwebui_chat_id)`.
-2. Map each `files[].openwebui_file_id` to a document via `openwebui_file_ids`. The Pipe uploads before chatting, so an unknown id means that upload failed: reply with an error `delta` naming the file.
-3. If any referenced document isn't `indexed`, wait on its `ingest_document` job and stream progress as `status` events.
-4. **Intent routing** (`router.py`): one LLM call with JSON output `{"intent": "qa"|"map_template"|"edit"|"chitchat", "template_document_id": uuid|null, "candidates": [uuid], "edit_ops": [...]}`. It sees the last 10 messages, each cut to its **last 1,500 characters**, so long run summaries can't push the prompt past `LLM_NUM_CTX` (Ollama silently drops the start of an over-long prompt, which is where the instructions are). It also sees the project's document list (ids, filenames, roles). No document text goes into this call.
+2. Map each `files[].openwebui_file_id` to a document via `openwebui_file_ids`. The Pipe uploads before chatting, so an unknown id means that upload failed: a `delta` names the skipped file and the turn continues.
+3. Wait on every project document still `uploaded` or `parsing` (the 200 newest, referenced or not), on its `ingest_document` job, streaming progress as `status` events. A failed ingest adds a `delta` ("I could not read X, so I skipped it.") and the turn continues. The wait covers the whole project because a template pick purges Qdrant points. Each poll is 1 s (`POLL_INTERVAL_S`); a `status` is sent only when its text changes, otherwise a `: keep-alive` comment.
+   `shortcut: no server-side wait cap; a stuck or disabled worker (JOB_CONCURRENCY=0) holds the stream until the client disconnects or TIMEOUT_S, add a cap if that happens.`
+   `shortcut: disconnect is only noticed between polls; route/answer/start_template run to completion, run the flow as a cancellable task if Ollama time is wasted.`
+4. **Intent routing** (`router.py`, prompt `llm/prompts/router.md`): one LLM call with JSON output `{"intent": "qa"|"map_template"|"chitchat", "template_document_id": uuid|null, "candidates": [uuid]}`. Phase 8 intents are `qa`, `map_template` and `chitchat`; `edit` arrives in Phase 9. The handler receives `{intent, template_document_id}`: ids from both fields are checked against the project's pptx/docx/xlsx documents, de-duplicated. Only when exactly one remains is it considered for mapping. It sees the last 10 messages, each cut to its **last 1,500 characters**, so long run summaries can't push the prompt past `LLM_NUM_CTX` (Ollama silently drops the start of an over-long prompt, which is where the instructions are). It also sees the project's document list (ids, filenames, roles, formats). No document text goes into this call.
    - `qa` → `qa.py`.
-   - `map_template` with exactly one candidate:
+   - `map_template` with exactly one candidate that passes the confirmation guard:
      1. set `role = 'template'` and delete that document's points;
      2. run `extract_template` (it reuses the existing `templates` row and latest IR if this template was mapped before), then create a `mapping_runs` row (`trigger = 'initial'`, `document_ids` = all `indexed` sources) and run `run_mapping`;
      3. stream progress and finish with `summary.py`.
-   - `map_template` with zero or several candidates → reply with a numbered list of template-capable documents (pptx/docx/xlsx) and ask the user to confirm.
+     `shortcut: concurrent turns in one chat (regenerate, double send) can start duplicate extraction/mapping runs, add a per-project lock if that happens.`
+   - The confirmation guard: a template is mapped only when it is already `role = 'template'`, or it is the only pptx/docx/xlsx document in the project, or its filename appears in the last user message (case-insensitive), or the last user message contains its number in the numbered list. Otherwise the document keeps its role and points.
+   - `map_template` with zero or several candidates, or one that is not confirmed → reply with a numbered list of the template-capable documents (`render_candidates`) and ask the user to choose. With no template-capable document, the reply asks for a PPTX, DOCX or XLSX upload.
      `shortcut: stateless confirmation via chat history, add projects.pending_action if routing proves unreliable.`
-   - `edit` → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
+     `shortcut: the only pptx/docx/xlsx in a chat is mapped without asking; a source memo of that format then becomes the template (re-adding it needs DELETE), drop this rule if users hit it.`
+     `shortcut: the list number refers to the current document order; an upload between the list and the reply can shift it, upgrade with pending_action.`
+   - `chitchat` → the fixed help text (`HELP_TEXT`). No answer call is made; the routing call still runs.
+   - `edit` (Phase 9) → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
 5. **Q&A** (`qa.py`):
    1. Retrieve. No hits → the "not found" answer below, without an LLM call. A search failure → `503 upstream_unavailable`.
    2. Make one LLM call (prompt `llm/prompts/qa.md`) with JSON output `{"answer_markdown": "… [1] …", "citations": [{"marker": 1, "chunk_id": "…", "quote": "…"}]}`. Each hit is shown as `[chunk_id | filename | p.N | section]` followed by its text.
    3. Verify the citations (`mapping/verifier.py`; metadata copied from the hit). Remove unverified markers. If no verified citations remain, the answer is "I could not find this in the uploaded documents."
       `shortcut: a sentence whose only marker failed verification stays uncited, drop such sentences if the eval shows unsupported claims surviving.`
-   4. Stream the **verified** answer as `delta` events, followed by a source list (`filename p.N`).
+   4. Send the **verified** answer as a `delta`, followed by a source list (`[n] filename p.N: "quote"`, `render_answer`).
+   `shortcut: no token budget, the context is bounded by TOP_N hits x CHUNK_MAX_TOKENS within LLM_NUM_CTX; add one if either grows.`
    Generation isn't token-streamed, because the answer has to be verified before the user sees it.
 6. **Summary** (`summary.py`):
    - counts by status;
@@ -498,6 +515,7 @@ Common rules:
    - every `conflict` (each candidate value + citations);
    - `partial` fields and warnings;
    - the signed download link.
+   - Escaping: document-derived text (filenames, quotes, values, labels) is markdown-escaped, so an image or link inside a document cannot make Open WebUI fetch anything. The LLM answer keeps its `[n]` markers but loses images, links and raw HTML (`_answer_md`).
 
 ## 10. Conversational edits (`chat/edits.py`)
 

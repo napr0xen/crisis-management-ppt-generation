@@ -27,7 +27,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 5 | Template intelligence (Anchor Map + IR) | **Complete** |
 | 6 | Mapping engine | **Complete** |
 | 7 | Surgical writers & artifacts | **Complete** |
-| 8 | Open WebUI Pipe & chat orchestration | pending |
+| 8 | Open WebUI Pipe & chat orchestration | in progress |
 | 9 | Conversational edits & run versioning | pending |
 | 10 | Hardening, evaluation & audit | pending |
 
@@ -194,6 +194,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - Pipe unit tests (task-call skip, SSE → event_emitter mapping, file upload once per file);
   - API tests for the SSE event sequence;
   - manual end-to-end in Open WebUI recorded in the PR: upload 3 sources + 1 pptx, "fill the template" → summary + working download link.
+- **Status:** in progress. Implementation and automated tests done; manual Open WebUI end-to-end pending (exit item not ticked).
 
 ## Phase 9: Conversational edits & run versioning
 

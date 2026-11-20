@@ -23,7 +23,7 @@ from tests.fakes import FakeEmbedder, FakeLLM
 from tests.integration.test_extract_template_job import BUILDERS, queue_job
 from tests.integration.test_mapping_runs_api import seed_document
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue", "one_ir_batch")]
 
 CHUNKS = [
     "The substation fire on Main Street caused a widespread outage on 3 March.",

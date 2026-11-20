@@ -416,3 +416,25 @@ def test_cell_written_in_a_table_after_a_row_sdt_table():
     assert "docx:body:t2:r1c0" in [a.anchor_id for a in amap.anchors]
     out, _ = write(data, [_item("docx:body:t2:r1c0", ["new"])])
     assert [t.cell(1, 0).text for t in _doc(out).tables[2:]] == ["new"]
+
+
+def test_several_replace_token_items_on_one_paragraph_compose():
+    def mutate(doc):
+        par = doc.paragraphs[3]
+        for r in list(par.runs):
+            r._r.getparent().remove(r._r)
+        for text, bold in (
+            ("[Presenter", True),
+            (" Name], [Role]", None),
+            (" \u00b7 [DD Month YYYY]", None),
+        ):
+            par.add_run(text).bold = bold
+
+    toks = ("[Presenter Name]", "[Role]", "[DD Month YYYY]")
+    items = [
+        WriteItem(_field(CLIENT, "replace_token", fid=f"f{i}", token=t), [v])
+        for i, (t, v) in enumerate(zip(toks, ("Ada", "CFO", "01 March 2026"), strict=True))
+    ]
+    out, _ = write(_with_body(mutate), items)
+    par = _doc(out).paragraphs[3]
+    assert par.text == "Ada, CFO \u00b7 01 March 2026"

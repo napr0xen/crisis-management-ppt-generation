@@ -44,6 +44,9 @@ class Anchor(_Strict):
     tokens: list[str]
     is_placeholder: bool
     table: TableRef | None = None
+    # pptx only: shape centre as [x, y] percent of slide width/height, so the IR model can
+    # pair a placeholder with the heading next to it
+    pos: tuple[int, int] | None = None
 
 
 class AnchorMap(_Strict):

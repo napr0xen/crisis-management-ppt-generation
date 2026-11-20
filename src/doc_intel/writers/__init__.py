@@ -48,4 +48,13 @@ def render(
         WriteItem(f, content(f, results[f.field_id], fmt, missing_marker, conflict_marker))
         for f in fields
     ]
+    # Longer tokens first: replacing a token that is a substring of another ("____" in "______")
+    # would destroy the longer one. Safe because pptx/docx writers resolve every target first.
+    # shortcut: a value containing a later token's text on the same anchor is replaced again,
+    # upgrade by substituting all tokens of an anchor in one pass.
+    items.sort(
+        key=lambda i: (
+            -len(i.field.constraints.token or "") if i.field.write_mode == "replace_token" else 0
+        )
+    )
     return writers[fmt](template, items)

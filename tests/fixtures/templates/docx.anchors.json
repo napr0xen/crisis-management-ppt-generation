@@ -12,7 +12,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "docx:body:p3",
@@ -26,7 +27,8 @@
         "{{client_name}}"
       ],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "docx:body:p4",
@@ -40,7 +42,8 @@
         "____"
       ],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "docx:body:t0:r0c0",
@@ -57,7 +60,8 @@
         "row": 0,
         "col": 0,
         "header": "Item"
-      }
+      },
+      "pos": null
     },
     {
       "anchor_id": "docx:body:t0:r0c1",
@@ -74,7 +78,8 @@
         "row": 0,
         "col": 1,
         "header": "Owner"
-      }
+      },
+      "pos": null
     },
     {
       "anchor_id": "docx:body:t0:r0c2",
@@ -91,7 +96,8 @@
         "row": 0,
         "col": 2,
         "header": "Date"
-      }
+      },
+      "pos": null
     },
     {
       "anchor_id": "docx:body:t0:r1c0",
@@ -108,7 +114,8 @@
         "row": 1,
         "col": 0,
         "header": "Item"
-      }
+      },
+      "pos": null
     },
     {
       "anchor_id": "docx:body:t0:r1c2",
@@ -125,7 +132,8 @@
         "row": 1,
         "col": 2,
         "header": "Date"
-      }
+      },
+      "pos": null
     },
     {
       "anchor_id": "docx:sec1:header:p0",
@@ -139,7 +147,8 @@
         "<classification>"
       ],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "docx:sec1:footer:p0",
@@ -151,7 +160,8 @@
       "text": "Page footer",
       "tokens": [],
       "is_placeholder": false,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "docx:sdt:owner",
@@ -160,7 +170,8 @@
       "text": "Owner name",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     }
   ]
 }

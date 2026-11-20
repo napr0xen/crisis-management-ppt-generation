@@ -262,3 +262,101 @@ def test_fill_table_rows_skips_spanned_cells():
     tbl = next(s for s in Presentation(BytesIO(out)).slides[2].shapes if s.has_table).table
     assert (tbl.cell(1, 0).text, tbl.cell(1, 1).text, tbl.cell(1, 2).text) == ("a", "", "b")
     assert warnings == []
+
+
+MULTI_TEXT = ("[Presenter Name]", "[Role]", "[DD Month YYYY]")
+
+
+def _multi_token_deck(runs):
+    prs = Presentation(BytesIO(pptx_template()))
+    shape = next(s for s in prs.slides[1].shapes if s.shape_id == 3)
+    p = shape.text_frame.paragraphs[0]
+    for r in list(p.runs):
+        r._r.getparent().remove(r._r)
+    for text, bold in runs:
+        run = p.add_run()
+        run.text = text
+        run.font.bold = bold
+    buf = BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+def _three_items(values=("Ada", "CFO", "01 March 2026")):
+    return [
+        WriteItem(_field(BOX, "replace_token", fid=f"f{i}", token=tok), [val])
+        for i, (tok, val) in enumerate(zip(MULTI_TEXT, values, strict=True))
+    ]
+
+
+def test_several_replace_token_items_on_one_shape_compose():
+    deck = _multi_token_deck(
+        [
+            ("[Presenter", True),
+            (" Name], ", None),
+            ("[Role] \u00b7 [DD Month", False),
+            (" YYYY]", None),
+        ]
+    )
+    out, _ = write(deck, _three_items())
+    p = _paras(_shape(out, 2, 3))[0]
+    assert "".join(t.text for t in p.iter(f"{A}t")) == "Ada, CFO \u00b7 01 March 2026"
+    runs = p.findall(f"{A}r")
+    assert runs[0].find(f"{A}rPr").get("b") == "1"  # the run the first token started in
+
+
+def test_substring_tokens_are_replaced_in_either_ir_order():
+    from doc_intel.writers import render
+
+    deck = _multi_token_deck([("a ____ and ______ z", None)])
+    for order in (("____", "______"), ("______", "____")):
+        fields = [_field(BOX, "replace_token", fid=f"f{i}", token=t) for i, t in enumerate(order)]
+        values = {
+            "f0" if order[0] == "____" else "f1": "S",
+            "f1" if order[0] == "____" else "f0": "L",
+        }
+        results = {k: _user_result(k, v) for k, v in values.items()}
+        out, _ = render(
+            "pptx", deck, fields, results, missing_marker="[{label}?]", conflict_marker="[!]"
+        )
+        assert _shape(out, 2, 3).text_frame.text == "a S and L z"
+
+
+def _user_result(field_id, value):
+    from doc_intel.mapping.schemas import FieldMappingResult
+
+    return FieldMappingResult(
+        field_id=field_id,
+        status="populated",
+        value=value,
+        evidence=[],
+        confidence=1.0,
+        missing_reason=None,
+        checked_documents=[],
+        conflict_details=None,
+        provenance="user",
+    )
+
+
+def test_missing_field_writes_its_marker_in_its_token_place():
+    from doc_intel.mapping.schemas import FieldMappingResult
+    from doc_intel.writers import render
+
+    deck = _multi_token_deck([("[Presenter Name], [Role] \u00b7 [DD Month YYYY]", None)])
+    fields = [_field(BOX, "replace_token", fid=f"f{i}", token=t) for i, t in enumerate(MULTI_TEXT)]
+    missing = FieldMappingResult(
+        field_id="f1",
+        status="missing",
+        value=None,
+        evidence=[],
+        confidence=0.0,
+        missing_reason="no_relevant_chunks",
+        checked_documents=[],
+        conflict_details=None,
+        provenance="rag",
+    )
+    results = {"f0": _user_result("f0", "Ada"), "f1": missing, "f2": _user_result("f2", "now")}
+    out, _ = render(
+        "pptx", deck, fields, results, missing_marker="<<{label}>>", conflict_marker="!"
+    )
+    assert _shape(out, 2, 3).text_frame.text == "Ada, <<L>> \u00b7 now"

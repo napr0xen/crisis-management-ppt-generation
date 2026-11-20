@@ -47,6 +47,9 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `mapping/schemas` | `FieldMappingResult` invariants reject: populated(rag) without evidence, missing with value, conflict with < 2 candidates |
 | `chat/edits` | each `EditOp`; invalid op → nothing applied; parent unchanged |
 | `writers/markers` | `{label}` substitution; configured markers honored |
+| `integrations/openwebui/doc_intel_pipe.py` (`tests/unit/test_openwebui_pipe.py`) | task-call skip (metadata and `### Task:` prefix); SSE → `__event_emitter__` mapping, split chunks, keep-alive comments; each file uploaded once; error paths (401, 503, timeout, connect error, malformed frame, closed stream); the shared secret never appears in output or statuses |
+| `chat/router` (`tests/unit/test_chat_router.py`) | one LLM call; history cut to last 10 messages and 1,500 chars; id validation and de-duplication; format from storage key; confirmation guard (role, sole template, filename, list number) |
+| `chat/summary` (`tests/unit/test_chat_summary.py`) | counts, missing/conflict/partial/warning sections, download link or "No file was produced"; citation ordering and truncation; markdown escaping of filenames, quotes, values, labels; image and link stripping from the LLM answer |
 
 ## 3. Integration tests
 
@@ -61,7 +64,8 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 - Dedup on `sha256`: re-attaching the same bytes under a new Open WebUI file id appends to `openwebui_file_ids`, and `/v1/pipe/chat` resolves both ids.
 - Template → `extract_template` (FakeLLM IR) → `run_mapping` → artifact row + file on disk.
 - `tests/integration/test_generation_e2e.py`: round trip per format (FakeLLM IR + extraction → render → signed download → reopen).
-- `/v1/pipe/chat` SSE: event order `status*` → `delta+` → `done`; error path emits `error` then `done`.
+- `tests/integration/test_pipe_api.py`: `/v1/pipe/chat` SSE event sequence (`status*` → `delta*` → `error`? → `done`); `X-OWUI-Chat-Id` validation (422); files dedup on `sha256` with the file id appended; the same chat id for another user is another project; unknown and failed files warn and continue; the 51-message limit.
+- `tests/integration/test_pipe_e2e.py`: the real Pipe against the real app over ASGI: upload, template fill, signed download (opens and holds the filled slides), and a cited answer. The LLM is scripted, the embedder is a seeded fake, and Open WebUI's file read is stubbed.
 
 ## 4. Security tests (`tests/security/`), hard gate at every phase exit
 

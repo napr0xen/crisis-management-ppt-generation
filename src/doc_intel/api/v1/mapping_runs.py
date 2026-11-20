@@ -4,11 +4,13 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_intel.api.v1.artifacts import ArtifactOut, artifact_out
 from doc_intel.core.errors import NotFound, ValidationFailed
 from doc_intel.core.tenancy import Tenant, TenantContext
 from doc_intel.db import repo
+from doc_intel.db.models import Job, MappingRun
 from doc_intel.db.session import Session
 from doc_intel.mapping.schemas import FieldMappingResult
 
@@ -45,7 +47,7 @@ class MappingRunOut(BaseModel):
 
 
 async def _resolve_documents(
-    session: Session, ctx: TenantContext, requested: list[uuid.UUID] | None
+    session: AsyncSession, ctx: TenantContext, requested: list[uuid.UUID] | None
 ) -> list[uuid.UUID]:
     if requested is None:
         ids = await repo.indexed_source_document_ids(session, ctx)
@@ -63,11 +65,22 @@ async def _resolve_documents(
 
 @router.post("", status_code=202)
 async def create_mapping_run(body: MappingRunIn, ctx: Tenant, session: Session) -> MappingRunJobOut:
-    ir = await repo.get_template_ir_by_id(session, ctx, body.template_ir_id)
-    ids = await _resolve_documents(session, ctx, body.document_ids)
+    run, job = await start_mapping_run(session, ctx, body.template_ir_id, body.document_ids)
+    return MappingRunJobOut(mapping_run_id=run.id, job_id=job.id)
+
+
+async def start_mapping_run(
+    session: AsyncSession,
+    ctx: TenantContext,
+    template_ir_id: uuid.UUID,
+    document_ids: list[uuid.UUID] | None,
+) -> tuple[MappingRun, Job]:
+    """Queue a mapping run (shared with the Pipe); `None` = every indexed source document."""
+    ir = await repo.get_template_ir_by_id(session, ctx, template_ir_id)
+    ids = await _resolve_documents(session, ctx, document_ids)
     run = await repo.create_mapping_run(session, ctx, template_ir_id=ir.id, document_ids=ids)
     job = await repo.create_job(session, ctx, "run_mapping", {"mapping_run_id": str(run.id)})
-    return MappingRunJobOut(mapping_run_id=run.id, job_id=job.id)
+    return run, job
 
 
 @router.get("/{run_id}")

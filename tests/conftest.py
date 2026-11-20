@@ -67,6 +67,14 @@ def headers(user_id: str) -> dict[str, str]:
 
 
 @pytest.fixture
+def one_ir_batch(monkeypatch):
+    """One IR batch per template: one scripted FakeLLM reply then covers a multi-slide fixture."""
+    monkeypatch.setattr(
+        "doc_intel.templates.ir_builder._batches", lambda amap: [(None, list(amap.anchors))]
+    )
+
+
+@pytest.fixture
 def user_a() -> str:
     return f"user_a_{uuid.uuid4().hex[:8]}"
 

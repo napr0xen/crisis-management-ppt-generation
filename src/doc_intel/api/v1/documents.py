@@ -5,9 +5,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request, UploadFile
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_intel.core.errors import UpstreamUnavailable
-from doc_intel.core.tenancy import Tenant
+from doc_intel.core.tenancy import Tenant, TenantContext
 from doc_intel.db import repo
 from doc_intel.db.session import Session
 from doc_intel.ingestion.upload import parsed_key, upload_key, validate_upload
@@ -45,6 +46,13 @@ class UploadOut(BaseModel):
 async def upload_document(
     file: UploadFile, ctx: Tenant, session: Session, request: Request
 ) -> UploadOut:
+    return await store_upload(session, ctx, request, file)
+
+
+async def store_upload(
+    session: AsyncSession, ctx: TenantContext, request: Request, file: UploadFile
+) -> UploadOut:
+    """Validate, deduplicate, store and enqueue ingestion (shared with `POST /v1/pipe/files`)."""
     # shortcut: the multipart body is spooled (to disk past 1 MB) before auth and the size check
     # run, upgrade to a streaming size cap if the API is ever exposed beyond localhost.
     max_bytes = request.app.state.settings.max_upload_mb * 1024 * 1024

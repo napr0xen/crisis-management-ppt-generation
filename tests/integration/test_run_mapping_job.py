@@ -123,6 +123,23 @@ async def test_run_mapping_lifecycle(sm, user_a, monkeypatch):
     assert job.progress == {"stage": "mapping", "done": 2, "total": 2}
 
 
+async def test_run_mapping_publishes_the_current_field_before_mapping_it(sm, user_a, monkeypatch):
+    _, _, job_id, _ = await queue_run(sm, user_a)
+    seen = []
+
+    async def fake_map(c, field, document_ids, retriever, llm):
+        async with sm() as s:
+            seen.append((await s.get(Job, job_id)).progress)
+        return missing(field, document_ids)
+
+    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
+    assert seen == [
+        {"stage": "mapping", "total": 2, "done": 0, "field": "f_one"},
+        {"stage": "mapping", "total": 2, "done": 1, "field": "f_two"},
+    ]
+
+
 async def test_run_mapping_skips_mapping_and_renders_when_already_verifying(
     sm, user_a, monkeypatch
 ):

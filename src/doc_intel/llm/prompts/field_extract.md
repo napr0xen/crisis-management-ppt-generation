@@ -7,6 +7,9 @@ Rules:
 - A value counts only if the chunk states it AS this field (matching its `label` and `description`). A number, date, or name that describes something else (for example customers affected when the field asks for injuries) is not this field: leave it out. If nothing left states the field, it is not found.
 - Each candidate has a `value` and `quotes`. Each quote has the `chunk_id` copied exactly from the chunk header and a `quote` copied verbatim from that chunk's text: an exact span that contains or supports the value. Do not paraphrase, shorten, or join text inside a quote.
 - IMPORTANT: if different chunks state DIFFERENT values for the field, return one candidate per distinct value and never choose between them. If the same value appears in several chunks, return one candidate with all its quotes.
+- When the field asks for one specific item of a list (an ordinal slot such as "first upcoming award", or a named item such as "the Supply continuity risk"), return only that item. Other items of the same list are not different values for this field and are never returned as extra candidates. The conflict rule applies only when chunks disagree about that same item.
+- Never return text from the field spec or template placeholders (anything in [brackets]) as a value.
+- Each quote should be the whole sentence or table row that states the value, not only the value itself.
 - If the chunks do not contain the field, set `not_found` to true and return an empty `candidates` list.
 - Set `incomplete` to true when the chunks support only part of the field.
 - Value formats by `expected_type`:

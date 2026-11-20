@@ -42,6 +42,7 @@ _RENDERABLE = ("verifying", "rendering")
 _OPEN_RUN = (*_ACTIVE_RUN, *_RENDERABLE)  # not yet completed or failed
 # Fixed namespace: a retry derives the same artifact id (and key); run ids are random, so the
 # ids stay unguessable.
+_WRITER_CODES = frozenset({"anchor_unresolved", "token_not_found"})
 _ARTIFACT_NS = uuid.UUID("5d0f2a52-3c1e-4c55-9a0e-7b1c6f3d8e21")
 
 
@@ -145,9 +146,18 @@ def make_handlers(
         await set_progress(sessionmaker, ctx, job.id, {"stage": "anchors"})
         data = await asyncio.to_thread(read, doc.storage_key)
         amap = await asyncio.to_thread(build_anchor_map, fmt, data)
-        await set_progress(sessionmaker, ctx, job.id, {"stage": "ir"})
         template_id = existing.id if existing else uuid.uuid4()
-        ir = await build_ir(llm, amap, template_id)
+
+        async def on_batch(done: int, total: int, part: str | None) -> None:
+            progress = {
+                "stage": "ir",
+                "done": done,
+                "total": total,
+                **({"part": part} if part else {}),
+            }
+            await set_progress(sessionmaker, ctx, job.id, progress)
+
+        ir = await build_ir(llm, amap, template_id, on_batch=on_batch)
         # shortcut: two concurrent extract_template jobs for one document: the loser hits
         # templates.document_id UNIQUE, is retried by the worker and then reuses the winner's row
         # (one wasted LLM call); fine at JOB_CONCURRENCY=1.
@@ -198,7 +208,16 @@ def make_handlers(
                 missing_marker=settings.missing_marker,
                 conflict_marker=settings.conflict_marker,
             )
-        except (KeyError, TypeError, ValueError):  # same template + results fail the same way
+        except (KeyError, TypeError, ValueError) as exc:  # same input fails the same way
+            # args are never logged unless they are a fixed writer code
+            code = exc.args[0] if isinstance(exc, KeyError) and exc.args else None
+            log.warning(
+                "render_failed",
+                mapping_run_id=str(run_id),
+                format=fmt,
+                error_type=type(exc).__name__,
+                code=code if isinstance(code, str) and code in _WRITER_CODES else None,
+            )
             raise NotRenderable("The template could not be rendered.") from None
         artifact_id = uuid.uuid5(_ARTIFACT_NS, str(run_id))
         key = artifact_key(ctx, artifact_id, fmt)
@@ -262,6 +281,10 @@ def make_handlers(
         # per-field checkpoints if runs get long.
         results = {}
         for done, field in enumerate(ir.fields, start=1):
+            # field_id is template-derived and goes to jobs.progress only, never to logs
+            await set_progress(
+                sessionmaker, ctx, job.id, {**progress, "done": done - 1, "field": field.field_id}
+            )
             results[field.field_id] = await map_field(ctx, field, document_ids, retriever, llm)
             await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done})
         summary = summarize(ir.fields, results)

@@ -20,7 +20,7 @@ from tests.integration.test_extract_template_job import queue_job
 from tests.integration.test_mapping_e2e import candidate, drain_one, extraction
 from tests.integration.test_mapping_runs_api import seed_document
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue", "one_ir_batch")]
 
 CHUNK = "The substation fire on Main Street caused an outage; 12,000 customers lost power."
 QUOTE = "substation fire on Main Street caused an outage"

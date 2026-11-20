@@ -1,12 +1,14 @@
 import json
+import re
 import uuid
 
 import pytest
+from structlog.testing import capture_logs
 
 from doc_intel.core.errors import IRInvalid
-from doc_intel.llm.gateway import LLMError
+from doc_intel.llm.gateway import RETRY_ECHO_CHARS, LLMError
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.templates.ir_builder import build_ir, validate
+from doc_intel.templates.ir_builder import BatchDraft, build_ir, validate
 from doc_intel.templates.schemas import (
     WRITE_MODE_KINDS,
     Anchor,
@@ -182,11 +184,22 @@ async def test_build_ir_happy_path():
     assert (ir.template_id, ir.version, ir.format) == (TID, 1, "pptx")
     assert [f.field_id for f in ir.fields] == ["a"]
     ((messages, schema),) = llm.calls
-    assert schema == IRDraft.model_json_schema()
+    assert schema == BatchDraft.model_json_schema()
     assert messages[0] == {"role": "system", "content": load_prompt("template_ir")}
     user = messages[1]["content"]
     assert "a1" in user and "{{t}}" in user and "y" * 200 in user and "y" * 201 not in user
-    assert json.loads(user.split("\n\n", 1)[1])["anchors"][0]["is_placeholder"] is False
+    first = json.loads(user.split("\n\n", 1)[1])["anchors"][0]
+    assert first["is_placeholder"] is False and "pos" not in first
+    pos_amap = AnchorMap(
+        format="pptx",
+        anchors=[_anchor("a1", tokens=["{{t}}"]).model_copy(update={"pos": (50, 20)})],
+    )
+    llm2 = FakeLLM(_reply(_field("a", "a1", "replace_token", token="{{t}}")))
+    await build_ir(llm2, pos_amap, TID)
+    assert json.loads(llm2.calls[0][0][1]["content"].split("\n\n", 1)[1])["anchors"][0]["pos"] == [
+        50,
+        20,
+    ]
 
 
 async def test_build_ir_includes_table_header():
@@ -201,9 +214,22 @@ async def test_build_ir_retries_once_with_errors():
     llm = FakeLLM(bad, _reply(_field("a", "a1")))
     ir = await build_ir(llm, AMAP, TID)
     assert ir.fields[0].anchor_id == "a1"
-    second = llm.calls[1][0]
-    assert second[-2] == {"role": "assistant", "content": bad}
-    assert "nope" in second[-1]["content"]
+    first, second = llm.calls[0][0], llm.calls[1][0]
+    assert second[:2] == first and len(second) == 4
+    assert [m["role"] for m in second[2:]] == ["assistant", "user"]
+    assert second[2]["content"] == bad
+    assert (
+        second[-1]["content"].startswith("The fields have these errors")
+        and "nope" in second[-1]["content"]
+    )
+
+
+async def test_build_ir_retry_echo_is_truncated():
+    long_bad = _reply(_field("a", "nope"), *[_field(f"x{i}", "nope") for i in range(40)])
+    assert len(long_bad) > RETRY_ECHO_CHARS
+    llm = FakeLLM(long_bad, _reply(_field("a", "a1")))
+    await build_ir(llm, AMAP, TID)
+    assert llm.calls[1][0][2] == {"role": "assistant", "content": long_bad[:RETRY_ECHO_CHARS]}
 
 
 async def test_build_ir_raises_after_second_invalid():
@@ -222,3 +248,269 @@ async def test_build_ir_propagates_llm_error():
 def test_prompt_mentions_every_write_mode():
     prompt = load_prompt("template_ir")
     assert all(mode in prompt for mode in WRITE_MODE_KINDS)
+
+
+def test_ir_prompt_has_date_and_skip_rules():
+    prompt = load_prompt("template_ir")
+    assert "`pos`" in prompt and "[Month YYYY]" in prompt and "[Company Logo]" in prompt
+
+
+def test_field_extract_prompt_has_ordinal_and_placeholder_rules():
+    prompt = load_prompt("field_extract")
+    assert "one specific item" in prompt and "[brackets]" in prompt and "whole sentence" in prompt
+
+
+def _pa(n, i):
+    return _anchor(f"pptx:s{n}:sp{i}")
+
+
+class EchoLLM:
+    """One field per anchor id in the prompt; field ids are `name` or f0, f1... per call."""
+
+    def __init__(self, name=None, first_cells=()):
+        self.calls = []
+        self.name = name
+        self.first_cells = first_cells
+
+    async def complete(self, messages, json_schema=None):
+        self.calls.append((list(messages), json_schema))
+        ids = [
+            a["anchor_id"]
+            for a in json.loads(messages[1]["content"].split("\n\n", 1)[1])["anchors"]
+        ]
+        fields = []
+        for i, aid in enumerate(ids):
+            if self.first_cells and aid not in self.first_cells:
+                continue  # the model chose one fill_table_rows field for the whole table
+            mode = "fill_table_rows" if aid in self.first_cells else "replace_text"
+            mode = "fill_cell" if aid.startswith("xlsx") else mode
+            fields.append(_field(self.name or f"f{i}", aid, mode))
+        return IRDraft(fields=fields).model_dump_json()
+
+
+def _prompt_ids(call):
+    return [
+        a["anchor_id"] for a in json.loads(call[0][1]["content"].split("\n\n", 1)[1])["anchors"]
+    ]
+
+
+async def test_pptx_one_call_per_slide_and_on_batch_progress():
+    amap = AnchorMap(format="pptx", anchors=[_pa(1, 1), _pa(1, 2), _pa(2, 1), _pa(3, 1)])
+    llm, seen = EchoLLM(), []
+
+    async def on_batch(done, total, part):
+        seen.append((done, total, part))
+
+    ir = await build_ir(llm, amap, TID, on_batch=on_batch)
+    assert [_prompt_ids(c) for c in llm.calls] == [
+        ["pptx:s1:sp1", "pptx:s1:sp2"],
+        ["pptx:s2:sp1"],
+        ["pptx:s3:sp1"],
+    ]
+    assert seen == [(0, 3, "slide 1"), (1, 3, "slide 2"), (2, 3, "slide 3")]
+    assert len(ir.fields) == 4 and len({f.field_id for f in ir.fields}) == 4
+
+
+async def test_xlsx_grouped_per_sheet_with_neutral_labels():
+    anchors = [
+        _anchor("xlsx:Secret Name!A1", "sheet_cell"),
+        _anchor("xlsx:Secret Name!B2", "sheet_cell"),
+        _anchor("xlsx:Other!A1", "sheet_cell"),
+    ]
+    amap = AnchorMap(format="xlsx", anchors=anchors)
+    seen = []
+
+    async def on_batch(done, total, part):
+        seen.append((done, total, part))
+
+    await build_ir(EchoLLM(), amap, TID, on_batch=on_batch)
+    assert seen == [(0, 2, "sheet 1"), (1, 2, "sheet 2")]
+
+
+async def test_docx_over_cap_is_chunked_in_order():
+    amap = AnchorMap(format="docx", anchors=[_anchor(f"docx:p{i}") for i in range(90)])
+    llm, seen = EchoLLM(), []
+
+    async def on_batch(done, total, part):
+        seen.append((done, total, part))
+
+    ir = await build_ir(llm, amap, TID, on_batch=on_batch)
+    assert [len(_prompt_ids(c)) for c in llm.calls] == [40, 40, 10]
+    assert seen[0] == (0, 3, None)
+    assert [f.anchor_id for f in ir.fields] == [a.anchor_id for a in amap.anchors]
+
+
+async def test_oversized_single_slide_is_chunked():
+    amap = AnchorMap(format="pptx", anchors=[_pa(1, i) for i in range(90)])
+    llm = EchoLLM()
+    await build_ir(llm, amap, TID)
+    assert [len(_prompt_ids(c)) for c in llm.calls] == [40, 40, 10]
+
+
+def _table(n, rows, cols=1):
+    return [_cell(f"pptx:s{n}:sp9:r{r}c{c}", r, c) for r in range(1, rows + 1) for c in range(cols)]
+
+
+async def test_table_is_not_split_but_two_tables_split_between_each_other():
+    t1 = _table(1, 25)
+    t2 = [_cell(f"pptx:s1:sp10:r{r}c0", r, 0) for r in range(1, 26)]
+    llm = EchoLLM()
+    await build_ir(llm, AnchorMap(format="pptx", anchors=[*t1, *t2]), TID)
+    assert [_prompt_ids(c) for c in llm.calls] == [
+        [a.anchor_id for a in t1],
+        [a.anchor_id for a in t2],
+    ]
+
+
+async def test_oversized_table_chunks_and_later_chunks_drop_after_fill_table_rows():
+    cells = _table(1, 50)  # 50 cells, r1c0 first
+    amap = AnchorMap(format="pptx", anchors=cells)
+    llm = EchoLLM(first_cells={cells[0].anchor_id})
+    ir = await build_ir(llm, amap, TID)
+    assert len(llm.calls) == 1  # the second chunk was dropped: the rows field owns the table
+    assert next(f.write_mode for f in ir.fields) == "fill_table_rows"
+
+    llm = EchoLLM()  # no rows field: both chunks run
+    await build_ir(llm, amap, TID)
+    assert [len(_prompt_ids(c)) for c in llm.calls] == [40, 10]
+
+
+async def test_cross_batch_field_id_collisions_are_renamed():
+    amap = AnchorMap(format="pptx", anchors=[_pa(1, 1), _pa(2, 1), _pa(3, 1)])
+    ir = await build_ir(EchoLLM(name="x"), amap, TID)
+    assert [f.field_id for f in ir.fields] == ["x", "x_2", "x_3"]
+
+    long = "a" * 64
+    ir = await build_ir(EchoLLM(name=long), amap, TID)
+    ids = [f.field_id for f in ir.fields]
+    assert ids == [long, "a" * 60 + "_2", "a" * 60 + "_3"]
+    assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", i) for i in ids)
+
+
+async def test_each_batch_gets_its_own_validation_retry():
+    amap = AnchorMap(format="pptx", anchors=[_pa(1, 1), _pa(2, 1)])
+    llm = FakeLLM(
+        _reply(_field("a", "pptx:s1:sp1")),
+        _reply(_field("b", "nope")),
+        _reply(_field("b", "pptx:s2:sp1")),
+    )
+    ir = await build_ir(llm, amap, TID)
+    assert len(llm.calls) == 3 and [f.field_id for f in ir.fields] == ["a", "b"]
+
+
+async def test_anchor_from_another_batch_is_rejected_as_unknown():
+    amap = AnchorMap(format="pptx", anchors=[_pa(1, 1), _pa(2, 1)])
+    llm = FakeLLM(
+        _reply(_field("a", "pptx:s2:sp1")),  # belongs to batch 2
+        _reply(_field("a", "pptx:s1:sp1")),
+        _reply(_field("b", "pptx:s2:sp1")),
+    )
+    ir = await build_ir(llm, amap, TID)
+    assert "pptx:s2:sp1" in llm.calls[1][0][-1]["content"]
+    assert [f.anchor_id for f in ir.fields] == ["pptx:s1:sp1", "pptx:s2:sp1"]
+
+
+async def test_batch_without_fillable_anchors_may_return_no_fields():
+    """A slide of finished text must not be forced to yield a (fabricated) field."""
+    amap = AnchorMap(
+        format="pptx",
+        anchors=[_anchor("pptx:s1:sp1", "shape_text"), _anchor("pptx:s2:sp1", "shape_text")],
+    )
+    llm = FakeLLM('{"fields": []}', _reply(_field("b", "pptx:s2:sp1")))
+    ir = await build_ir(llm, amap, TID)
+    assert [f.anchor_id for f in ir.fields] == ["pptx:s2:sp1"]
+    assert "minItems" not in json.dumps(llm.calls[0][1]["properties"]["fields"])
+
+
+async def test_template_with_no_fields_at_all_is_ir_invalid():
+    llm = FakeLLM('{"fields": []}')
+    with pytest.raises(IRInvalid):
+        await build_ir(llm, AMAP, TID)
+
+
+MULTI = _anchor(
+    "pptx:s1:sp1",
+    "shape_text",
+    tokens=["[Presenter Name]", "[Role]", "[DD Month YYYY]"],
+    text="[Presenter Name], [Role] \u00b7 [DD Month YYYY]",
+)
+MULTI_MAP = AnchorMap(format="pptx", anchors=[MULTI, _anchor("pptx:s1:sp2", "shape_text")])
+
+
+def _tok(fid, token, anchor="pptx:s1:sp1"):
+    return _field(fid, anchor, "replace_token", token=token)
+
+
+def _three():
+    return [
+        _tok("who", "[Presenter Name]"),
+        _tok("role", "[Role]"),
+        _tok("when", "[DD Month YYYY]"),
+    ]
+
+
+def test_several_replace_token_fields_on_one_anchor_are_valid():
+    assert validate(IRDraft(fields=_three()), MULTI_MAP) == []
+
+
+def test_duplicate_anchor_token_pair_names_both_fields():
+    fields = [*_three(), _tok("again", "[Role]")]
+    (err,) = validate(IRDraft(fields=fields), MULTI_MAP)
+    assert "'again'" in err and "'role'" in err and "[Role]" not in err
+
+
+def test_replace_text_with_replace_token_on_one_anchor_fails():
+    fields = [_tok("who", "[Presenter Name]"), _field("txt", "pptx:s1:sp1", "replace_text")]
+    errs = validate(IRDraft(fields=fields), MULTI_MAP)
+    assert any("'txt'" in e and "'who'" in e and "drop one of them" in e for e in errs)
+
+
+def test_fill_cell_and_replace_text_duplicates_still_fail():
+    assert _errors(_field("a", "a1"), _field("b", "a1", "replace_text"))
+    assert _errors(_field("a", "sheet", "fill_cell"), _field("b", "sheet", "fill_cell"))
+
+
+async def test_build_ir_keeps_all_token_fields_of_a_multi_token_shape():
+    amap = AnchorMap(format="pptx", anchors=[MULTI, _pa(2, 1)])
+    llm = FakeLLM(_reply(*_three()), _reply(_field("t2", "pptx:s2:sp1")))
+    ir = await build_ir(llm, amap, TID)
+    assert [f.field_id for f in ir.fields] == ["who", "role", "when", "t2"]
+
+
+async def test_ir_invalid_is_logged_with_ids_only():
+    secret = _anchor("a1", tokens=["[SECRET]"], text="secret text [SECRET]")
+    amap = AnchorMap(format="docx", anchors=[secret])
+    bad = _reply(_field("a", "a1", "replace_token", token="[WRONG]"))
+    with capture_logs() as logs, pytest.raises(IRInvalid):
+        await build_ir(FakeLLM(bad, bad), amap, TID)
+    (event,) = [e for e in logs if e["event"] == "ir_invalid"]
+    assert event["errors"] and event["anchor_count"] == 1
+    assert "SECRET" not in str(event) and "WRONG" not in str(event) and "secret" not in str(event)
+
+
+async def test_no_fields_at_all_is_logged_too():
+    with capture_logs() as logs, pytest.raises(IRInvalid):
+        await build_ir(
+            FakeLLM('{"fields": []}'), AnchorMap(format="docx", anchors=[_anchor("a1")]), TID
+        )
+    assert [e["anchor_count"] for e in logs if e["event"] == "ir_invalid"] == [1]
+
+
+async def test_ir_invalid_log_redacts_non_structural_ids():
+    """Sheet names, sdt tags and invented anchor ids are template or LLM text: never logged."""
+    amap = AnchorMap(
+        format="xlsx", anchors=[_anchor("xlsx:Payroll Secret!B2", "sheet_cell", text="")]
+    )
+    bad = _reply(
+        _field("a", "xlsx:Payroll Secret!B2", "replace_text"),
+        _field("b", "docx:sdt:client_name"),
+        _field("c", "Invented Text"),
+        _field("d", "pptx:s9:sp10_2:r1c0"),
+    )
+    with capture_logs() as logs, pytest.raises(IRInvalid):
+        await build_ir(FakeLLM(bad, bad), amap, TID)
+    (event,) = [e for e in logs if e["event"] == "ir_invalid"]
+    logged = str(event["errors"])
+    assert "Payroll" not in logged and "client_name" not in logged and "Invented" not in logged
+    assert "'a'" in logged and "'replace_text'" in logged and "'?'" in logged
+    assert "'pptx:s9:sp10_2:r1c0'" in logged  # keyed pptx ids are structural

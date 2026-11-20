@@ -9,6 +9,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -444,3 +445,65 @@ async def get_artifact_for_download(session: AsyncSession, artifact_id: uuid.UUI
     if artifact is None:
         raise NotFound()
     return artifact
+
+
+async def get_or_create_chat_project(
+    session: AsyncSession, user_id: str, openwebui_chat_id: str
+) -> Project:
+    """The caller's project for this Open WebUI chat. Race-safe: concurrent first requests
+    insert once (UNIQUE (user_id, openwebui_chat_id)) and every caller selects the same row."""
+    await session.execute(
+        pg_insert(Project)
+        .values(user_id=user_id, name="Open WebUI chat", openwebui_chat_id=openwebui_chat_id)
+        .on_conflict_do_nothing(index_elements=["user_id", "openwebui_chat_id"])
+    )
+    return await session.scalar(
+        select(Project).where(
+            Project.user_id == user_id, Project.openwebui_chat_id == openwebui_chat_id
+        )
+    )
+
+
+async def add_openwebui_file_id(
+    session: AsyncSession, ctx: TenantContext, document_id: uuid.UUID, file_id: str
+) -> None:
+    """Append `file_id` to the document's `openwebui_file_ids` unless already present."""
+    result = await session.execute(
+        update(Document)
+        .where(
+            *_scoped(Document, ctx, document_id),
+            ~Document.openwebui_file_ids.contains([file_id]),
+        )
+        .values(openwebui_file_ids=func.array_append(Document.openwebui_file_ids, file_id))
+    )
+    if result.rowcount == 0:  # already present, or not this tenant's
+        await get_document(session, ctx, document_id)
+
+
+async def find_documents_by_openwebui_file_ids(
+    session: AsyncSession, ctx: TenantContext, file_ids: list[str]
+) -> list[Document]:
+    rows = await session.scalars(
+        select(Document).where(
+            Document.user_id == ctx.user_id,
+            Document.project_id == ctx.project_id,
+            Document.openwebui_file_ids.overlap(file_ids),
+        )
+    )
+    return list(rows)
+
+
+async def latest_job_for_document(
+    session: AsyncSession, ctx: TenantContext, kind: str, document_id: uuid.UUID
+) -> Job | None:
+    return await session.scalar(
+        select(Job)
+        .where(
+            Job.user_id == ctx.user_id,
+            Job.project_id == ctx.project_id,
+            Job.kind == kind,
+            Job.payload["document_id"].astext == str(document_id),
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )

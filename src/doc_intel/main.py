@@ -13,6 +13,7 @@ from doc_intel.api.v1 import (
     health,
     jobs,
     mapping_runs,
+    pipe,
     projects,
     query,
     templates,
@@ -145,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(templates.router, prefix="/v1")
     app.include_router(mapping_runs.router, prefix="/v1")
     app.include_router(artifacts.router, prefix="/v1")
+    app.include_router(pipe.router, prefix="/v1")
     return app
 
 

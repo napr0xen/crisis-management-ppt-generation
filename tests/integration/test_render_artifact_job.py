@@ -6,6 +6,7 @@ import uuid
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from structlog.testing import capture_logs
 
 from doc_intel.core.config import get_settings
 from doc_intel.db import repo
@@ -249,6 +250,29 @@ async def test_deterministic_writer_failure_is_not_retried(sm, user_a, fake, exc
     assert "secret text" not in (job.error_message or "")
     run, _ = await state(sm, ctx, run_id, job.id)
     assert run.status == "failed"
+
+
+@pytest.mark.parametrize(
+    ("exc", "code"),
+    [
+        (KeyError("anchor_unresolved"), "anchor_unresolved"),
+        (KeyError("secret text"), None),
+        (ValueError("secret text"), None),
+    ],
+)
+async def test_render_failure_logs_only_type_and_allowlisted_code(sm, user_a, fake, exc, code):
+    ctx, run_id = await prepared_run(sm, user_a)
+
+    def boom():
+        raise exc
+
+    fake.hook = boom
+    with capture_logs() as logs:
+        await run_render(sm, ctx, run_id)
+    (event,) = [e for e in logs if e["event"] == "render_failed"]
+    assert event["error_type"] == type(exc).__name__ and event["code"] == code
+    assert event["mapping_run_id"] == str(run_id) and event["format"] == "pptx"
+    assert "secret text" not in str(logs)
 
 
 async def test_failure_hook_leaves_a_completed_run(sm, user_a):

@@ -12,7 +12,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Summary!D1",
@@ -26,7 +27,8 @@
         "[client name]"
       ],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Summary!B2",
@@ -39,7 +41,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Summary!B3",
@@ -52,7 +55,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Summary!A5",
@@ -64,7 +68,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Summary!B6",
@@ -77,7 +82,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Summary!A7",
@@ -89,7 +95,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!B1",
@@ -101,7 +108,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!A2",
@@ -113,7 +121,8 @@
       "text": "",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": null
     }
   ]
 }

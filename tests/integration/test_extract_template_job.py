@@ -15,6 +15,7 @@ from doc_intel.jobs.worker import run_one
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.local import LocalStorage
 from doc_intel.templates.anchors import build_anchor_map
+from doc_intel.templates.ir_builder import _batches
 from doc_intel.templates.schemas import TEXT_KINDS
 from tests.conftest import headers
 from tests.fakes import FakeEmbedder, FakeLLM
@@ -34,12 +35,17 @@ class NoopStore:
         return None
 
 
-def draft_reply(fmt: str) -> str:
-    """A valid IRDraft with one field on the first anchor of the fixture."""
-    anchor = build_anchor_map(fmt, BUILDERS[fmt]()).anchors[0]
+def draft_replies(fmt: str) -> list[str]:
+    """One valid IRDraft (one field on the batch's first anchor) per IR batch of the fixture."""
+    batches = _batches(build_anchor_map(fmt, BUILDERS[fmt]()))
+    return [draft_reply(a[0], f"field_{i}") for i, (_, a) in enumerate(batches)]
+
+
+def draft_reply(anchor, field_id: str) -> str:
+    """A valid IRDraft with one field on `anchor`."""
     text = anchor.kind in TEXT_KINDS
     field = {
-        "field_id": "first_field",
+        "field_id": field_id,
         "anchor_id": anchor.anchor_id,
         "section_path": anchor.path,
         "label": "First field",
@@ -105,12 +111,20 @@ async def job_of(session, job_id) -> Job:
 @pytest.mark.parametrize("fmt", ["pptx", "docx", "xlsx"])
 async def test_extracts_template_and_ir(client, session, migrated_db, user_a, project, fmt):
     doc_id, job_id = await queue_job(client, session, user_a, project, fmt)
-    await run_jobs(migrated_db, FakeLLM(draft_reply(fmt)))
+    await run_jobs(migrated_db, FakeLLM(*draft_replies(fmt)))
 
     job = await job_of(session, job_id)
     assert job.status == "succeeded", job.error_code
     assert set(job.result) == {"template_id", "template_ir_id", "ir_version"}
     assert job.result["ir_version"] == 1
+    batches = _batches(build_anchor_map(fmt, BUILDERS[fmt]()))
+    part = batches[-1][0]  # progress is published before each batch: the last one is "total - 1"
+    assert job.progress == {
+        "stage": "ir",
+        "done": len(batches) - 1,
+        "total": len(batches),
+        **({"part": part} if part else {}),
+    }
     template = await session.get(Template, uuid.UUID(job.result["template_id"]))
     ir = await session.get(TemplateIRVersion, uuid.UUID(job.result["template_ir_id"]))
     assert (template.user_id, template.project_id) == (user_a, uuid.UUID(project))
@@ -121,7 +135,7 @@ async def test_extracts_template_and_ir(client, session, migrated_db, user_a, pr
     assert ir.template_id == template.id
     assert ir.ir["template_id"] == str(template.id)
     assert ir.ir["format"] == fmt
-    assert ir.ir["fields"][0]["field_id"] == "first_field"
+    assert ir.ir["fields"][0]["field_id"] == "field_0"
     assert "max_chars" not in ir.ir["fields"][0]["constraints"]  # exclude_none
 
     # the same tenant keys serve the API
@@ -136,7 +150,7 @@ async def test_extracts_template_and_ir(client, session, migrated_db, user_a, pr
 
 async def test_second_run_reuses_template_and_ir(client, session, migrated_db, user_a, project):
     doc_id, first_job = await queue_job(client, session, user_a, project, "pptx")
-    await run_jobs(migrated_db, FakeLLM(draft_reply("pptx")))
+    await run_jobs(migrated_db, FakeLLM(*draft_replies("pptx")))
     first = (await job_of(session, first_job)).result
 
     second_job = post_template(client, user_a, project, doc_id)
@@ -157,7 +171,7 @@ async def test_invalid_ir_twice_fails_without_retry_or_rows(
     client, session, migrated_db, user_a, project
 ):
     doc_id, job_id = await queue_job(client, session, user_a, project, "pptx")
-    bad = json.loads(draft_reply("pptx"))
+    bad = json.loads(draft_replies("pptx")[0])
     bad["fields"][0]["anchor_id"] = "no_such_anchor"
     await run_jobs(migrated_db, FakeLLM(json.dumps(bad), json.dumps(bad)))
 
@@ -195,6 +209,6 @@ async def test_deleted_document_fails_after_one_attempt(
     doc_id, job_id = await queue_job(client, session, user_a, project, "pptx")
     await session.execute(delete(Document).where(Document.id == uuid.UUID(doc_id)))
     await session.commit()
-    await run_jobs(migrated_db, FakeLLM(draft_reply("pptx")))
+    await run_jobs(migrated_db, FakeLLM(*draft_replies("pptx")))
     job = await job_of(session, job_id)
     assert (job.status, job.attempts, job.error_code) == ("failed", 1, "not_found")

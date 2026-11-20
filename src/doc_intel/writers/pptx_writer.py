@@ -1,15 +1,14 @@
 """PPTX surgical writer (system-design § 8): ids resolve exactly as in `templates/anchors_pptx`."""
 
 import re
-from collections.abc import Iterable, Iterator
 from io import BytesIO
 
 from lxml import etree
 from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.shapes.base import BaseShape
 
 from doc_intel.mapping.schemas import MappingWarning
+from doc_intel.templates.anchors_pptx import keyed_shapes
 from doc_intel.writers import WriteItem
 from doc_intel.writers.runs import (
     A,
@@ -20,14 +19,7 @@ from doc_intel.writers.runs import (
     write_paragraphs,
 )
 
-_ID = re.compile(r"^pptx:s(\d+):sp(\d+)(?::r(\d+)c(\d+))?$")
-
-
-def _shapes(shapes: Iterable[BaseShape]) -> Iterator[BaseShape]:
-    for shape in shapes:
-        yield shape
-        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            yield from _shapes(shape.shapes)
+_ID = re.compile(r"^pptx:s(\d+):(sp\d+(?:_\d+)?)(?::r(\d+)c(\d+))?$")
 
 
 def _resolve(prs, anchor_id: str) -> tuple[BaseShape, re.Match]:
@@ -35,14 +27,16 @@ def _resolve(prs, anchor_id: str) -> tuple[BaseShape, re.Match]:
     if m is None or not 1 <= int(m[1]) <= len(prs.slides):
         raise KeyError("anchor_unresolved")
     shape = next(
-        (s for s in _shapes(prs.slides[int(m[1]) - 1].shapes) if s.shape_id == int(m[2])), None
+        (
+            s
+            for key, s in keyed_shapes(prs.slides[int(m[1]) - 1].shapes)
+            if key == m[2] and (s.has_table if m[3] else s.has_text_frame)
+        ),
+        None,
     )
-    if shape is None or (m[3] is None and not shape.has_text_frame):
-        raise KeyError("anchor_unresolved")
-    if m[3] is not None and (
-        not shape.has_table
-        or int(m[3]) >= len(shape.table.rows)
-        or int(m[4]) >= len(shape.table.columns)
+    if shape is None or (
+        m[3] is not None
+        and (int(m[3]) >= len(shape.table.rows) or int(m[4]) >= len(shape.table.columns))
     ):
         raise KeyError("anchor_unresolved")
     return shape, m

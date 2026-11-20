@@ -4,15 +4,16 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Request
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from doc_intel.chat.router import TEMPLATE_FORMATS, doc_format
 from doc_intel.core.errors import Conflict, UnsupportedMediaType, UpstreamUnavailable
-from doc_intel.core.tenancy import Tenant
+from doc_intel.core.tenancy import Tenant, TenantContext
 from doc_intel.db import repo
+from doc_intel.db.models import Job
 from doc_intel.db.session import Session
 
 router = APIRouter(prefix="/projects/{project_id}/templates")
-
-TEMPLATE_EXTENSIONS = {"pptx", "docx", "xlsx"}
 
 
 class TemplateIn(BaseModel):
@@ -45,9 +46,17 @@ class TemplateIROut(BaseModel):
 async def create_template(
     body: TemplateIn, ctx: Tenant, session: Session, request: Request
 ) -> TemplateJobOut:
-    doc = await repo.get_document(session, ctx, body.document_id)
+    job = await start_template(session, ctx, request.app.state.vector_store, body.document_id)
+    return TemplateJobOut(job_id=job.id)
+
+
+async def start_template(
+    session: AsyncSession, ctx: TenantContext, vector_store: Any, document_id: uuid.UUID
+) -> Job:
+    """Mark the document a template and queue `extract_template` (shared with the Pipe)."""
+    doc = await repo.get_document(session, ctx, document_id)
     # The extension was validated at upload; the filename is never trusted.
-    if doc.storage_key.rsplit(".", 1)[1] not in TEMPLATE_EXTENSIONS:
+    if doc_format(doc) not in TEMPLATE_FORMATS:
         raise UnsupportedMediaType("Only PPTX, DOCX and XLSX documents can be templates.")
     if doc.status in ("uploaded", "parsing"):
         # A running ingest job would re-add the template's text to Qdrant after the purge below.
@@ -56,10 +65,10 @@ async def create_template(
     job = await repo.create_job(session, ctx, "extract_template", {"document_id": str(doc.id)})
     # Template text must not be searchable; if Qdrant is down the transaction rolls back.
     try:
-        await request.app.state.vector_store.delete_document_points(ctx, doc.id)
+        await vector_store.delete_document_points(ctx, doc.id)
     except Exception as exc:
         raise UpstreamUnavailable() from exc
-    return TemplateJobOut(job_id=job.id)
+    return job
 
 
 @router.get("/{template_id}")

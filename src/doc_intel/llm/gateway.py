@@ -27,6 +27,8 @@ class LLMError(UpstreamUnavailable):
 class LLMInvalidOutput(LLMError):
     """The model replied twice with invalid output (transport failures stay plain `LLMError`)."""
 
+    retry = False  # jobs: temperature 0, the same prompt fails the same way
+
 
 class LLMClient(Protocol):
     async def complete(self, messages: Messages, json_schema: dict | None = None) -> str:
@@ -71,7 +73,13 @@ class OllamaClient:
             "messages": messages,
             "stream": False,
             "think": self._think,
-            "options": {"num_ctx": self._num_ctx, "temperature": 0},
+            # a reply may use at most half the window; uncapped, a degenerate JSON/whitespace loop
+            # runs until the timeout
+            "options": {
+                "num_ctx": self._num_ctx,
+                "temperature": 0,
+                "num_predict": self._num_ctx // 2,
+            },
         }
         if json_schema is not None:
             body["format"] = json_schema

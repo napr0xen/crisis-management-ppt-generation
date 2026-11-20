@@ -69,11 +69,11 @@ Every upload starts as `role = 'source'` and is indexed. Marking a document as a
 | `kind` | text NOT NULL | `ingest_document` \| `extract_template` \| `run_mapping` \| `render_artifact` |
 | `status` | text NOT NULL DEFAULT `'queued'` | `queued` \| `running` \| `succeeded` \| `failed` |
 | `payload` | jsonb NOT NULL | input ids, e.g. `{"document_id": "…"}` |
-| `progress` | jsonb NOT NULL DEFAULT `'{}'` | `{"stage": "embedding", "done": 12, "total": 40}`; `run_mapping`: `{"stage": "mapping", "done": i, "total": n}` |
+| `progress` | jsonb NOT NULL DEFAULT `'{}'` | `{"stage": "embedding", "done": 12, "total": 40}`; `extract_template`: `{"stage": "ir", "done": i, "total": n, "part": "slide 3"}` (`part` absent for docx); `run_mapping`: `{"stage": "mapping", "done": i, "total": n, "field": "<field_id>"}` (`field` = the field now running) |
 | `result` | jsonb NULL | output ids, e.g. `{"template_id": "…"}` |
 | `error_code` | text NULL | the failing exception's `code` (e.g. `parse_error`), `internal` otherwise, `interrupted` if the backend restarted during the last attempt; `ir_invalid` (TemplateIR still invalid after its retry); `validation_error` (template over a limit, see [system-design.md § 4](system-design.md#4-anchormap)) |
 | `error_message` | text NULL | safe text only, no document content |
-| `attempts` | int NOT NULL DEFAULT 0 | the worker fails a job once `attempts` reaches 3 (constant `MAX_JOB_ATTEMPTS` in `jobs/worker.py`), or after the first attempt for an error marked `retry = False` (`parse_error`) |
+| `attempts` | int NOT NULL DEFAULT 0 | the worker fails a job once `attempts` reaches 3 (constant `MAX_JOB_ATTEMPTS` in `jobs/worker.py`), or after the first attempt for an error marked `retry = False` (e.g. `parse_error`, `ir_invalid`, an LLM reply invalid twice) |
 | `locked_at` | timestamptz NULL | set when claimed |
 | `created_at`, `started_at`, `finished_at` | timestamptz | `started_at`/`finished_at` nullable |
 

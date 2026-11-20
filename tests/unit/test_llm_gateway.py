@@ -56,7 +56,7 @@ async def test_ollama_uses_native_chat_with_num_ctx_think_off_and_schema_format(
         "stream": False,
         "think": False,
         "format": SCHEMA,
-        "options": {"num_ctx": 8192, "temperature": 0},
+        "options": {"num_ctx": 8192, "temperature": 0, "num_predict": 4096},
     }
 
 
@@ -206,3 +206,8 @@ async def test_qwen3_live_json_without_think_tags():
 def test_invalid_output_is_an_llm_error_but_transport_errors_are_not_invalid_output():
     assert issubclass(LLMInvalidOutput, LLMError)
     assert not issubclass(LLMError, LLMInvalidOutput)
+
+
+def test_invalid_output_is_not_retried_by_jobs_but_transport_errors_are():
+    assert LLMInvalidOutput.retry is False
+    assert getattr(LLMError(), "retry", True) is True

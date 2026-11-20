@@ -13,7 +13,11 @@
       "text": "Situation Overview",
       "tokens": [],
       "is_placeholder": false,
-      "table": null
+      "table": null,
+      "pos": [
+        50,
+        12
+      ]
     },
     {
       "anchor_id": "pptx:s1:sp3",
@@ -26,7 +30,11 @@
       "text": "Click to edit Master text styles\nSecond level\nThird level\nFourth level\nFifth level",
       "tokens": [],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": [
+        50,
+        56
+      ]
     },
     {
       "anchor_id": "pptx:s2:sp2",
@@ -39,7 +47,11 @@
       "text": "Incident",
       "tokens": [],
       "is_placeholder": false,
-      "table": null
+      "table": null,
+      "pos": [
+        50,
+        12
+      ]
     },
     {
       "anchor_id": "pptx:s2:sp3",
@@ -55,7 +67,11 @@
         "TBD"
       ],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": [
+        30,
+        33
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp2",
@@ -68,7 +84,11 @@
       "text": "Stakeholders",
       "tokens": [],
       "is_placeholder": false,
-      "table": null
+      "table": null,
+      "pos": [
+        50,
+        12
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r0c0",
@@ -85,7 +105,11 @@
         "row": 0,
         "col": 0,
         "header": "Name"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r0c1",
@@ -102,7 +126,11 @@
         "row": 0,
         "col": 1,
         "header": "Role"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r0c2",
@@ -119,7 +147,11 @@
         "row": 0,
         "col": 2,
         "header": "Owner"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r1c0",
@@ -136,7 +168,11 @@
         "row": 1,
         "col": 0,
         "header": "Name"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r1c1",
@@ -153,7 +189,11 @@
         "row": 1,
         "col": 1,
         "header": "Role"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r1c2",
@@ -170,7 +210,11 @@
         "row": 1,
         "col": 2,
         "header": "Owner"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r2c0",
@@ -187,7 +231,11 @@
         "row": 2,
         "col": 0,
         "header": "Name"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r2c1",
@@ -204,7 +252,11 @@
         "row": 2,
         "col": 1,
         "header": "Role"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp3:r2c2",
@@ -221,7 +273,11 @@
         "row": 2,
         "col": 2,
         "header": "Owner"
-      }
+      },
+      "pos": [
+        40,
+        40
+      ]
     },
     {
       "anchor_id": "pptx:s3:sp5",
@@ -236,7 +292,11 @@
         "[note]"
       ],
       "is_placeholder": true,
-      "table": null
+      "table": null,
+      "pos": [
+        25,
+        73
+      ]
     }
   ]
 }

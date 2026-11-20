@@ -11,7 +11,7 @@
 |---|---|---|
 | `Authorization: Bearer <PIPE_SHARED_SECRET>` | all routes except `GET /v1/health` and `GET /v1/artifacts/{artifact_id}/download` | constant-time compared; mismatch → `401` |
 | `X-OWUI-User-Id` | same as above | Open WebUI user id; must match `^[A-Za-z0-9_-]{1,64}$`, else `422` |
-| `X-OWUI-Chat-Id` | `/v1/pipe/*` only | Open WebUI chat id; selects or creates the project |
+| `X-OWUI-Chat-Id` | `/v1/pipe/*` only | Open WebUI chat id; must match `^[A-Za-z0-9_-]{1,64}$`, else `422 validation_error` ("Invalid X-OWUI-Chat-Id."); selects or creates the project |
 | `X-Request-Id` | response (all) | echoed if sent, otherwise generated |
 
 **Tenancy.**
@@ -99,9 +99,9 @@ No auth. Returns `200` if the API is up, and reports each dependency.
 
 ### `POST /v1/pipe/files`
 
-`multipart/form-data`: `file` (binary), `openwebui_file_id` (string). Headers: auth + `X-OWUI-User-Id` + `X-OWUI-Chat-Id`.
+`multipart/form-data`: `file` (binary), `openwebui_file_id` (string, 1..128 chars). Headers: auth + `X-OWUI-User-Id` + `X-OWUI-Chat-Id`.
 
-- Resolves or creates the project for the chat.
+- Resolves or creates the project for the chat. The project is created once per `(user_id, X-OWUI-Chat-Id)`, on the first pipe call.
 - Deduplicates on `sha256`. On a duplicate, appends `openwebui_file_id` to the existing row's `openwebui_file_ids` and returns that document.
 - Stores the file, inserts `documents`, and enqueues `ingest_document`.
 
@@ -111,7 +111,7 @@ No auth. Returns `200` if the API is up, and reports each dependency.
 {"project_id": "uuid", "document_id": "uuid", "job_id": "uuid|null", "deduplicated": false}
 ```
 
-`job_id` is null when the upload was deduplicated, unless the existing document is a `role='source'` document that had `failed`: it is then reset to `uploaded` and a fresh `ingest_document` job is queued (`deduplicated: true` with that `job_id`). Errors: `413`, `415`.
+`job_id` is null when the upload was deduplicated, unless the existing document is a `role='source'` document that had `failed`: it is then reset to `uploaded` and a fresh `ingest_document` job is queued (`deduplicated: true` with that `job_id`). An `openwebui_file_id` already known in the project returns that document with `deduplicated: true` and `job_id: null` without re-validating or re-queueing; a failed document is retried by attaching the file again (new Open WebUI file id). Errors: `413`, `415`.
 
 ### `POST /v1/pipe/chat`
 
@@ -124,6 +124,8 @@ Headers: auth + `X-OWUI-User-Id` + `X-OWUI-Chat-Id`. Request:
 }
 ```
 
+Limits: `messages` 1..50 items (`role` `user` or `assistant`; 51 → `422`); `files` up to 200 items; `files[].openwebui_file_id` 1..128 chars; `files[].filename` up to 255 chars.
+
 Response: `text/event-stream`.
 
 | `event` | `data` | Pipe action |
@@ -132,6 +134,11 @@ Response: `text/event-stream`.
 | `delta` | `{"content": "…markdown…"}` | `yield content` |
 | `error` | `{"code": "…", "message": "…"}` | emit status `done: true`, yield message |
 | `done` | `{"project_id": "uuid", "mapping_run_id": "uuid|null", "artifact_id": "uuid|null"}` | emit final status `done: true` |
+
+- Event order: `status*` → `delta*` → `error`? → `done`. Every `status` precedes every `delta`, because deltas are buffered until the flow ends.
+- While it waits on a job, the stream sends a `: keep-alive` comment line when the status text has not changed. Clients ignore lines starting with `:`.
+- Unknown `openwebui_file_id`s and failed ingests are not errors: each becomes a `delta` warning that names the file, and the turn continues.
+- A failed `extract_template` or mapping job ends the turn with `error`, then `done`.
 
 Routing behavior is described in [system-design.md § 9](system-design.md#9-chat-orchestration-chat). The Pipe drops internal `### Task:` requests before calling this endpoint.
 
