@@ -350,7 +350,7 @@ Example (conflict):
 
 Engine results always have `provenance = rag`.
 
-`shortcut: heuristic confidence tiers, calibrate against the eval set in Phase 11.`
+`shortcut: heuristic confidence tiers, calibrate against the eval set in Phase 12.`
 
 ## 7. Mapping engine (Stage 3)
 
@@ -362,7 +362,9 @@ queued ─▶ retrieving ─▶ extracting ─▶ verifying ─▶ rendering ─
    └───────────┴─────────────┴─────────────┴────────────┴──▶ failed
 ```
 
-`run_mapping` sets `extracting` when the field loop starts, then commits `results`, `summary` and `verifying` in one transaction. It then renders: it sets `rendering` (commit), writes the file, and commits the `artifacts` row together with `completed`, `finished_at` and the writer warnings appended to `summary.warnings`. `retrieving` is not used (each field is retrieved, extracted and verified in turn). A retried job whose run is `verifying`/`rendering` only renders; a `completed` run returns its artifact. `render_artifact` (payload `{mapping_run_id}`) runs the same render for a `verifying`/`rendering` run (Phase 10 edits enqueue it). Failure hooks: `run_mapping` marks any run that is not `completed`/`failed` as `failed`; `render_artifact` only fails `verifying`/`rendering` runs. `finished_at` is set at `completed` or `failed`.
+`run_mapping` sets `extracting` when the field loop starts, then commits `results`, `summary` and `verifying` in one transaction. It then renders: it sets `rendering` (commit), writes the file, and commits the `artifacts` row together with `completed`, `finished_at` and the writer warnings appended to `summary.warnings`. `retrieving` is not used (each field is retrieved, extracted and verified in turn). A retried job whose run is `verifying`/`rendering` only renders; a `completed` run returns its artifact. `render_artifact` (payload `{mapping_run_id}`) runs the same render for a `verifying`/`rendering` run (Phase 11 edits enqueue it). Failure hooks: `run_mapping` marks any run that is not `completed`/`failed` as `failed`; `render_artifact` only fails `verifying`/`rendering` runs. `finished_at` is set at `completed` or `failed`.
+
+Fields are mapped in IR order. `replace_token` fields that share `(constraints.token, expected_type, label)` (label compared case-insensitively; a token repeated on several slides) are mapped once per run: later ones reuse the first result under their own `field_id`, so every copy gets the same value at the cost of one retrieval and one LLM call. The label is in the key because generic blanks (`____`, `XXX`) repeat with different meanings.
 
 A retried job recomputes every field; a run that is no longer `queued`/`retrieving`/`extracting` is returned unchanged. When the job fails for good, the `run_mapping` failure hook marks the run `failed`.
 
@@ -393,6 +395,8 @@ PENDING ─retrieve─▶ RETRIEVED ─extract─▶ EXTRACTED ─verify─▶ R
    - Quotes shorter than 8 or longer than 1,000 raw characters are dropped. The stored quote is the LLM quote verbatim.
    - Typed values (`number`, `currency`, `percent`, `date`): the value is normalized to a canonical form (`12,000` → `12000`; dates → ISO) and must appear, canonicalized, in at least one verified quote of that candidate.
    - Typed canonical form: the value must state exactly one number (sign kept, thousand/million/billion applied, currency symbols and `%` ignored, digit groups of 3 after a comma) or one date (ISO). It must appear among the numbers/dates of a verified quote.
+   - Number formats: US/UK (`1,829,914.84`) and European (`1.829.914,84`) both parse. A European reading is used only when it is unambiguous: dot groups before a decimal comma (`444.132,10`), two or more dot groups (`1.829.914`), or a bare 1-2 digit decimal comma (`10,50`, `752,76`). A single group (`1,234`, `12.000`) keeps the US reading (`shortcut: no per-document locale; add a locale hint when a source writes single-group European numbers.`).
+   - Date formats: ISO, `D Month YYYY` (Spanish `de`/`del` connectors allowed: `1 de junio de 2022`) and `Month D[,] YYYY`, with English or Spanish month names, full or abbreviated (`jun.`, `sept`). Numeric `03/04/2026` is not parsed (day/month order is ambiguous).
    - Stored values: text → string; paragraphs/bullet_list → list of strings (bullet markers stripped); number/currency/percent → JSON number; date → ISO string; table → list of rows.
    - Evidence `filename`, `page_number`, and `section_heading` are copied from the **hit payload**, never from LLM output.
 4. **Resolve status.**
@@ -513,7 +517,7 @@ Common rules:
      `shortcut: the only pptx/docx/xlsx in a chat is mapped without asking; a source memo of that format then becomes the template (re-adding it needs DELETE), drop this rule if users hit it.`
      `shortcut: the list number refers to the current document order; an upload between the list and the reply can shift it, upgrade with pending_action.`
    - `chitchat` → the fixed help text (`HELP_TEXT`). No answer call is made; the routing call still runs.
-   - `edit` (Phase 10) → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
+   - `edit` (Phase 11) → validate the ops against the latest run's IR fields, then `edits.py` (same path as `POST …/edits`).
 5. **Q&A** (`qa.py`):
    1. Retrieve. No hits → the "not found" answer below, without an LLM call. A search failure → `503 upstream_unavailable`.
    2. Make one LLM call (prompt `llm/prompts/qa.md`) with JSON output `{"answer_markdown": "… [1] …", "citations": [{"marker": 1, "chunk_id": "…", "quote": "…"}]}`. Each hit is shown as `[chunk_id | filename | p.N | section]` followed by its text.

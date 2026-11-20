@@ -123,7 +123,7 @@ Docker Compose has its own variables in the same `.env`: `POSTGRES_USER`, `POSTG
 ## 11. Git hygiene
 
 - Remote: `origin` = `https://github.com/napr0xen/crisis-management-ppt-generation.git`.
-- **One branch per phase**, named `phase-<N>-<slug>` with the slug from the roadmap phase name: `phase-0-docs`, `phase-1-foundation`, `phase-2-ingestion`, `phase-3-embeddings-qdrant`, … through Phase 11.
+- **One branch per phase**, named `phase-<N>-<slug>` with the slug from the roadmap phase name: `phase-0-docs`, `phase-1-foundation`, `phase-2-ingestion`, `phase-3-embeddings-qdrant`, … through Phase 12.
 - Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
 - **End of every phase**, only after `uv run pytest`, `uv run ruff check .`, `uv run ruff format --check .`, `/ponytail-review` and `/ecc:quality-gate` pass:
   1. mark the phase complete in `docs/implementation-roadmap.md`;

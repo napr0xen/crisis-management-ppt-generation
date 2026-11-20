@@ -165,6 +165,24 @@ def test_replace_token_across_runs_keeps_other_runs():
     assert runs[0].find(f"{A}rPr").get("b") == "1"  # first spanning run's rPr kept
 
 
+def test_replace_token_bracket_split_across_three_runs_leaves_no_bracket():
+    prs = Presentation(BytesIO(pptx_template()))
+    shape = next(s for s in prs.slides[1].shapes if s.shape_id == 3)
+    p = shape.text_frame.paragraphs[0]
+    for r in list(p.runs):
+        r._r.getparent().remove(r._r)
+    for text in ("[", "Account Name", "]"):
+        p.add_run().text = text
+    buf = BytesIO()
+    prs.save(buf)
+    out, _ = write(
+        buf.getvalue(),
+        [_item(BOX, ["Acme Corp"], mode="replace_token", token="[Account Name]")],
+    )
+    text = _shape(out, 2, 3).text_frame.text
+    assert "Acme Corp" in text and "[" not in text and "]" not in text
+
+
 def test_replace_token_missing_token_is_keyerror():
     with pytest.raises(KeyError) as exc:
         write(pptx_template(), [_item(BOX, ["x"], mode="replace_token", token="{{nope}}")])

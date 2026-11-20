@@ -280,12 +280,24 @@ def make_handlers(
         # shortcut: fields run one at a time (one Ollama), and a crash redoes them all; add
         # per-field checkpoints if runs get long.
         results = {}
+        # A token repeated across slides maps once (one answer, one LLM call); the label is in the
+        # key because generic blanks ("____", "XXX") repeat with different meanings.
+        by_token = {}
         for done, field in enumerate(ir.fields, start=1):
             # field_id is template-derived and goes to jobs.progress only, never to logs
             await set_progress(
                 sessionmaker, ctx, job.id, {**progress, "done": done - 1, "field": field.field_id}
             )
-            results[field.field_id] = await map_field(ctx, field, document_ids, retriever, llm)
+            token = field.constraints.token if field.write_mode == "replace_token" else None
+            key = (token, field.expected_type, field.label.casefold())
+            if token and key in by_token:
+                results[field.field_id] = by_token[key].model_copy(
+                    update={"field_id": field.field_id}
+                )
+            else:
+                results[field.field_id] = await map_field(ctx, field, document_ids, retriever, llm)
+                if token:
+                    by_token[key] = results[field.field_id]
             await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done})
         summary = summarize(ir.fields, results)
         async with sessionmaker.begin() as session:

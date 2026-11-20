@@ -76,7 +76,7 @@ Conventions: [docs/development-guidelines.md](docs/development-guidelines.md).
 | [system-design.md](docs/system-design.md) | modules, `AnchorMap`, `TemplateIR`, `FieldMappingResult`, state machine, writers |
 | [data-model.md](docs/data-model.md) | PostgreSQL schema, Qdrant collection, storage layout |
 | [api-specification.md](docs/api-specification.md) | endpoints, auth headers, SSE events, schemas |
-| [implementation-roadmap.md](docs/implementation-roadmap.md) | phases 0–11 with entry/exit gates |
+| [implementation-roadmap.md](docs/implementation-roadmap.md) | phases 0–12 with entry/exit gates |
 | [development-guidelines.md](docs/development-guidelines.md) | layout, typing, async, errors, logging, config, git |
 | [testing-strategy.md](docs/testing-strategy.md) | unit, integration, isolation, RAG eval, template fidelity |
 | [DECISIONS.md](docs/DECISIONS.md) | ADR-001 … ADR-012 |

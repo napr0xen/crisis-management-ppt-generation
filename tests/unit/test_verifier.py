@@ -132,7 +132,7 @@ def test_typed_value_absent_from_quotes(value, value_type, quotes):
         ("(-5)", "number", -5),
         ("10-12", "number", None),
         ("3,4,5", "number", None),
-        ("ids 12,34", "number", None),
+        ("ids 12,34", "number", 12.34),  # a 2-digit group after a comma is a decimal comma
         ("1,234,567.5", "number", 1234567.5),
         ("$-5", "currency", 5),
         ("5%-10%", "percent", None),
@@ -151,7 +151,7 @@ def test_canonical_value(value, value_type, expected):
     "text, numbers",
     [
         ("3,4,5", {3, 4, 5}),
-        ("ids 12,34", {12, 34}),
+        ("ids 12,34", {Decimal("12.34")}),
         ("12,000", {12000}),
         ("1,234,567.5", {1234567.5}),
         ("5%-10%", {5, 10}),
@@ -160,3 +160,62 @@ def test_canonical_value(value, value_type, expected):
 )
 def test_number_grouping_and_sign_rules(text, numbers):
     assert _numbers(text) == {Decimal(str(n)) for n in numbers}
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("444.132,10 $", 444132.1),
+        ("1.829.914,84 $", 1829914.84),
+        ("58.100,00 DR", 58100),
+        ("1.829.914", 1829914),
+        ("0,5", 0.5),
+        ("752,76 DR", 752.76),
+        ("10,50", 10.5),
+        ("1,829,914.84", 1829914.84),
+        ("534,613.48", 534613.48),
+        ("1,234", 1234),
+        ("12.000", 12),
+        ("3,4,5", None),
+    ],
+)
+def test_european_and_ambiguous_numbers(value, expected):
+    assert canonical_value(value, "currency") == expected
+
+
+@pytest.mark.parametrize(
+    "value, quote, expected",
+    [
+        ("534,613.48", "Saldo 534.613,48 $", True),
+        (444132.1, "444.132,10 $", True),
+        (444132.11, "444.132,10 $", False),
+    ],
+)
+def test_us_and_european_amounts_match_across_forms(value, quote, expected):
+    assert value_in_quotes(value, "currency", [quote]) is expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("30 junio 2022", "2022-06-30"),
+        ("1 de junio de 2022", "2022-06-01"),
+        ("1 del junio del 2022", "2022-06-01"),
+        ("31 mayo 2022", "2022-05-31"),
+        ("30 jun. 2022", "2022-06-30"),
+        ("30 JUN 2022", "2022-06-30"),
+        ("June 30 2022", "2022-06-30"),
+        ("Sept. 5, 2022", "2022-09-05"),
+        ("4 March 2026", "2026-03-04"),
+        ("2022-06-30", "2022-06-30"),
+        ("31 febrero 2022", None),
+        ("4 Marchy 2026", None),
+        ("03/04/2026", None),
+    ],
+)
+def test_spanish_and_english_dates(text, expected):
+    assert canonical_value(text, "date") == expected
+
+
+def test_iso_date_matches_spanish_quote():
+    assert value_in_quotes("2022-06-30", "date", ["Saldo al 30 junio 2022"])

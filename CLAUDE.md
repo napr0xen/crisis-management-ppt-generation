@@ -11,7 +11,7 @@ Project: local-first, domain-agnostic **Document Intelligence & Template Mapping
 | `docs/system-design.md` | modules, `AnchorMap`, `TemplateIR`, `FieldMappingResult`, state machine, writers |
 | `docs/architecture.md` | components, data flows, Pipe design, 24 GB RAM budget |
 | `docs/requirements.md` | FR/NFR, formats, security rules, out of scope |
-| `docs/implementation-roadmap.md` | phases 0–11, entry/exit gates, status |
+| `docs/implementation-roadmap.md` | phases 0–12, entry/exit gates, status |
 | `docs/development-guidelines.md` | layout, typing, async, errors, logging, `.env` vars, git |
 | `docs/testing-strategy.md` | test layers, security gates, eval metrics, fidelity checks |
 | `docs/DECISIONS.md` | ADR-001…ADR-012 |
@@ -60,7 +60,7 @@ Work **only** on the current phase in `docs/implementation-roadmap.md`. Don't bu
 **Ponytail (mandatory):**
 - `/ponytail full` during implementation: the smallest complete change, no speculative code;
 - `/ponytail-review` at the end of every phase;
-- `/ponytail-audit` at Phases 5 and 11;
+- `/ponytail-audit` at Phases 5 and 12;
 - known limits get a comment: `# shortcut: <the limit>, <when to upgrade>`.
 
 ## Guardrails (non-negotiable)

@@ -46,7 +46,7 @@ Max upload: `MAX_UPLOAD_MB=100`. Legacy binary formats (`.doc`, `.ppt`, `.xls`) 
 |---|---|
 | NFR-1 | **Local-first.** With default config no document content leaves the machine. Cloud LLM providers must be set explicitly in `.env`, and `/v1/health` reports the active provider. |
 | NFR-2 | Runs on a MacBook Pro M5 Pro with 24 GB unified memory within the budget in [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory). |
-| NFR-3 | Performance targets (measured in Phase 11, M5 Pro, 14B model):<br>• ingest a 50-page text PDF ≤ 3 min<br>• Q&A answer ≤ 20 s<br>• map a 30-field template over 5 sources ≤ 10 min |
+| NFR-3 | Performance targets (measured in Phase 12, M5 Pro, 14B model):<br>• ingest a 50-page text PDF ≤ 3 min<br>• Q&A answer ≤ 20 s<br>• map a 30-field template over 5 sources ≤ 10 min |
 | NFR-4 | Jobs survive a backend restart: all `running` jobs are re-queued at startup (up to 3 attempts), and retries are idempotent. |
 | NFR-5 | Uploads and artifacts are immutable. Every run and IR version is reproducible from stored rows and files. |
 | NFR-6 | Logs are structured JSON and never contain document text, chunk text, prompts, completions, filenames, or secrets. |

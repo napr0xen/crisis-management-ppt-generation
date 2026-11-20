@@ -11,7 +11,7 @@ Work only on the current phase. A phase is **done** only when every exit-gate co
 5. `/ecc:verify`: run the exit gate. If not installed, use the `ecc:verification-loop` skill.
 6. `/ecc:update-docs`: docs and code must agree.
 7. `/ponytail-review` on the phase diff.
-8. Phases 5 and 11 only: `/ponytail-audit` on the whole repo.
+8. Phases 5 and 12 only: `/ponytail-audit` on the whole repo.
 
 Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --check . && uv run pytest tests/unit` green.
 
@@ -29,8 +29,9 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 7 | Surgical writers & artifacts | **Complete** |
 | 8 | Open WebUI Pipe & chat orchestration | **Complete** |
 | 9 | Template library | **Complete** |
-| 10 | Conversational edits & run versioning | pending |
-| 11 | Hardening, evaluation & audit | pending |
+| 10 | Universal mapping fixes | in progress |
+| 11 | Conversational edits & run versioning | pending |
+| 12 | Hardening, evaluation & audit | pending |
 
 ---
 
@@ -199,7 +200,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 
 ## Phase 9: Template library
 
-Inserted after Phase 8 (cause: users should be able to generate a deck or document from source files alone, without uploading a template each time). Edits and hardening moved to Phases 10 and 11.
+Inserted after Phase 8 (cause: users should be able to generate a deck or document from source files alone, without uploading a template each time). Edits and hardening moved to Phases 10 and 11 (now 11 and 12, after Phase 10 was inserted).
 
 - **Entry:** Phase 8 done.
 - **Deliverables:**
@@ -214,9 +215,23 @@ Inserted after Phase 8 (cause: users should be able to generate a deck or docume
 - **Phase 5 change** (cause: seeding a second real deck failed `ir_invalid` twice on a table drawn with `shape_text` boxes): `ir_builder` drops three safe model slips before validation (`fill_table_rows` on a non-table anchor, `replace_token` on a static 0-token label, exact `(anchor_id, write_mode, token)` duplicates); the prompt says shape-drawn tables are separate `shape_text` fields.
 - **Status:** Complete (2026-11-21). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 165 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1086 passed (Phases 1-9). Manual end-to-end in Open WebUI: two pptx templates seeded with the CLI (the second needed the Phase 5 change above); a new chat with only a source PDF, "make a powerpoint out of this" → numbered library list, the pick ran `run_mapping` on the cached IR with no `extract_template` job and returned a working download. Known gap: some `[...]` tokens stayed unreplaced in that deck; diagnosed separately.
 
-## Phase 10: Conversational edits & run versioning
+## Phase 10: Universal mapping fixes
+
+Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped against a Spanish-language bank statement left 79 `[MISSING: …]` and 27 `[CONFLICT: …]` markers, 46 of the missing ones typed fields that failed verification). Edits and hardening moved to Phases 11 and 12. Raw `[...]` template tokens were not the cause: the rendered deck had none, and `replace_token` already merged tokens split across runs.
 
 - **Entry:** Phase 9 done.
+- **Deliverables:**
+  - `mapping/verifier.py`: European numbers when unambiguous (`1.829.914,84`, `444.132,10`, `10,50`); English and Spanish month-name dates (`30 junio 2022`, `1 de junio de 2022`, `30 jun. 2022`, `June 30 2022`);
+  - `jobs/handlers.py` `map_run`: `replace_token` fields that share `(token, expected_type, label)` are mapped once per run and share the result (one retrieval and LLM call, the same value on every slide);
+  - pptx regression test for a token split across three runs.
+- **Exit:**
+  - Tests: European and US numbers canonicalize to the same value, ambiguous single-group forms keep the US reading; Spanish and English dates match ISO values, impossible dates and lookalike month words are rejected; repeated tokens cost one `map_field` call, a different `expected_type` or label is not shared; a 3-run split token renders with no leftover token;
+  - manual: re-seed the finance deck, map it against the Spanish statement in Open WebUI, and record the populated / missing / conflict counts here.
+- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 165 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1117 passed (Phases 1-10). Manual live test pending.
+
+## Phase 11: Conversational edits & run versioning
+
+- **Entry:** Phase 10 done.
 - **Deliverables:**
   - `chat/edits.py`;
   - `POST …/mapping-runs/{run_id}/edits`;
@@ -226,9 +241,9 @@ Inserted after Phase 8 (cause: users should be able to generate a deck or docume
   - Tests: every `EditOp` and its validation errors (422, nothing applied); parent run unchanged; version increments; `choose_candidate` only on `conflict`;
   - end-to-end chat edit produces v2 artifact.
 
-## Phase 11: Hardening, evaluation & audit
+## Phase 12: Hardening, evaluation & audit
 
-- **Entry:** Phase 10 done.
+- **Entry:** Phase 11 done.
 - **Deliverables:**
   - full eval suite + report;
   - RAM and latency measurements against [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory) and NFR-3;

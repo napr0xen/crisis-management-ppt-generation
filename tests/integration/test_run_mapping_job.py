@@ -218,3 +218,43 @@ async def test_failure_hook_leaves_a_finished_run_untouched(sm, user_a, status):
     await make_failure_hooks(sm)["run_mapping"](job, ctx, "interrupted")
     run, _ = await state(sm, ctx, run_id, job_id)
     assert run.status == status and run.finished_at is None
+
+
+async def test_run_mapping_reuses_one_result_per_repeated_token(sm, user_a, monkeypatch):
+    ctx, run_id, job_id, _ = await queue_run(sm, user_a, ("f_a", "f_b", "f_c", "f_d"))
+    tokens = dict.fromkeys(("f_a", "f_b", "f_c", "f_d"), "[Reporting Period]")
+    # f_c: same token, other label (a generic blank); f_d: other expected_type. Neither is shared.
+    other = {"f_c": {"label": "Other"}, "f_d": {"expected_type": "date"}}
+    async with sm.begin() as s:
+        run = await repo.get_mapping_run(s, ctx, run_id)
+        ir = await repo.get_template_ir_by_id(s, ctx, run.template_ir_id)
+        fields = [
+            {
+                **f,
+                "write_mode": "replace_token",
+                "constraints": {"token": tokens[f["field_id"]]},
+                **other.get(f["field_id"], {}),
+            }
+            for f in ir.ir["fields"]
+        ]
+        ir.ir = {**ir.ir, "fields": fields}
+    calls, rendered = [], []
+
+    async def fake_map(c, field, document_ids, retriever, llm):
+        calls.append(field.field_id)
+        return missing(field, document_ids)
+
+    def fake_render(fmt, template, fields, results, **kwargs):
+        rendered.append(results)
+        return b"PK\x03\x04fake", []
+
+    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr("doc_intel.writers.render", fake_render)
+    await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
+
+    run, job = await state(sm, ctx, run_id, job_id)
+    assert calls == ["f_a", "f_c", "f_d"]
+    assert job.status == "succeeded" and job.progress["done"] == 4
+    assert list(run.results) == ["f_a", "f_b", "f_c", "f_d"]
+    assert run.results["f_b"] == {**run.results["f_a"], "field_id": "f_b"}
+    assert set(rendered[0]) == {"f_a", "f_b", "f_c", "f_d"}

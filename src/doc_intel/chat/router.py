@@ -1,7 +1,7 @@
 """Intent routing for `POST /v1/pipe/chat` (system-design § 9.4).
 
 One JSON LLM call over the last messages and the project's document list (ids, filenames,
-roles). No document text is sent. Phase 8 intents: qa, map_template, chitchat (edit is Phase 10).
+roles). No document text is sent. Phase 8 intents: qa, map_template, chitchat (edit is Phase 11).
 """
 
 import re

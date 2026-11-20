@@ -2,7 +2,7 @@
 
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from doc_intel.embeddings.schemas import Hit
@@ -17,23 +17,47 @@ _PUNCT = str.maketrans(
     }
 )
 _WS = re.compile(r"\s+")
-# shortcut: "1,5" (decimal comma) and "12.000" (dot thousands) read as English numbers, add a
-# locale-aware parser when non-English documents need typed values.
+# shortcut: single-group "12.000" and "1,234" read as US numbers, add a per-document locale hint
+# when a source writes single-group European numbers.
+# European reads only when unambiguous: dot groups + decimal comma ("1.829.914,84"), two or more
+# dot groups ("1.829.914"), or a 1-2 digit decimal comma ("752,76", "0,5", "12,34").
 # Sign only when not glued to a word or dash ("COVID-19", "10-12" are not negative); a following
 # magnitude word scales the number ("2.5 million" == 2500000).
 # Thousands separators only in proper groups ("3,4,5" is three numbers); no sign after % or $.
 _NUMBER = re.compile(
-    r"(?:(?<![\w%$-])(-))?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(thousand|million|billion)\b)?"
+    r"(?:(?<![\w%$-])(-))?"
+    r"(\d{1,3}(?:\.\d{3})+,\d+|\d{1,3}(?:\.\d{3}){2,}|\d{1,3}(?:,\d{3})+(?:\.\d+)?"
+    r"|(?<!\d[.,])\d+,\d{1,2}(?!\d|[.,]\d)|\d+(?:\.\d+)?)"
+    r"(?:\s*(thousand|million|billion)\b)?"
 )
 _SCALE = {"thousand": 10**3, "million": 10**6, "billion": 10**9}
 TYPED_TYPES = frozenset({"number", "currency", "percent", "date"})
-# shortcut: ISO and English month-name dates only (no 03/04/2026: day/month order is ambiguous),
-# add formats when the eval set has them.
-_DATES = [
-    (re.compile(r"\b\d{4}-\d{2}-\d{2}\b"), "%Y-%m-%d"),
-    (re.compile(r"\b\d{1,2} [A-Za-z]+ \d{4}\b"), "%d %B %Y"),
-    (re.compile(r"\b[A-Za-z]+ \d{1,2}, \d{4}\b"), "%B %d, %Y"),
-]
+_MONTH_NAMES = {
+    "en": "january february march april may june july august september october november december",
+    "es": "enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre"
+    " diciembre",
+}
+_MONTHS = {
+    w: i
+    for names in _MONTH_NAMES.values()
+    for i, name in enumerate(names.split(), 1)
+    for w in (name, name[:3])
+}
+_MONTHS.update({"sept": 9, "setiembre": 9})
+# shortcut: ISO and English/Spanish month-name dates only (no 03/04/2026: day/month order is
+# ambiguous), add formats when the eval set has them.
+_WORD = r"([^\W\d_]+)\.?"
+_ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_DMY = re.compile(rf"\b(\d{{1,2}}) (?:del? )?{_WORD} (?:del? )?(\d{{4}})\b")
+_MDY = re.compile(rf"\b{_WORD} (\d{{1,2}}),? (\d{{4}})\b")
+
+
+def _decimal(num: str) -> Decimal:
+    if "," in num:
+        european = ("." in num and num.index(".") < num.index(",")) or len(num.split(",")[-1]) <= 2
+    else:
+        european = num.count(".") >= 2
+    return Decimal(num.replace(".", "").replace(",", ".") if european else num.replace(",", ""))
 
 
 def normalize(s: str) -> str:
@@ -54,19 +78,23 @@ def verify_quote(hits: list[Hit], chunk_id: str, quote: str) -> Hit | None:
 
 def _numbers(s: str) -> set[Decimal]:
     found = set()
-    for sign, digits, fraction, scale in _NUMBER.findall(normalize(s)):
-        n = Decimal(digits.replace(",", "") + fraction) * _SCALE.get(scale, 1)
+    for sign, num, scale in _NUMBER.findall(normalize(s)):
+        n = _decimal(num) * _SCALE.get(scale, 1)
         found.add(-n if sign else n)
     return found
 
 
 def _dates(s: str) -> set[date]:
     found = set()
-    for rx, fmt in _DATES:
+    for rx, order in ((_ISO, "ymd"), (_DMY, "dmy"), (_MDY, "mdy")):
         for m in rx.findall(s):
+            parts = dict(zip(order, m, strict=True))
+            month = (
+                _MONTHS.get(parts["m"].casefold()) if not parts["m"].isdigit() else int(parts["m"])
+            )
             try:
-                found.add(datetime.strptime(m, fmt).date())
-            except ValueError:  # "4 Marchy 2026": a lookalike, not a date
+                found.add(date(int(parts["y"]), month, int(parts["d"])))
+            except (ValueError, TypeError):  # "4 Marchy 2026", "31 febrero 2022": not dates
                 continue
     return found
 
