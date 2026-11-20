@@ -8,7 +8,14 @@ from structlog.testing import capture_logs
 from doc_intel.core.errors import IRInvalid
 from doc_intel.llm.gateway import RETRY_ECHO_CHARS, LLMError
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.templates.ir_builder import BatchDraft, build_ir, validate
+from doc_intel.templates.ir_builder import (
+    MAX_BATCH_CHARS,
+    BatchDraft,
+    _batches,
+    _compact,
+    build_ir,
+    validate,
+)
 from doc_intel.templates.schemas import (
     WRITE_MODE_KINDS,
     Anchor,
@@ -514,3 +521,13 @@ async def test_ir_invalid_log_redacts_non_structural_ids():
     assert "Payroll" not in logged and "client_name" not in logged and "Invented" not in logged
     assert "'a'" in logged and "'replace_text'" in logged and "'?'" in logged
     assert "'pptx:s9:sp10_2:r1c0'" in logged  # keyed pptx ids are structural
+
+
+def test_batches_are_capped_by_prompt_size_not_only_anchor_count():
+    """40 long-text docx paragraphs fit the anchor cap but not the token budget."""
+    anchors = [_anchor(f"docx:body:p{i}", text="w" * 400) for i in range(40)]
+    batches = _batches(AnchorMap(format="docx", anchors=anchors))
+    assert len(batches) > 1
+    assert [a for _, b in batches for a in b] == anchors  # order kept, nothing dropped
+    for _, batch in batches:
+        assert len(_compact(AnchorMap(format="docx", anchors=batch))) <= MAX_BATCH_CHARS

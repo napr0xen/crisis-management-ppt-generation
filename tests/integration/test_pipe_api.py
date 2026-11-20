@@ -297,6 +297,15 @@ async def test_unknown_file_id_warns_by_filename_and_continues(client, user_a, m
     assert events(frames)[-1] == "done"
 
 
+async def test_skip_message_escapes_the_filename(client, user_a, monkeypatch):
+    set_intent(monkeypatch, Intent(intent="chitchat"))
+    _, frames = chat(
+        client, user_a, files=[("ghost-id", "![t](https://tracker.example/p.png).pdf")]
+    )
+    skip = next(d["content"] for e, d in frames if e == "delta" and "skipped" in d["content"])
+    assert "![t](" not in skip and "\\!\\[t\\]\\(https://tracker.example/p.png\\).pdf" in skip
+
+
 async def test_map_template_without_a_choice_lists_candidates(client, session, user_a, monkeypatch):
     doc_id = send_file(client, user_a).json()["document_id"]
     await force_doc(session, user_a, uuid.UUID(doc_id), status="indexed")

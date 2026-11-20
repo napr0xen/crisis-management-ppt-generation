@@ -35,7 +35,7 @@ _WARNINGS = {
 }
 
 
-def _md(text: str) -> str:
+def md(text: str) -> str:
     """Escape markdown/HTML metacharacters: Open WebUI renders document-derived text, so a quote
     like `![x](https://evil/p.png)` would otherwise fire an image request."""
     return re.sub(r"([\\`*_\[\]()!<>#|])", r"\\\1", text)
@@ -61,14 +61,14 @@ def _clip(text: str, limit: int) -> str:
 
 
 def _cite(filename: str, page: int | None) -> str:
-    name = _md(filename)
+    name = md(filename)
     return f"{name} p.{page}" if page is not None else name
 
 
 def _value(value: Value) -> str:
     if isinstance(value, list):
         value = "; ".join(" | ".join(r) if isinstance(r, list) else r for r in value)
-    return _md(_clip(str(value), _VALUE_CHARS))
+    return md(_clip(str(value), _VALUE_CHARS))
 
 
 def render_answer(answer: Answer) -> str:
@@ -77,7 +77,7 @@ def render_answer(answer: Answer) -> str:
     if not answer.citations:
         return body
     lines = [
-        f'[{c.marker}] {_cite(c.filename, c.page_number)}: "{_md(_clip(c.quote, _QUOTE_CHARS))}"'
+        f'[{c.marker}] {_cite(c.filename, c.page_number)}: "{md(_clip(c.quote, _QUOTE_CHARS))}"'
         for c in sorted(answer.citations, key=lambda c: c.marker)
     ]
     return body + "\n\n**Sources**\n\n" + "\n".join(lines)
@@ -94,7 +94,7 @@ def render_summary(
     labels = {f.field_id: f.label for f in ir.fields}
 
     def label(field_id: str) -> str:
-        return _md(labels.get(field_id, field_id))
+        return md(labels.get(field_id, field_id))
 
     def cites(evidence: list[Evidence]) -> str:
         return ", ".join(_cite(e.filename, e.page_number) for e in evidence)
@@ -144,7 +144,7 @@ def render_candidates(documents: list[Document]) -> str:
     templates = [d for d in documents if doc_format(d) in TEMPLATE_FORMATS]
     if not templates:
         return "I found no template. Please attach a PPTX, DOCX or XLSX template to fill."
-    lines = [f"{i}. {_md(d.filename)}" for i, d in enumerate(templates, 1)]
+    lines = [f"{i}. {md(d.filename)}" for i, d in enumerate(templates, 1)]
     return (
         "Which template should I fill?\n\n"
         + "\n".join(lines)

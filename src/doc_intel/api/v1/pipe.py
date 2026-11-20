@@ -21,6 +21,7 @@ from doc_intel.chat.qa import answer
 from doc_intel.chat.router import ChatMessage, route
 from doc_intel.chat.summary import (
     HELP_TEXT,
+    md,
     render_answer,
     render_candidates,
     render_summary,
@@ -222,7 +223,7 @@ async def _flow(
     known = {fid for d in referenced for fid in d.openwebui_file_ids}
     for fid, name in names.items():
         if fid not in known:
-            deltas.append(f"I could not find the uploaded file {name}, so I skipped it.")
+            deltas.append(f"I could not find the uploaded file {md(name)}, so I skipped it.")
 
     # Wait on every pending document of the project, not only the referenced ones: the router
     # lists them all and a template pick purges Qdrant points.
@@ -243,10 +244,10 @@ async def _flow(
         async for frame in _watch(request, load, _ingest_text(doc.filename), box):
             yield frame
         if box[0] is not None and box[0].status == "failed":
-            deltas.append(f"I could not read {doc.filename}, so I skipped it.")
+            deltas.append(f"I could not read {md(doc.filename)}, so I skipped it.")
     for doc in referenced:
         if doc.status == "failed":
-            deltas.append(f"I could not read {doc.filename}, so I skipped it.")
+            deltas.append(f"I could not read {md(doc.filename)}, so I skipped it.")
 
     async with sessionmaker.begin() as session:
         documents = await repo.list_documents(session, ctx, 200)

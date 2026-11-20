@@ -40,8 +40,11 @@ def _loggable(errors: list[str]) -> list[str]:
 
 
 _TEXT_CUT = 200
-# ~40 compact anchors stay ~3k tokens, so prompt + a num_ctx//2 reply fit LLM_NUM_CTX=8192.
+# A batch prompt stays <= ~3.5k tokens (12,000 JSON chars), so it, the system prompt and a
+# num_ctx//2 reply fit LLM_NUM_CTX=8192; the anchor cap also bounds the reply's field count.
 MAX_BATCH_ANCHORS = 40
+MAX_BATCH_CHARS = 12_000
+_FRAME_CHARS = 40  # '{"format": "pptx", "anchors": []}' around the items
 _CELL = re.compile(r":r\d+c\d+$")  # pptx:s5:sp4:r1c2 -> table pptx:s5:sp4
 
 
@@ -120,23 +123,29 @@ def validate(draft: IRDraft, amap: AnchorMap) -> list[str]:
     return errors
 
 
+def _item(a: Anchor) -> dict:
+    item: dict = {
+        "anchor_id": a.anchor_id,
+        "kind": a.kind,
+        "path": a.path,
+        "text": a.text[:_TEXT_CUT],
+        "tokens": a.tokens,
+        "is_placeholder": a.is_placeholder,
+    }
+    if a.pos:
+        item["pos"] = list(a.pos)
+    if a.table:
+        item["table"] = {"row": a.table.row, "col": a.table.col, "header": a.table.header}
+    return item
+
+
 def _compact(amap: AnchorMap) -> str:
-    anchors = []
-    for a in amap.anchors:
-        item: dict = {
-            "anchor_id": a.anchor_id,
-            "kind": a.kind,
-            "path": a.path,
-            "text": a.text[:_TEXT_CUT],
-            "tokens": a.tokens,
-            "is_placeholder": a.is_placeholder,
-        }
-        if a.pos:
-            item["pos"] = list(a.pos)
-        if a.table:
-            item["table"] = {"row": a.table.row, "col": a.table.col, "header": a.table.header}
-        anchors.append(item)
+    anchors = [_item(a) for a in amap.anchors]
     return json.dumps({"format": amap.format, "anchors": anchors}, ensure_ascii=False)
+
+
+def _size(a: Anchor) -> int:
+    return len(json.dumps(_item(a), ensure_ascii=False)) + 2  # + ", " between items
 
 
 _SLIDE = re.compile(r"^pptx:s(\d+):")
@@ -165,16 +174,24 @@ def _batches(amap: AnchorMap) -> list[tuple[str | None, list[Anchor]]]:
         # never the sheet name: it is template content
         label = {"pptx": f"slide {key}" if key else None, "xlsx": f"sheet {index}"}.get(amap.format)
         current: list[Anchor] = []
+        chars = _FRAME_CHARS
+
+        def fits(n: int, size: int) -> bool:
+            return n <= MAX_BATCH_ANCHORS and size <= MAX_BATCH_CHARS
+
         for _, unit_iter in groupby(group, lambda a: _table_of(a.anchor_id)):
             unit = list(unit_iter)
+            sizes = [_size(a) for a in unit]
             # a non-cell anchor is its own unit (its key is its own id), a table's cells share one
-            if len(current) + len(unit) > MAX_BATCH_ANCHORS and current:
+            if current and not fits(len(current) + len(unit), chars + sum(sizes)):
                 out.append((label, current))
-                current = []
-            current += unit
-            while len(current) > MAX_BATCH_ANCHORS:  # a unit over the cap: row-major chunks
-                out.append((label, current[:MAX_BATCH_ANCHORS]))
-                current = current[MAX_BATCH_ANCHORS:]
+                current, chars = [], _FRAME_CHARS
+            for a, size in zip(unit, sizes, strict=True):
+                if current and not fits(len(current) + 1, chars + size):  # a unit over a cap
+                    out.append((label, current))  # is split in row-major order
+                    current, chars = [], _FRAME_CHARS
+                current.append(a)
+                chars += size
         if current:
             out.append((label, current))
     return out

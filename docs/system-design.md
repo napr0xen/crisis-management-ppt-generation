@@ -132,7 +132,7 @@ Stage 2. The LLM proposes fields from the AnchorMap (prompt `llm/prompts/templat
 The AnchorMap is sent in **batches**, not one prompt: a whole AnchorMap can outgrow `LLM_NUM_CTX`, and Ollama silently drops the start of an over-long prompt, where the rules are. Measured: a 10-slide deck gave 212 anchors and a ~12.6k-token prompt. Batches are built like this:
 - anchors are grouped by slide (pptx), by sheet (xlsx) or as one group (docx);
 - a table's cells stay together;
-- each batch holds at most `MAX_BATCH_ANCHORS = 40` anchors (`ir_builder.py`) and never mixes groups. A table larger than that is split in row order.
+- each batch holds at most `MAX_BATCH_ANCHORS = 40` anchors and at most `MAX_BATCH_CHARS = 12,000` characters of compact JSON (~3.5k tokens; `ir_builder.py`), and never mixes groups. A table larger than either cap is split in row order.
 
 Batches run sequentially, and each is validated against its own anchors only. Cells of a table already owned by a `fill_table_rows` field from an earlier batch are not sent again. The fields are then merged in order. A `field_id` already used by an earlier batch is renamed `{id[:60]}_{n}` with the smallest free `n ≥ 2`, and the merged IR is validated once more against the full AnchorMap.
 
@@ -515,7 +515,7 @@ Common rules:
    - every `conflict` (each candidate value + citations);
    - `partial` fields and warnings;
    - the signed download link.
-   - Escaping: document-derived text (filenames, quotes, values, labels) is markdown-escaped, so an image or link inside a document cannot make Open WebUI fetch anything. The LLM answer keeps its `[n]` markers but loses images, links and raw HTML (`_answer_md`).
+   - Escaping: document-derived text (filenames, quotes, values, labels, and the filenames in skip and upload-failure messages, in the backend and in the Pipe) is markdown-escaped with `md()`, so an image or link inside a document cannot make Open WebUI fetch anything. The LLM answer keeps emphasis, lists and tables, but every backslash, bracket and angle bracket in it is escaped and only plain `[n]` markers are restored (never one followed by `(`, `[` or `:`), so no inline or reference-style link, image, definition or raw HTML can form (`_answer_md`).
 
 ## 10. Conversational edits (`chat/edits.py`)
 

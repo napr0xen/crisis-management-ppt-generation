@@ -157,6 +157,17 @@ async def test_files_deduped_and_multipart() -> None:
     assert {"Uploading a.pdf", "Uploading b.docx"} <= {s["data"]["description"] for s in h.statuses}
 
 
+async def test_upload_failure_message_escapes_the_filename() -> None:
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v1/pipe/files":
+            return envelope(415, "unsupported_media_type", "Unsupported file type.")
+        return ok_chat(req)
+
+    h = Harness(handler)
+    text = await h.run(msgs(), files=[{"id": "f1", "name": "![t](https://tracker.example/p.png)"}])
+    assert "![t](" not in text and "\\!\\[t\\]\\(https://tracker.example/p.png\\)" in text
+
+
 async def test_upload_failure_message_and_exclusion() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/v1/pipe/files":

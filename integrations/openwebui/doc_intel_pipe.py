@@ -10,12 +10,19 @@ The Pipe holds no state and no business logic: it uploads files and relays chat 
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 
 import httpx
 from pydantic import BaseModel, Field
 
 MAX_MESSAGES = 20
+_MD_META = re.compile(r"([\\`*_\[\]()!<>#|])")
+
+
+def _md(text: str) -> str:
+    """Escape markdown in a filename: Open WebUI renders the reply, so `![x](url)` would load."""
+    return _MD_META.sub(r"\\\1", text)
 
 
 def _text(content: object) -> str:
@@ -82,17 +89,18 @@ class Pipe:
         self, client: httpx.AsyncClient, file_id: str, name: str, user_id: str
     ) -> str | None:
         """Upload one file; return None on success or a user-facing failure line."""
+        label = _md(name)
         try:
             data = await self._read_file(file_id, user_id)
             resp = await client.post(
                 "/v1/pipe/files", files={"file": (name, data)}, data={"openwebui_file_id": file_id}
             )
         except httpx.HTTPError as exc:
-            return f"Could not upload {name}: {_transport_message(exc)}"
+            return f"Could not upload {label}: {_transport_message(exc)}"
         except Exception:
-            return f"Could not upload {name}: the file could not be read."
+            return f"Could not upload {label}: the file could not be read."
         if resp.status_code != 201:
-            return f"Could not upload {name}: {_error_message(resp)}"
+            return f"Could not upload {label}: {_error_message(resp)}"
         return None
 
     async def pipe(
