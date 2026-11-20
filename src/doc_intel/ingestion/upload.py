@@ -55,7 +55,7 @@ def _content_matches(ext: str, data: bytes) -> bool:
         # shortcut: by part name; an XML part declared under another name in [Content_Types].xml
         # escapes this cap (the 512 MB total still holds), check content types if that appears.
         if any(
-            m.file_size > MAX_XML_PART_BYTES and m.filename.endswith((".xml", ".rels"))
+            m.file_size > MAX_XML_PART_BYTES and m.filename.lower().endswith((".xml", ".rels"))
             for m in members
         ):
             raise PayloadTooLarge("A part of the file is too large.")

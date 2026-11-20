@@ -141,6 +141,7 @@ def test_one_oversized_xml_part_is_413_but_big_media_is_not(monkeypatch):
             z.writestr(part, b"0" * 2_000)
         return buf.getvalue()
 
-    with pytest.raises(PayloadTooLarge):
-        validate_upload("a.docx", docx("word/styles.xml"), LIMIT * 100)
+    for part in ("word/styles.xml", "word/Styles.XML", "word/_rels/x.RELS"):  # names ignore case
+        with pytest.raises(PayloadTooLarge):
+            validate_upload("a.docx", docx(part), LIMIT * 100)
     assert validate_upload("a.docx", docx("word/media/clip.mp4"), LIMIT * 100).ext == "docx"
