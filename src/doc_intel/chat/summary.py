@@ -41,11 +41,18 @@ def _md(text: str) -> str:
     return re.sub(r"([\\`*_\[\]()!<>#|])", r"\\\1", text)
 
 
+_ANSWER_META = re.compile(r"([\\\[\]<>])")
+# a plain [n] marker, never one that would open an inline link, a reference link or a definition
+_MARKER = re.compile(r"\\\[(\d+)\\\](?![(:]|\\\[)")
+
+
 def _answer_md(text: str) -> str:
-    """LLM answer: stays markdown (for the [n] markers) but loses images, links and raw HTML."""
+    """LLM answer: keeps emphasis, lists and tables, but no link, image, reference definition or
+    raw HTML can form: every bracket and backslash is escaped, then only [n] markers restored."""
+    # cosmetic: drop inline images and keep inline link text; the escaping below is the guard
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    return text.replace("<", "\\<").replace(">", "\\>")
+    return _MARKER.sub(r"[\1]", _ANSWER_META.sub(r"\\\1", text))
 
 
 def _clip(text: str, limit: int) -> str:
