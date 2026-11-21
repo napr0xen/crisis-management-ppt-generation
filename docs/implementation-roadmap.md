@@ -29,9 +29,10 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 7 | Surgical writers & artifacts | **Complete** |
 | 8 | Open WebUI Pipe & chat orchestration | **Complete** |
 | 9 | Template library | **Complete** |
-| 10 | Universal mapping fixes | automated gate passed, live test pending |
-| 11 | Conversational edits & run versioning | automated gate passed, live test pending |
-| 12 | Hardening, evaluation & audit | automated gate passed, live test pending |
+| 10 | Universal mapping fixes | **Complete** |
+| 11 | Conversational edits & run versioning | **Complete** |
+| 12 | Hardening, evaluation & audit | **Complete** |
+| next | Universal extraction & mapping accuracy | next priority, not yet planned ([below](#next-priority-universal-extraction--mapping-accuracy)) |
 
 ---
 
@@ -126,15 +127,6 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
   - validator rejects unknown/duplicate anchors and invalid `write_mode`;
   - an IR built for each fixture passes the validator.
 - **Checkpoints:** `/ponytail-audit` (whole repo).
-- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 172 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest --cov=src/doc_intel` 1196 passed, 1 deselected (`perf`), coverage 98%.
-  - Eval (hard gates pass): Q&A and mapping 0 fabricated citations, 100% citation verification; unanswerable 100% "not found"; absent fields 100% `missing`; seeded conflicts 5 of 5; field accuracy 95.5%; source recall@8 100% ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)).
-  - NFR-3 and RAM measured and recorded in [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory): 50-page ingest 23.7 s, Q&A max 13.5 s, 30 fields over 5 sources 250.6 s; all targets met.
-  - Confidence tiers calibrated on the eval set (0.9: 12/12 correct, 0.8: 9/9), kept unchanged ([system-design.md § 6](system-design.md#6-fieldmappingresult)).
-  - `tests/security/test_log_redaction.py`: a sentinel in documents, filenames, labels, chat, LLM replies and edit values never reaches structlog, stdlib logs or stdout across every job handler, chat intent and error path.
-  - Security review (no critical/high): fixed escaping of code fences, `~`, newlines and bare URLs (backend `md()`/`_answer_md` and the Pipe); edit replies list every applied op; optional `QDRANT_API_KEY`; Docling `MAX_PAGES = 1000`; 32 MB cap per OOXML XML part on upload; chat questions capped at 2,000 chars; `--no-access-log` in the run command (signed download URLs no longer in access logs). Left as known: uploads spooled before auth (existing shortcut), `/v1/health` does not flag a remote embedding/LLM URL, router auto-confirms the only template-capable document (existing shortcut), `/docs` served without auth.
-  - `/ponytail-audit`: no must-fix; fixed 1-based conflict candidate numbers in chat, tenant test for `latest_completed_mapping_run`, size caps on edit ops.
-  - README quick start verified on a clean clone of `phase-11-conversational-edits`: `uv sync`, `alembic upgrade head`, `uvicorn`, `/v1/health` all `ok`.
-  - [ ] manual: live Open WebUI pass (see Phase 10 and 11 manual items), plus: a source whose text contains a ```html fence and a `https://` URL renders as plain text in a Q&A answer; optionally set `QDRANT_API_KEY` in `.env`, `docker compose up -d`, restart the API, and confirm `/v1/health` and a Q&A still work.
 - **Status:** Complete (2026-11-19). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 117 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 535 passed (Phases 1-5).
   - Live smoke: qwen3:14b built a valid TemplateIR for the pptx/docx/xlsx fixtures (19-60 s per template).
   - Known limits:
@@ -235,8 +227,9 @@ Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped agains
   - pptx regression test for a token split across three runs.
 - **Exit:**
   - Tests: European and US numbers canonicalize to the same value, ambiguous single-group forms keep the US reading; Spanish and English dates match ISO values, impossible dates and lookalike month words are rejected; repeated tokens cost one `map_field` call, a different `expected_type` or label is not shared; a 3-run split token renders with no leftover token;
-  - manual: re-seed the finance deck, map it against the Spanish statement in Open WebUI, and record the populated / missing / conflict counts here.
-- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 165 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1117 passed (Phases 1-10). Manual live test pending.
+  - [x] manual: re-seed the finance deck, map it against the Spanish statement in Open WebUI, and record the populated / missing / conflict counts here.
+- **Status:** Complete (2026-11-21). Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 165 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1117 passed (Phases 1-10).
+  - Live test passed (2026-11-21, Open WebUI): a finance pptx template mapped against a Spanish PDF source. Spanish dates and European currency verified, the first slide's KPIs and dates populated, and a token repeated on all 8 slides (the reporting period) has the same value on each. Populated / missing / conflict counts were not recorded.
 
 ## Phase 11: Conversational edits & run versioning
 
@@ -249,8 +242,9 @@ Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped agains
 - **Exit:**
   - Tests: every `EditOp` and its validation errors (422, nothing applied); parent run unchanged; version increments; `choose_candidate` only on `conflict`;
   - end-to-end chat edit produces v2 artifact.
-- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 170 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1178 passed (Phases 1-11). Covered: `chat/edits.py` (`apply_edits`, `parse_edits`, prompt `edits.md`), `POST …/mapping-runs/{run_id}/edits` (`start_edit_run`), router `edit` intent, Pipe edit turn (`render_artifact` → `_v2` artifact), repeated-token siblings share an edit, chat `set_value` must quote the user's words (ADR-013). No migration (the columns existed since Phase 1).
-  - [ ] manual: in Open WebUI, after a filled deck, "set <field> to <value>" → v2 download with the value; "use the first value for <conflict field>" → v3; "clear <field>" → missing marker; a value not written in the message is refused; the v1 link still downloads.
+- **Status:** Complete (2026-11-21). Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 170 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1178 passed (Phases 1-11). Covered: `chat/edits.py` (`apply_edits`, `parse_edits`, prompt `edits.md`), `POST …/mapping-runs/{run_id}/edits` (`start_edit_run`), router `edit` intent, Pipe edit turn (`render_artifact` → `_v2` artifact), repeated-token siblings share an edit, chat `set_value` must quote the user's words (ADR-013). No migration (the columns existed since Phase 1).
+  - [x] manual: in Open WebUI, after a filled deck, "set <field> to <value>" → v2 download with the value; "use the first value for <conflict field>" → v3; "clear <field>" → missing marker; a value not written in the message is refused; the v1 link still downloads.
+  - Live test passed (2026-11-21, Open WebUI): "change bank name to <name>" produced a `_v3` pptx with only that field changed and every other field kept.
 
 ## Phase 12: Hardening, evaluation & audit
 
@@ -267,7 +261,7 @@ Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped agains
   - eval hard gates pass (0 fabricated citations, 100% citation verification);
   - measured numbers recorded in `docs/architecture.md`.
 - **Checkpoints:** `/ponytail-audit` (whole repo).
-- **Status:** In progress. Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 172 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest --cov=src/doc_intel` 1196 passed, 1 deselected (`perf`), coverage 98%.
+- **Status:** Complete (2026-11-21). Automated gate passed (2026-11-21): `uv run ruff check .` all checks passed; `uv run ruff format --check .` 172 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest --cov=src/doc_intel` 1196 passed, 1 deselected (`perf`), coverage 98%.
   - Eval (hard gates pass): Q&A and mapping 0 fabricated citations, 100% citation verification; unanswerable 100% "not found"; absent fields 100% `missing`; seeded conflicts 5 of 5; field accuracy 95.5%; source recall@8 100% ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)).
   - NFR-3 and RAM measured and recorded in [architecture.md § 6](architecture.md#6-memory-budget-24-gb-unified-memory): 50-page ingest 23.7 s, Q&A max 13.5 s, 30 fields over 5 sources 250.6 s; all targets met.
   - Confidence tiers calibrated on the eval set (0.9: 12/12 correct, 0.8: 9/9), kept unchanged ([system-design.md § 6](system-design.md#6-fieldmappingresult)).
@@ -275,4 +269,21 @@ Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped agains
   - Security review (no critical/high): fixed escaping of code fences, `~`, newlines and bare URLs (backend `md()`/`_answer_md` and the Pipe); edit replies list every applied op; optional `QDRANT_API_KEY`; Docling `MAX_PAGES = 1000`; 32 MB cap per OOXML XML part on upload; chat questions capped at 2,000 chars; `--no-access-log` in the run command (signed download URLs no longer in access logs). Left as known: uploads spooled before auth (existing shortcut), `/v1/health` does not flag a remote embedding/LLM URL, router auto-confirms the only template-capable document (existing shortcut), `/docs` served without auth.
   - `/ponytail-audit`: no must-fix; fixed 1-based conflict candidate numbers in chat, tenant test for `latest_completed_mapping_run`, size caps on edit ops.
   - README quick start verified on a clean clone of `phase-11-conversational-edits`: `uv sync`, `alembic upgrade head`, `uvicorn`, `/v1/health` all `ok`.
-  - [ ] manual: live Open WebUI pass (see Phase 10 and 11 manual items), plus: a source whose text contains a ```html fence and a `https://` URL renders as plain text in a Q&A answer; optionally set `QDRANT_API_KEY` in `.env`, `docker compose up -d`, restart the API, and confirm `/v1/health` and a Q&A still work.
+  - [x] manual: live Open WebUI pass (see Phase 10 and 11 manual items), plus: a source whose text contains a ```html fence and a `https://` URL renders as plain text in a Q&A answer; optionally set `QDRANT_API_KEY` in `.env`, `docker compose up -d`, restart the API, and confirm `/v1/health` and a Q&A still work.
+  - Live test passed (2026-11-21): the Phase 10 and 11 Open WebUI passes above.
+
+---
+
+## Next priority: universal extraction & mapping accuracy
+
+Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found in the Phase 10-12 live tests, where the filled finance deck still shows these gaps.
+
+**Two strict requirements, for every item below:**
+1. **Completely universal.** No finance-, language- or template-specific rules, keywords, field names, labels or layouts. Every fix must generalize to any template (pptx/docx/xlsx) and any source document, and is tested on at least two unrelated domains.
+2. **Accuracy pushed to the maximum possible**, measured on the eval set ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)) before and after each change, without loosening the existing hard gates (0 fabricated citations, 100% citation verification, conflicts never auto-resolved).
+
+**Gaps:**
+- **Clean currency and number formatting.** Typed values are written as their canonical form (for example a bare float), not formatted the way the template or source shows them (thousands separators, decimals, currency symbol or code, percent sign). The written text must follow the template's own example or the source's format; xlsx cells keep real numbers.
+- **Consistent cross-slide values.** Only fields that share one `replace_token` key share a value. Fields with different tokens or anchors that ask for the same fact (the same label and type on several slides) can still get different values or statuses.
+- **Accurate row-grouped tables.** `fill_table_rows` rows must each come from one record in the source, with cells from the same row or entity, never mixed across records. Row order and count follow the source.
+- **Grounded synthesis for summary and finding fields.** `paragraphs` and `bullet_list` fields that need a short summary (findings, conclusions, highlights) end up `missing` or `partial` because no single quote matches. They may be synthesized only if every sentence or bullet is backed by verified quotes, with citations kept per sentence; anything not backed stays out.
