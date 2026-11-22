@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # ollama `think` / openai_compat chat_template_kwargs.enable_thinking; off: at temperature 0
     # qwen3 reasoning can loop until the timeout
     llm_enable_thinking: bool = False
+    # openai_compat only: send chat_template_kwargs (mlx_lm.server, LM Studio, vLLM need it to
+    # switch Qwen3 reasoning off); strict OpenAI-compatible servers reject the field
+    llm_chat_template_kwargs: bool = False
     qdrant_collection: str = "doc_chunks"  # tests use their own collection
     # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
     # RAM budget fits one Docling/LLM job at a time (ADR-010); revisit with more memory.

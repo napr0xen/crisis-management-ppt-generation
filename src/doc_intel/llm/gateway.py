@@ -112,9 +112,10 @@ class OpenAICompatClient:
         num_ctx: int,
         timeout_s: float,
         think: bool,
+        template_kwargs: bool,
     ) -> None:
         self._http, self._model, self._timeout = http, model, timeout_s
-        self._num_ctx, self._think = num_ctx, think
+        self._num_ctx, self._think, self._template_kwargs = num_ctx, think, template_kwargs
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         key = api_key.get_secret_value()
         self._headers = {"Authorization": f"Bearer {key}"} if key else None
@@ -125,10 +126,9 @@ class OpenAICompatClient:
             "messages": messages,
             "temperature": 0,
             "max_tokens": reply_tokens(self._num_ctx, self._think),  # mlx_lm.server defaults to 512
-            # shortcut: local servers (mlx_lm, LM Studio, vLLM) take this, the OpenAI cloud API
-            # rejects unknown fields; drop it if a cloud endpoint is ever configured.
-            "chat_template_kwargs": {"enable_thinking": self._think},
         }
+        if self._template_kwargs:  # opt-in: strict OpenAI-compatible servers reject the field
+            body["chat_template_kwargs"] = {"enable_thinking": self._think}
         if json_schema is not None:
             # Servers that ignore this (mlx_lm.server) are covered by complete_json's retry.
             body["response_format"] = {
@@ -163,6 +163,7 @@ def make_llm_client(settings: Settings, http: httpx.AsyncClient) -> LLMClient:
         settings.llm_num_ctx,
         settings.llm_timeout_seconds,
         settings.llm_enable_thinking,
+        settings.llm_chat_template_kwargs,
     )
 
 
