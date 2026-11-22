@@ -692,3 +692,29 @@ def test_card_is_hidden_from_the_llm_schema_but_optional_in_stored_json():
     stored.pop("card", None)
     assert IRField.model_validate(stored).card is None
     assert Anchor.model_validate(_anchor("a1").model_dump()).card is None
+
+
+# ---- symbolic count tokens and skipped empty tables ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["[# 1]", "[# 6]", "[# items]", "[#items]", "{{# visitors}}"],
+)
+async def test_a_hash_count_token_is_typed_number_whatever_the_llm_said(token):
+    amap = AnchorMap(format="pptx", anchors=[_anchor("a1", tokens=[token])])
+    field = _field("a", "a1", "replace_token", token=token)
+    llm = FakeLLM(_reply(field))  # the LLM typed it text, as the live pipeline slide did
+    ir = await build_ir(llm, amap, TID)
+    assert [f.expected_type for f in ir.fields] == ["number"]
+
+
+@pytest.mark.parametrize("token", ["[Item #3]", "[Category name 1]", "{{count}}"])
+async def test_other_tokens_keep_the_llm_type(token):
+    amap = AnchorMap(format="pptx", anchors=[_anchor("a1", tokens=[token])])
+    ir = await build_ir(FakeLLM(_reply(_field("a", "a1", "replace_token", token=token))), amap, TID)
+    assert [f.expected_type for f in ir.fields] == ["text"]
+
+
+def test_ir_prompt_never_skips_an_empty_native_table():
+    assert "header row and empty body cells is always a slot" in load_prompt("template_ir")

@@ -5,6 +5,8 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
+import structlog
+
 from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
@@ -49,6 +51,8 @@ from doc_intel.mapping.verifier import (
 )
 from doc_intel.templates.anchors import find_tokens, has_letter
 from doc_intel.templates.schemas import Constraints, IRField
+
+log = structlog.get_logger()
 
 _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
 CONF_TYPED, CONF_TEXT, CONF_SYNTH, CONF_PARTIAL = 0.9, 0.8, 0.7, 0.5
@@ -167,7 +171,8 @@ _CARD = re.compile(r"(\d+)\.(\d+)")
 
 def _tile_groups(fields: list[IRField]) -> list[list[list[IRField]]]:
     """Fields of repeating cards (`IRField.card` "set.member"): the members of one set on one slide
-    are the rows, their fields the columns. A member with a single field is no row."""
+    are the rows, their fields the columns. A member with a single field is no row. Keyed sets
+    are returned too: `row_groups` keeps their fields out of every group."""
     sets: dict[tuple[object, str], dict[int, list[IRField]]] = {}
     for f in fields:
         if f.expected_type not in _ROW_TYPES and f.write_mode != "fill_table_rows" and f.card:
@@ -199,13 +204,22 @@ def _cell_grids(fields: list[IRField]) -> list[list[list[IRField]]]:
     return groups
 
 
+def _keyed(rows: list[list[IRField]]) -> bool:
+    """Every card has its own static heading: each maps alone under it (a records call drops
+    cards 2..N), and the sibling headings reject a value stated under another card."""
+    heads = [next((f.context for f in row if has_letter(f.context)), None) for row in rows]
+    return None not in heads and len(set(heads)) == len(heads)
+
+
 def row_groups(fields: list[IRField]) -> list[list[list[IRField]]]:
     """Groups of fields that map in one call: groups -> rows in slot order -> fields in column
     order. In precedence (a field joins one group): repeating-card tiles, numbered slot grids and
     lists, native cell grids, then `fill_table_rows` fields (one one-field group each). Groups come
-    by their first field in the IR. Any other field is not grouped."""
-    tiles = _tile_groups(fields)
-    taken = {f.field_id for g in tiles for row in g for f in row}
+    by their first field in the IR. Any other field, and any field of keyed cards, is not
+    grouped."""
+    sets = _tile_groups(fields)
+    tiles = [g for g in sets if not _keyed(g)]
+    taken = {f.field_id for g in sets for row in g for f in row}
     rest = [f for f in fields if f.field_id not in taken]
     groups = [*tiles, *_slot_grids(rest), *_cell_grids(rest)]
     groups += [[[f]] for f in fields if f.expected_type in _ROW_TYPES]
@@ -499,18 +513,29 @@ async def map_group(
         if first.expected_type in _ROW_TYPES:
             rows = await extract_rows(llm, first, hits)
             if rows.not_found or not rows.rows:
+                _log_short("rows", 1, 0, hits, rows.not_found)
                 return all_missing("not_found_by_llm")
             build = _chart_result if first.expected_type == "chart" else _table_result
             return {first.field_id: build(first, hits, rows, document_ids)}
         records = await extract_records(llm, group, hits)
     except LLMInvalidOutput:
         return all_missing("llm_error")
+    returned = len({r.n for r in records.records if 1 <= r.n <= len(group)})
+    if returned < len(group):
+        _log_short("records", len(group), returned, hits, records.not_found)
     if records.not_found or not records.records:
         return all_missing("not_found_by_llm")
     results = _record_results(group, hits, records, document_ids)
     if all(len(row) == 1 for row in group):  # a list: duplicates collapse, gaps may be synthesized
         return await _list_results(llm, group, hits, results, document_ids)
     return results
+
+
+def _log_short(kind: str, rows: int, returned: int, hits: list[Hit], not_found: bool) -> None:
+    """Why a group came back short, as counts only (no labels, values or quotes)."""
+    log.info(
+        "group_short", kind=kind, rows=rows, returned=returned, hits=len(hits), not_found=not_found
+    )
 
 
 def _supports(expected_type: str, cell: str, quote: str) -> bool:
@@ -538,39 +563,104 @@ def _verified_row(
     return cells, evidence, support, anchored
 
 
+def _cited_lines(hits: list[Hit], evidence: list[Evidence]) -> list[Evidence]:
+    """Every line of the chunks a record cites, each a verbatim quote: a small model cites the
+    right chunk but copies record 1's row into every record."""
+    cited = {e.chunk_id for e in evidence}
+    return _evidence(
+        hits,
+        [
+            LLMQuote(chunk_id=str(h.chunk_id), quote=line.strip())
+            for h in hits
+            if h.chunk_id in cited
+            for line in h.text.splitlines()
+        ],
+    )
+
+
+def _same_span(a: Evidence, b: Evidence) -> bool:
+    x, y = normalize(a.quote), normalize(b.quote)
+    return a.chunk_id == b.chunk_id and (x in y or y in x)
+
+
+_Row = tuple[list[str], list[Evidence], list[list[bool]], int | None]
+
+
+def _record_row(types: list[str], hits: list[Hit], record: LLMRecord | None) -> _Row:
+    """A record's cells, its spans (verified quotes, then cited-chunk lines stating >= 2 of its
+    cells), `support[span][cell]`, and its anchor: the span stating its first non-empty cell (its
+    key), most cells first. Code only finds a line, every value is still checked against it."""
+    if record is None:
+        return [""] * len(types), [], [], None
+    cells, evidence, _, _ = _verified_row(types, hits, record)
+
+    def states(quote: str) -> list[bool]:
+        return [bool(c) and _supports(t, c, quote) for c, t in zip(cells, types, strict=True)]
+
+    seen = {(e.chunk_id, e.quote) for e in evidence}
+    lines = [
+        e
+        for e in _cited_lines(hits, evidence)
+        if (e.chunk_id, e.quote) not in seen and sum(states(e.quote)) >= 2
+    ]
+    spans = evidence + lines
+    support = [states(s.quote) for s in spans]
+    key = next((j for j, c in enumerate(cells) if c), 0)
+    best = max(range(len(spans)), key=lambda i: (support[i][key], sum(support[i])), default=None)
+    return cells, spans, support, best if best is not None and any(support[best]) else None
+
+
 def _record_results(
     group: list[list[IRField]], hits: list[Hit], records: LLMRecords, docs: list[uuid.UUID]
 ) -> dict[str, FieldMappingResult]:
+    """Record n fills slot row n. A cell its anchor states is kept; a cell only another record's
+    anchor states is that record's value shifted in, so it is dropped; any other cell that is
+    stated elsewhere is kept but makes its row partial, as does an unsupported cell."""
     by_n: dict[int, LLMRecord] = {}
     for record in records.records:
         by_n.setdefault(record.n, record)  # the first of a repeated n wins, other n drop
+    rows = [
+        _record_row([f.expected_type for f in row_fields], hits, by_n.get(i + 1))
+        for i, row_fields in enumerate(group)
+    ]
+    anchors = [(i, r[1][r[3]]) for i, r in enumerate(rows) if r[3] is not None]
     results = {}
-    for i, row_fields in enumerate(group):  # record n fills slot row n
-        record = by_n.get(i + 1)
-        cells, evidence, support, anchored = (
-            _verified_row([f.expected_type for f in row_fields], hits, record)
-            if record
-            else ([], [], [], False)
-        )
+    for i, (row_fields, (cells, spans, support, anchor)) in enumerate(
+        zip(group, rows, strict=True)
+    ):
+        others = [a for k, a in anchors if k != i]
+        kept: dict[int, tuple[Value, list[int]]] = {}
+        loose = False
         for j, field in enumerate(row_fields):
-            cell = cells[j] if cells else ""
-            if not cell:
+            by = [s for s in range(len(spans)) if support[s][j]]
+            value = _cell_value(cells[j], field.expected_type) if by else None
+            if not cells[j]:
                 results[field.field_id] = _missing(field, "not_found_by_llm", docs)
-            elif not any(support[j]) or (value := _cell_value(cell, field.expected_type)) is None:
+            elif value is None or (
+                anchor not in by and all(any(_same_span(spans[s], o) for o in others) for s in by)
+            ):
+                loose |= value is None  # an unsupported cell; a shifted one is just dropped
                 results[field.field_id] = _missing(field, "evidence_failed_verification", docs)
             else:
-                typed = field.expected_type in TYPED_TYPES
-                results[field.field_id] = FieldMappingResult(
-                    field_id=field.field_id,
-                    status="populated" if anchored else "partial",
-                    value=value[0],
-                    evidence=evidence,
-                    confidence=(CONF_TYPED if typed else CONF_TEXT) if anchored else CONF_PARTIAL,
-                    missing_reason=None if anchored else "insufficient_evidence",
-                    checked_documents=docs,
-                    conflict_details=None,
-                    provenance="rag",
-                )
+                kept[j] = (value[0], by)
+                loose |= anchor not in by
+        used = sorted({s for _, by in kept.values() for s in by}, key=lambda s: s != anchor)
+        evidence = [spans[s] for s in used]
+        anchored = bool(kept) and not loose
+        for j, (value, _) in kept.items():
+            field = row_fields[j]
+            typed = field.expected_type in TYPED_TYPES
+            results[field.field_id] = FieldMappingResult(
+                field_id=field.field_id,
+                status="populated" if anchored else "partial",
+                value=value,
+                evidence=evidence,
+                confidence=(CONF_TYPED if typed else CONF_TEXT) if anchored else CONF_PARTIAL,
+                missing_reason=None if anchored else "insufficient_evidence",
+                checked_documents=docs,
+                conflict_details=None,
+                provenance="rag",
+            )
     return results
 
 

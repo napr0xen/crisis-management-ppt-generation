@@ -322,14 +322,27 @@ async def test_a_row_mixing_two_records_is_partial_not_populated(name):
     sentences, rows = SCENARIOS[name][1], SCENARIOS[name][2]
     # row 1 takes its first cell from record 1 and the rest from record 2
     mixed = [rows[0][0], *rows[1][1:]]
-    reply = _seq(
-        [(mixed, [(hit, sentences[0]), (hit, sentences[1])]), (rows[1], [(hit, sentences[1])])]
-    )
+    reply = _seq([(mixed, [(hit, sentences[0]), (hit, sentences[1])])])
     results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(reply))
     row1 = [results[f.field_id] for f in fields[:3]]
     assert [r.status for r in row1] == ["partial"] * 3
     assert {r.missing_reason for r in row1} == {"insufficient_evidence"}
     assert {r.confidence for r in row1} == {0.5}
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+async def test_cells_taken_from_the_next_records_row_are_dropped(name):
+    fields, hit, _, _ = _setup(name)
+    sentences, rows = SCENARIOS[name][1], SCENARIOS[name][2]
+    mixed = [rows[0][0], *rows[1][1:]]
+    reply = _seq(
+        [(mixed, [(hit, sentences[0]), (hit, sentences[1])]), (rows[1], [(hit, sentences[1])])]
+    )
+    results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(reply))
+    row1 = [results[f.field_id] for f in fields[:3]]
+    assert [r.status for r in row1] == ["populated", "missing", "missing"]
+    assert row1[0].value == SCENARIOS[name][3][0]
+    assert {r.missing_reason for r in row1[1:]} == {"evidence_failed_verification"}
     row2 = [results[f.field_id] for f in fields[3:6]]
     assert [r.status for r in row2] == ["populated"] * 3
 

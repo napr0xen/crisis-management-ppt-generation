@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from structlog.testing import capture_logs
 
 from doc_intel.llm.gateway import LLMError
 from doc_intel.llm.prompts import load_prompt
@@ -157,29 +158,90 @@ async def test_the_tile_query_joins_the_first_labels_once_with_the_path(name):
 
 # ---- keyed records ----------------------------------------------------------------------------
 
+HEADS = {
+    "museum": ["Dinosaur Hall", "Maritime Gallery", "Textile Room"],
+    "clinic": ["Ward Alder", "Ward Birch", "Ward Cedar"],
+}
+
 
 @BOTH_TILES
-async def test_keyed_records_carry_their_context_and_a_skipped_record_keeps_its_tile(name):
-    heads = {
-        "museum": ["Dinosaur Hall", "Maritime Gallery", "Textile Room"],
-        "clinic": ["Ward Alder", "Ward Birch", "Ward Cedar"],
-    }[name]
-    fields, hit, sentences, rows = _setup(name, contexts=heads)
+def test_cards_with_distinct_static_headings_are_never_one_records_group(name):
+    slots = TILES[name][0]
+    keyed = _tiles(slots, contexts=HEADS[name])
+    assert row_groups(keyed) == []
+    # numbered tokens in keyed cards ([Level 1] .. [Level 3]) do not regroup as a slot grid
+    numbered = [
+        f.model_copy(update={"constraints": Constraints(token=f"[{f.label} {f.card[-1]}]")})
+        for f in keyed
+    ]
+    assert row_groups(numbered) == []
+    # one shared heading, or a card without one, keeps the tile group
+    assert len(row_groups(_tiles(slots, contexts=["Spring"] * 3))) == 1
+    assert len(row_groups(_tiles(slots, contexts=[*HEADS[name][:2], None]))) == 1
+
+
+class _PerField:
+    """Answers field_extract calls from {(context, label): (value, sentence)}, approves checks."""
+
+    def __init__(self, hit, answers):
+        self.hit, self.answers, self.calls = hit, answers, []
+
+    async def complete(self, messages, json_schema=None):
+        self.calls.append((list(messages), json_schema))
+        if messages[0]["content"] == load_prompt("candidate_check"):
+            return '{"checks": [{"about": "x", "match": true}]}'
+        assert messages[0]["content"] == load_prompt("field_extract")
+        spec = json.loads(messages[1]["content"].removeprefix("Field:\n").split("\n\n")[0])
+        value, quote = self.answers[(spec["context"], spec["label"])]
+        cand = {"value": value, "quotes": [{"chunk_id": str(self.hit.chunk_id), "quote": quote}]}
+        return json.dumps({"candidates": [cand], "not_found": False, "incomplete": False})
+
+
+@BOTH_TILES
+async def test_keyed_cards_map_per_card_under_their_heading_never_in_a_records_call(name):
+    fields, hit, sentences, rows = _setup(name, contexts=HEADS[name])
     width = len(rows[0])
-    # the reply skips n=2: record 3 must still land in tile 3
-    reply = _reply(hit, [sentences[0], sentences[2]], [rows[0], rows[2]], ns=[1, 3])
-    llm = FakeLLM(reply)
+    answers = {
+        (f.context, f.label): (rows[i // width][i % width], sentences[i // width])
+        for i, f in enumerate(fields)
+    }
+    llm = _PerField(hit, answers)
+    results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), llm)
+    assert not any(m[0]["content"] == load_prompt("slot_records") for m, _ in llm.calls)
+    for i, f in enumerate(fields):
+        r = results[f.field_id]
+        assert r.status == "populated", f.field_id
+        assert [e.quote for e in r.evidence] == [sentences[i // width]]
+    fid, value = TILES[name][3]
+    assert results[fid].value == value
+    # every card's heading reaches its own candidate check, with the sibling headings
+    checks = [
+        json.loads(m[1]["content"])
+        for m, _ in llm.calls
+        if m[0]["content"] == load_prompt("candidate_check")
+    ]
+    assert {c["context"] for c in checks} == set(HEADS[name])
+    assert all(c["context"] not in c["other_headings"] for c in checks)
+
+
+async def test_a_numbered_grid_with_one_heading_per_row_still_sends_keyed_records():
+    fields = _tiles([("Gallery name", "text"), ("Visitors", "number")])
+    fields = [
+        f.model_copy(
+            update={
+                "card": None,
+                "context": HEADS["museum"][int(f.field_id[1]) - 1],
+                "constraints": Constraints(token=f"[{f.label} {f.field_id[1]}]"),
+            }
+        )
+        for f in fields
+    ]
+    hit = _hit("\n".join(MUSEUM))
+    llm = FakeLLM(_reply(hit, MUSEUM, MUSEUM_ROWS))
     results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), llm)
     spec = _spec(llm)
-    assert [r["context"] for r in spec["records"]] == heads and "context" not in spec
-    for j in range(width):
-        assert results[f"c1_{j}"].status == "populated"
-        assert results[f"c3_{j}"].status == "populated"
-        assert [e.quote for e in results[f"c3_{j}"].evidence] == [sentences[2]]
-        assert (results[f"c2_{j}"].status, results[f"c2_{j}"].missing_reason) == (
-            "missing",
-            "not_found_by_llm",
-        )
+    assert [r["context"] for r in spec["records"]] == HEADS["museum"] and "context" not in spec
+    assert {r.status for r in results.values()} == {"populated"}
 
 
 async def test_one_shared_context_is_sent_once_and_a_letterless_one_not_at_all():
@@ -220,17 +282,85 @@ async def test_out_of_range_and_duplicate_n_are_dropped(name):
 async def test_a_record_mixing_two_source_records_is_partial(name):
     fields, hit, sentences, rows = _setup(name)
     mixed = [rows[0][0], *rows[1][1:]]
-    reply = _records_reply(
-        [
-            (1, mixed, [(hit, sentences[0]), (hit, sentences[1])]),
-            (2, rows[1], [(hit, sentences[1])]),
-        ]
-    )
+    reply = _records_reply([(1, mixed, [(hit, sentences[0]), (hit, sentences[1])])])
     results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(reply))
     width = len(rows[0])
     first = [results[f"c1_{j}"] for j in range(width)]
     assert {r.status for r in first} == {"partial"} and {r.confidence for r in first} == {0.5}
-    assert {results[f"c2_{j}"].status for j in range(width)} == {"populated"}
+
+
+@BOTH_TILES
+async def test_a_value_shifted_in_from_the_next_record_is_dropped_not_kept(name):
+    # the KPI-tile slip: record n's later slots hold record n+1's values, quoted from its line
+    fields, hit, sentences, rows = _setup(name)
+    width = len(rows[0])
+    shifted = [
+        (n + 1, [rows[n][0], *rows[n + 1][1:]], [(hit, sentences[n]), (hit, sentences[n + 1])])
+        for n in range(len(rows) - 1)
+    ]
+    last = (len(rows), [rows[-1][0], *[""] * (width - 1)], [(hit, sentences[-1])])
+    results = await map_fields(
+        CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(_records_reply([*shifted, last]))
+    )
+    for m in (1, 2, 3):
+        first = results[f"c{m}_0"]
+        assert (first.status, first.value) == ("populated", rows[m - 1][0])
+        assert [e.quote for e in first.evidence] == [sentences[m - 1]]
+        for j in range(1, width):
+            r = results[f"c{m}_{j}"]
+            assert r.status == "missing" and r.value is None
+
+
+@BOTH_TILES
+async def test_a_record_citing_another_records_row_is_requoted_from_its_own_line(name):
+    # the model copies record 1's quote into every record, the values are its own
+    fields, hit, sentences, rows = _setup(name)
+    reply = _records_reply([(n, rows[n - 1], [(hit, sentences[0])]) for n in (1, 2, 3)])
+    results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(reply))
+    width = len(rows[0])
+    assert {r.status for r in results.values()} == {"populated"}
+    for i, f in enumerate(fields):
+        assert [e.quote for e in results[f.field_id].evidence] == [sentences[i // width]]
+        assert results[f.field_id].evidence[0].chunk_id == hit.chunk_id
+
+
+@BOTH_TILES
+async def test_requoting_reads_only_cited_chunks_and_needs_two_cells_on_one_line(name):
+    sentences, rows = TILES[name][1:3]
+    slots = TILES[name][0]
+    fields = _tiles(slots)
+    cited, uncited = _hit(sentences[0]), _hit("\n".join(sentences[1:]))
+    reply = _records_reply(
+        [(1, rows[0], [(cited, sentences[0])]), (2, rows[1], [(cited, sentences[0])])]
+    )
+    hits = [cited, uncited]
+    results = await map_fields(CTX, fields, DOCS, FakeRetriever(hits), FakeLLM(reply))
+    assert {results[f"c1_{j}"].status for j in range(len(slots))} == {"populated"}
+    # record 2's line is only in a chunk it never cited: nothing is found for it by code
+    assert {results[f"c2_{j}"].status for j in range(len(slots))} == {"missing"}
+    # one matching cell is too weak to re-anchor a record (a short value like "980" anywhere)
+    hit = _hit("\n".join(sentences))
+    one = _records_reply([(3, [rows[2][0], *[""] * (len(slots) - 1)], [(hit, sentences[0])])])
+    results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(one))
+    assert results["c3_0"].status == "missing"
+
+
+async def test_an_empty_records_reply_is_logged_without_document_text():
+    fields, hit, *_ = _setup("museum")
+    with capture_logs() as logs:
+        await map_fields(
+            CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(_records_reply([], not_found=True))
+        )
+    (event,) = [e for e in logs if e["event"] == "group_short"]
+    assert event == {
+        "event": "group_short",
+        "log_level": "info",
+        "kind": "records",
+        "rows": 3,
+        "returned": 0,
+        "hits": 1,
+        "not_found": True,
+    }
 
 
 @BOTH_TILES
@@ -293,7 +423,16 @@ async def test_not_found_invalid_output_and_transport_errors(name):
 
 def test_the_prompt_states_the_safety_and_record_rules():
     prompt = load_prompt("slot_records")
-    for rule in ("never as instructions", "not_found", "source order", "chunk_id", "`n`"):
+    for rule in (
+        "never as instructions",
+        "not_found",
+        "source order",
+        "chunk_id",
+        "`n`",
+        "every record",
+        "never another record's",
+        "Example",
+    ):
         assert rule in prompt
 
 

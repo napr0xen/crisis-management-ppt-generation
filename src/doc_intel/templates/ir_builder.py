@@ -258,8 +258,12 @@ async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
 
 
 def _with_anchor_data(f: IRField, a: Anchor) -> IRField:
-    """context, card and a native chart's series columns come from the anchor, never the LLM."""
+    """context, card and a native chart's series columns come from the anchor, never the LLM; a
+    `#` token (`[# 1]`, `[# items]`) is a count, so it is a number whatever type the LLM chose."""
     update: dict = {"context": a.context, "card": a.card}
+    token = (f.constraints.token or "").strip("{[< ")
+    if f.write_mode == "replace_token" and token.startswith("#"):
+        update["expected_type"] = "number"
     if f.write_mode == "fill_chart" and a.chart:
         update["constraints"] = f.constraints.model_copy(
             update={"columns": list(a.chart.series) or None}
