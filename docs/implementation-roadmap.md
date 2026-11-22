@@ -34,6 +34,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 12 | Hardening, evaluation & audit | **Complete** |
 | 13 | Universal accuracy: number formatting & cross-slide facts | **Complete** |
 | 14 | Card context & 32k retrieval budget | **Complete** (on branch, `main` not yet fast-forwarded: awaiting live test) |
+| 15 | Row-grouped table extraction | **Complete** (on branch, awaiting live test) |
 | next | Universal extraction & mapping accuracy (remaining gaps) | Phases 15-16 ([below](#next-priority-universal-extraction--mapping-accuracy)) |
 
 ---
@@ -321,6 +322,32 @@ Cause: repeated cards on one slide (`[Wait time]` under three headings) were map
   Q&A eval unchanged: 0 fabricated, 100% verification, unanswerable 100%, recall@8 100%.
 - **Trade-offs:** one extra LLM call per context field with candidates; at 32k a field prompt is up to ~16k tokens (more prompt time per field); a template that reuses one token under different headings no longer shares one value. Rejected while measuring: dropping single candidates in the check (it rejected one of two real conflicting values) and checking fields without context by label (it rejected many correct values).
 - **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 174 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1362 passed, 1 deselected (`perf`). `/ponytail-review`: ship, no findings (note: templates registered before this phase have IRs without `context` until uploaded again); `/ecc:quality-gate` clean. Live test pending: `main` stays at `58d5261` until it passes.
+
+---
+
+## Phase 15: Row-grouped table extraction
+
+The third gap of the [next priority](#next-priority-universal-extraction--mapping-accuracy) list (cause: grid templates were mapped cell by cell, so each cell's call saw every record and returned a conflict, nothing, or a value from another record).
+
+- **Entry:** Phase 14 done (branch `phase-14-context-and-retrieval`, `8fe3471`).
+- **Deliverables:** `engine.row_groups` (numbered slot grids, native cell grids, `fill_table_rows`), `map_group` (one retrieval and one `table_rows` call per group, row-by-row verification, a row anchored to one quote), `map_fields` (the run loop moved out of `jobs/handlers.py`; the eval calls it too, so it now exercises shared facts and row groups) ([system-design.md § 7](system-design.md#7-mapping-engine-stage-3)).
+- **Exit:**
+  - Tests on two or more unrelated domains (lab maintenance, volunteer roster, school trips, port arrivals, crops): grid detection and its refusals (gaps, single column, repeated token, static label column, different units), one call per grid, rows in order, mixed-record rows `partial`, unsupported cells `missing`, fewer records than slots, typed cells, unretrieved quotes rejected, injected chunk text is data, `fill_table_rows` rows kept only when verified, progress order;
+  - eval hard gates pass, before/after recorded; `uv run ruff check .`, `uv run ruff format --check .`, `uv run alembic check`, `uv run pytest` green.
+- **Eval** (`qwen3:14b`, `LLM_NUM_CTX=32768`; 75 fields: a numbered slot grid, a native cell grid and two `fill_table_rows` tables added; before = Phase 14 code):
+
+  | Metric | Before | After |
+  |---|---|---|
+  | Fabricated citations | 0 | 0 |
+  | Citation verification | 100% | 100% |
+  | Seeded conflicts detected | 100% (5/5) | 100% (5/5) |
+  | Absent fields `missing` | 100% (16/16) | 100% (16/16) |
+  | Field accuracy | 72.2% (39/54) | 94.4% (51/54) |
+  | Latency p50 / max | 5.6 s / 16.2 s | 5.0 s / 14.5 s |
+
+  The 3 misses are one roster row: the source says "drove the delivery van" and the model wrote "Driver", which is not verbatim, so that cell is `missing` and its two row-mates `partial` (right values, row not anchored). The `fill_table_rows` tables were already right before and stay right.
+- **Trade-offs:** grid rows follow source order, so a slot grid whose numbering means something else than "first, second, third record" (for example `[Q1] [Q2]` quarters with two columns) is filled in record order; a cell grid with a static label column is never grouped; two sources that state one record differently give two rows, not a conflict.
+- **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 176 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1407 passed, 1 deselected (`perf`). One earlier full run failed once on a seeded conflict that got zero retrieval hits (`no_relevant_chunks`, not a model answer); the field alone and the re-run were correct (`shortcut: not reproduced; investigate Qdrant/embedding under the full suite if it recurs`). `/ponytail-review`: one fix, chat edits shared grid cells across two grids on different slides while mapping did not; `shared_facts` now leaves row-group fields out for both (test added). `/ecc:quality-gate` clean. Live test pending.
 
 ---
 

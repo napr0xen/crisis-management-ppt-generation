@@ -62,7 +62,6 @@ def _field(expected_type="text", **kw):
         ("date", LLMExtraction[str]),
         ("paragraphs", LLMExtraction[list[str]]),
         ("bullet_list", LLMExtraction[list[str]]),
-        ("table", LLMExtraction[list[list[str]]]),
     ],
 )
 async def test_schema_sent_to_the_llm_follows_expected_type(expected_type, model):

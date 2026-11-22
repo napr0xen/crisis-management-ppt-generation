@@ -53,6 +53,13 @@ class LLMExtraction[V](_Strict):
     incomplete: bool
 
 
+class LLMRows(_Strict):
+    """One row per source record; `value` holds its cells in column order."""
+
+    rows: list[LLMCandidate[list[str]]]
+    not_found: bool
+
+
 class LLMCheck(_Strict):
     about: str  # reasoning aid only: never logged, stored or read by code
     match: bool

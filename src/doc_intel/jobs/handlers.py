@@ -21,7 +21,7 @@ from doc_intel.ingestion.pipeline import parse_and_chunk
 from doc_intel.ingestion.upload import artifact_key, parsed_key
 from doc_intel.jobs.worker import Handler, OnFailed, Sessionmaker, set_progress
 from doc_intel.llm.gateway import LLMClient
-from doc_intel.mapping.engine import map_field, shared_facts, sibling_headings, summarize
+from doc_intel.mapping.engine import map_fields, summarize
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import FieldMappingResult
 from doc_intel.storage.base import StorageBackend
@@ -277,29 +277,15 @@ def make_handlers(
             total = len(ir.fields)
             progress = {"stage": "mapping", "total": total}
             await repo.update_job(session, ctx, job.id, progress={**progress, "done": 0})
+
         # shortcut: fields run one at a time (one Ollama), and a crash redoes them all; add
         # per-field checkpoints if runs get long.
-        results = {}
-        # Copies of one fact on different slides/sheets/sections map once (one answer, one call).
-        shared, by_fact = shared_facts(ir.fields), {}
-        siblings = sibling_headings(ir.fields)
-        for done, field in enumerate(ir.fields, start=1):
+        async def on_field(done: int, field_id: str) -> None:
             # field_id is template-derived and goes to jobs.progress only, never to logs
-            await set_progress(
-                sessionmaker, ctx, job.id, {**progress, "done": done - 1, "field": field.field_id}
-            )
-            key = shared.get(field.field_id)
-            if key and key in by_fact:
-                results[field.field_id] = by_fact[key].model_copy(
-                    update={"field_id": field.field_id}
-                )
-            else:
-                results[field.field_id] = await map_field(
-                    ctx, field, document_ids, retriever, llm, siblings.get(field.field_id, ())
-                )
-                if key:
-                    by_fact[key] = results[field.field_id]
-            await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done})
+            extra = {"field": field_id} if field_id else {}
+            await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done, **extra})
+
+        results = await map_fields(ctx, ir.fields, document_ids, retriever, llm, on_field)
         summary = summarize(ir.fields, results)
         async with sessionmaker.begin() as session:
             await repo.update_mapping_run(

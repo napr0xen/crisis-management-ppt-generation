@@ -19,7 +19,7 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.ollama import OllamaQwen3Embedder
 from doc_intel.ingestion.schemas import ChunkPayload
 from doc_intel.llm.gateway import make_llm_client
-from doc_intel.mapping.engine import map_field, sibling_headings
+from doc_intel.mapping.engine import map_fields
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import FieldMappingResult
 from doc_intel.mapping.verifier import normalize
@@ -42,7 +42,25 @@ def _quotes(result: FieldMappingResult) -> list:
     return [*result.evidence, *(e for c in candidates for e in c.evidence)]
 
 
+def _row_matches(actual: list, expected: list) -> bool:
+    return len(actual) == len(expected) and all(
+        normalize(str(e)) in normalize(str(a)) for a, e in zip(actual, expected, strict=True)
+    )
+
+
 def _matches(actual, expected) -> bool:
+    if isinstance(expected, list) and expected and isinstance(expected[0], list):
+        # a table: same row count, each expected row matches its own actual row (row order
+        # across documents is not defined)
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        left = [r for r in actual if isinstance(r, list)]
+        for row in expected:
+            hit = next((a for a in left if _row_matches(a, row)), None)
+            if hit is None:
+                return False
+            left.remove(hit)
+        return True
     if isinstance(expected, list):
         joined = normalize(" ".join(actual)) if isinstance(actual, list) else ""
         return all(normalize(item) in joined for item in expected)
@@ -88,13 +106,11 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
                 )
 
             fields = [IRField.model_validate(raw) for raw in case["template"]["fields"]]
-            siblings = sibling_headings(fields)
+            started = time.perf_counter()
+            results = await map_fields(ctx, fields, doc_ids, retriever, llm)
+            latency = (time.perf_counter() - started) / len(fields)
             for field in fields:
-                started = time.perf_counter()
-                result = await map_field(
-                    ctx, field, doc_ids, retriever, llm, siblings.get(field.field_id, ())
-                )
-                latency = time.perf_counter() - started
+                result = results[field.field_id]
                 expected = case["expected"][field.field_id]
                 fabricated = [
                     e.quote

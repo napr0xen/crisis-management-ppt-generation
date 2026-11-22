@@ -383,3 +383,27 @@ async def test_oversized_field_ids_and_values_are_422() -> None:
     llm = _llm({"op": "clear", "field_id": "x" * 65})
     with pytest.raises(ValidationFailed):
         await parse_edits(llm, _msgs("clear it"), ir, results)
+
+
+@pytest.mark.parametrize("stems", [("Date", "Instrument"), ("Vessel", "Berth")])
+def test_an_edit_to_a_grid_cell_stays_in_its_grid(stems) -> None:
+    # Two numbered slot grids on two slides are two tables: mapping fills them separately
+    # (row groups are never shared facts), so an edit must not jump from one to the other.
+    fields = []
+    for slide in (2, 6):
+        for n in (1, 2):
+            for stem in stems:
+                fid = f"{stem.lower()}_{n}_s{slide}"
+                fields.append(
+                    {
+                        **_field(fid, write_mode="replace_token", token=f"[{stem} {n}]"),
+                        "anchor_id": f"pptx:s{slide}:sp{n}{len(fields)}",
+                        "section_path": [f"Slide {slide}"],
+                    }
+                )
+    ir = _ir(*fields)
+    results = {f.field_id: _result(f.field_id) for f in ir.fields}
+    first = f"{stems[0].lower()}_1_s2"
+    out = apply_edits(ir, results, _ops(_set(first, "edited")))
+    assert out[first].value == "edited"
+    assert out[f"{stems[0].lower()}_1_s6"].status == "missing"

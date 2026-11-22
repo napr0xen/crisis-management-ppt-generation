@@ -7,9 +7,9 @@ from doc_intel.core.config import get_settings
 from doc_intel.db import repo
 from doc_intel.db.models import Job, MappingRun
 from doc_intel.db.session import make_engine
-from doc_intel.jobs import handlers as handlers_mod
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import MAX_JOB_ATTEMPTS, recover_running_jobs, run_one
+from doc_intel.mapping import engine as engine_mod
 from doc_intel.mapping.schemas import FieldMappingResult, MappingSummary
 from doc_intel.storage.local import LocalStorage
 from doc_intel.templates.schemas import TemplateIR
@@ -99,7 +99,7 @@ async def test_run_mapping_lifecycle(sm, user_a, monkeypatch):
         calls.append((field.field_id, document_ids))
         return missing(field, document_ids)
 
-    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr(engine_mod, "map_field", fake_map)
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
 
     run, job = await state(sm, ctx, run_id, job_id)
@@ -132,7 +132,7 @@ async def test_run_mapping_publishes_the_current_field_before_mapping_it(sm, use
             seen.append((await s.get(Job, job_id)).progress)
         return missing(field, document_ids)
 
-    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr(engine_mod, "map_field", fake_map)
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
     assert seen == [
         {"stage": "mapping", "total": 2, "done": 0, "field": "f_one"},
@@ -150,7 +150,7 @@ async def test_run_mapping_skips_mapping_and_renders_when_already_verifying(
     async def boom(*a):
         raise AssertionError("map_field must not run")
 
-    monkeypatch.setattr(handlers_mod, "map_field", boom)
+    monkeypatch.setattr(engine_mod, "map_field", boom)
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
 
     run, job = await state(sm, ctx, run_id, job_id)
@@ -168,7 +168,7 @@ async def test_run_mapping_leaves_a_terminal_run_untouched(sm, user_a, monkeypat
     async def boom(*a):
         raise AssertionError("map_field must not run")
 
-    monkeypatch.setattr(handlers_mod, "map_field", boom)
+    monkeypatch.setattr(engine_mod, "map_field", boom)
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
 
     run, job = await state(sm, ctx, run_id, job_id)
@@ -181,7 +181,7 @@ async def test_run_mapping_failure_fails_job_and_run(sm, user_a, monkeypatch):
     async def broken(*a):
         raise RuntimeError("SECRET_document_text")
 
-    monkeypatch.setattr(handlers_mod, "map_field", broken)
+    monkeypatch.setattr(engine_mod, "map_field", broken)
     handlers, hooks = handlers_for(sm), make_failure_hooks(sm)
     for _ in range(MAX_JOB_ATTEMPTS):
         await run_one(sm, handlers, hooks)
@@ -252,7 +252,7 @@ async def test_run_mapping_reuses_one_result_per_named_placeholder(
         calls.append(field.field_id)
         return missing(field, document_ids)
 
-    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr(engine_mod, "map_field", fake_map)
     monkeypatch.setattr("doc_intel.writers.render", lambda *a, **k: (b"PK\x03\x04fake", []))
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
 
@@ -286,7 +286,7 @@ async def test_run_mapping_maps_each_slot_repeated_on_one_slide(sm, user_a, monk
         calls.append(field.field_id)
         return missing(field, document_ids)
 
-    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr(engine_mod, "map_field", fake_map)
     monkeypatch.setattr("doc_intel.writers.render", lambda *a, **k: (b"PK\x03\x04fake", []))
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
 
@@ -324,7 +324,7 @@ async def test_run_mapping_reuses_one_result_per_repeated_token(sm, user_a, monk
         rendered.append(results)
         return b"PK\x03\x04fake", []
 
-    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr(engine_mod, "map_field", fake_map)
     monkeypatch.setattr("doc_intel.writers.render", fake_render)
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
 

@@ -11,9 +11,9 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.db.models import Job
 from doc_intel.db.session import make_engine
 from doc_intel.ingestion.schemas import ChunkPayload
-from doc_intel.jobs import handlers
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import run_one
+from doc_intel.mapping import engine as engine_mod
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.storage.local import LocalStorage
 from doc_intel.templates.anchors import build_anchor_map
@@ -89,15 +89,15 @@ async def test_mapping_run_populates_misses_and_conflicts(
     client, session, migrated_db, vector_store, user_a, project, monkeypatch
 ):
     seen: dict[str, list[str]] = {}
-    real_map_field = handlers.map_field
+    real_map_field = engine_mod.map_field
 
     async def spy(ctx, field, docs, retriever, llm, other_headings=()):
         seen[field.field_id] = list(other_headings)
         return await real_map_field(ctx, field, docs, retriever, llm, other_headings)
 
-    monkeypatch.setattr(handlers, "map_field", spy)
+    monkeypatch.setattr(engine_mod, "map_field", spy)
     monkeypatch.setattr(
-        handlers,
+        engine_mod,
         "sibling_headings",
         lambda fields: {f.field_id: [f"Sib {f.field_id}"] for f in fields},
     )

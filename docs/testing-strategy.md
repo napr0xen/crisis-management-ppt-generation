@@ -115,6 +115,8 @@ Phase 12 results (2026-11-21, `qwen3:14b`; 15 questions, 5 templates with 39 fie
 
 Phase 14 results (2026-11-22, `qwen3:14b`, `LLM_NUM_CTX=32768`; 55 fields: two card templates and two long parallel-section reports added; before = Phase 13 code): fabricated 0 / 0, verification 100% / 100%, seeded conflicts 100% / 100%, absent fields 75% / 100%, field accuracy 61.8% / 100%. Q&A unchanged.
 
+Phase 15 results (2026-11-22; 75 fields: slot grid, cell grid and two row tables added; the eval now maps each case with `map_fields`; before = Phase 14 code): fabricated 0 / 0, verification 100% / 100%, seeded conflicts 100% / 100%, absent fields 100% / 100%, field accuracy 72.2% / 94.4%. A table value is correct when it has the expected row count and each expected row matches its own actual row (each expected cell contained in the actual cell).
+
 ## 6. Template fidelity tests (`tests/integration/test_writers_*.py`)
 
 For each fixture template × format:
