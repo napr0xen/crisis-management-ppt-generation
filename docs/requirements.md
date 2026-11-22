@@ -68,8 +68,8 @@ Max upload: `MAX_UPLOAD_MB=100`. Legacy binary formats (`.doc`, `.ppt`, `.xls`) 
 ## 5. Out of scope (v1)
 
 - Non-fillable PDF output, or converting PDFs into fillable forms.
-- Adding slides, shapes, table rows, or sheet rows to templates (`fill_table_rows` uses existing rows only).
-- Generating charts or images, or editing chart data.
+- Adding slides, shapes, table rows, or sheet rows to templates (`fill_table_rows` uses existing rows only). Exception since Phase 18: a pptx chart placeholder is replaced by one native chart (`insert_chart`).
+- Generating images; charts outside pptx (docx/xlsx charts are left untouched); XY scatter and bubble charts. Since Phase 18, pptx category charts are filled (`fill_chart`) or inserted (`insert_chart`) from verified data points only (system-design § 7-8).
 - Multi-user collaboration on one project; sharing projects between users.
 - Network-exposed or multi-host deployment, SSO beyond Open WebUI login, per-user API tokens.
 - Handwriting OCR, audio/video sources, legacy `.doc/.ppt/.xls`.

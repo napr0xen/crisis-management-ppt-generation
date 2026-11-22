@@ -10,6 +10,7 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.llm.gateway import LLMClient, LLMInvalidOutput
 from doc_intel.mapping.extractor import (
+    MAX_CHART_POINTS,
     MAX_PRIMARY_HITS,
     bounded_field,
     check_candidates,
@@ -46,12 +47,13 @@ from doc_intel.mapping.verifier import (
     value_in_quotes,
     verify_quote,
 )
-from doc_intel.templates.anchors import has_letter
+from doc_intel.templates.anchors import find_tokens, has_letter
 from doc_intel.templates.schemas import Constraints, IRField
 
 _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
 CONF_TYPED, CONF_TEXT, CONF_SYNTH, CONF_PARTIAL = 0.9, 0.8, 0.7, 0.5
 _LISTS = ("paragraphs", "bullet_list")
+_ROW_TYPES = ("table", "chart")  # fields mapped by one structured row call
 
 
 def share_key(field: IRField) -> tuple[str, str, str]:
@@ -168,7 +170,7 @@ def _tile_groups(fields: list[IRField]) -> list[list[list[IRField]]]:
     are the rows, their fields the columns. A member with a single field is no row."""
     sets: dict[tuple[object, str], dict[int, list[IRField]]] = {}
     for f in fields:
-        if f.expected_type != "table" and f.write_mode != "fill_table_rows" and f.card:
+        if f.expected_type not in _ROW_TYPES and f.write_mode != "fill_table_rows" and f.card:
             if m := _CARD.fullmatch(f.card):
                 sets.setdefault((_unit(f), m[1]), {}).setdefault(int(m[2]), []).append(f)
     groups = []
@@ -206,7 +208,7 @@ def row_groups(fields: list[IRField]) -> list[list[list[IRField]]]:
     taken = {f.field_id for g in tiles for row in g for f in row}
     rest = [f for f in fields if f.field_id not in taken]
     groups = [*tiles, *_slot_grids(rest), *_cell_grids(rest)]
-    groups += [[[f]] for f in fields if f.expected_type == "table"]
+    groups += [[[f]] for f in fields if f.expected_type in _ROW_TYPES]
     order = {f.field_id: i for i, f in enumerate(fields)}
     return sorted(groups, key=lambda g: min(order[f.field_id] for row in g for f in row))
 
@@ -236,7 +238,7 @@ async def map_field(
     llm: LLMClient,
     other_headings: Sequence[str] = (),
 ) -> FieldMappingResult:
-    if field.expected_type == "table":
+    if field.expected_type in _ROW_TYPES:
         return (await map_group(ctx, [[field]], document_ids, retriever, llm))[field.field_id]
     hits = await _retrieve(ctx, field_query(field), document_ids, retriever)
     if not hits:
@@ -465,7 +467,7 @@ _MAX_QUERY_LABELS = 300
 
 def _group_query(group: list[list[IRField]]) -> str:
     first = group[0][0]
-    if first.expected_type == "table":
+    if first.expected_type in _ROW_TYPES:
         return field_query(first)
     tiles = all(f.card for row in group for f in row)
     # tiles repeat one set of labels: the first field of each row, once
@@ -494,11 +496,12 @@ async def map_group(
         return all_missing("no_relevant_chunks")
     first = group[0][0]
     try:  # a transport LLMError propagates: the worker retries
-        if first.expected_type == "table":
+        if first.expected_type in _ROW_TYPES:
             rows = await extract_rows(llm, first, hits)
             if rows.not_found or not rows.rows:
                 return all_missing("not_found_by_llm")
-            return {first.field_id: _table_result(first, hits, rows, document_ids)}
+            build = _chart_result if first.expected_type == "chart" else _table_result
+            return {first.field_id: build(first, hits, rows, document_ids)}
         records = await extract_records(llm, group, hits)
     except LLMInvalidOutput:
         return all_missing("llm_error")
@@ -670,6 +673,68 @@ def _table_result(
         value=converted[0],
         evidence=evidence,
         confidence=CONF_PARTIAL if partial else CONF_TEXT,
+        missing_reason="insufficient_evidence" if partial else None,
+        checked_documents=docs,
+        conflict_details=None,
+        provenance="rag",
+    )
+
+
+def _word(text: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<!\w){re.escape(normalize(text))}(?!\w)")
+
+
+def _states_point(category: str, values: list[str], quote: str, others: list[str]) -> bool:
+    """The quote states these values for this category: they follow the category before any
+    other returned category starts, so `January 82 mm, February 64 mm` never backs January = 64.
+    A number written before its category (`82 mm in January`) is not read as a point."""
+    q = normalize(quote)
+    if (m := _word(category).search(q)) is None:
+        return False
+    tail = q[m.end() :]
+    stops = [s.start() for o in others if (s := _word(o).search(tail))]
+    tail = tail[: min(stops)] if stops else tail
+    return all(value_in_quotes(v, "number", [tail]) for v in values)
+
+
+def _chart_result(
+    field: IRField, hits: list[Hit], rows: LLMRows, docs: list[uuid.UUID]
+) -> FieldMappingResult:
+    """The chart's points: a row is kept only when one verified quote states its category and
+    every number, so no label or value is ever invented. Fewer than two points is no chart."""
+    # shortcut: canonical numbers carry no K/M suffix scaling ("$1.2M" is 1.2), so a series that
+    # mixes "$900K" and "$1.2M" plots inconsistently; add unit scaling if sources do that.
+    columns = field.constraints.columns or [field.label]
+    types = ["text", *["number"] * len(columns)]
+    llm_rows = rows.rows[: field.constraints.max_items or MAX_CHART_POINTS]
+    kept: list[list[str]] = []
+    evidence: list[Evidence] = []
+    seen: set[str] = set()
+    names = [r.value[0].strip() for r in llm_rows if r.value and r.value[0].strip()]
+    for cells, ev, _, _ in (_verified_row(types, hits, r) for r in llm_rows):
+        category, numbers = cells[0], [canonical_value(c, "number") for c in cells[1:]]
+        others = [n for n in names if normalize(n) != normalize(category)]
+        if (
+            not any(_states_point(category, cells[1:], e.quote, others) for e in ev)
+            or not category
+            or find_tokens(category)
+            or normalize(category) in seen
+            or None in numbers
+        ):
+            continue
+        seen.add(normalize(category))
+        kept.append([category, *map(str, numbers)])
+        have = {(x.chunk_id, x.quote) for x in evidence}
+        evidence += [e for e in ev if (e.chunk_id, e.quote) not in have]
+    if len(kept) < 2:
+        return _missing(field, "evidence_failed_verification", docs)
+    partial = len(kept) < len(llm_rows)
+    return FieldMappingResult(
+        field_id=field.field_id,
+        status="partial" if partial else "populated",
+        value=kept,
+        evidence=evidence,
+        confidence=CONF_PARTIAL if partial else CONF_TYPED,
         missing_reason="insufficient_evidence" if partial else None,
         checked_documents=docs,
         conflict_details=None,

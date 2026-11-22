@@ -63,6 +63,17 @@ def _strings(value: Value) -> list[str] | None:
     return items if all(i.strip() for i in items) else None
 
 
+def _chart_row(row: object) -> bool:
+    """A data point: a non-empty category, then one or more cells that each state one number."""
+    return (
+        isinstance(row, list)
+        and len(row) >= 2
+        and all(isinstance(c, str) for c in row)
+        and bool(row[0].strip())
+        and all(canonical_value(c, "number") is not None for c in row[1:])
+    )
+
+
 def _coerce(index: int, value: Value, expected_type: str) -> Value:
     if len(str(value)) > MAX_VALUE_CHARS:
         raise _bad(index, "the value is too long.")
@@ -76,6 +87,9 @@ def _coerce(index: int, value: Value, expected_type: str) -> Value:
         if isinstance(value, str | int | float) and not isinstance(value, bool):
             if (canon := canonical_value(value, expected_type)) is not None:
                 return canon
+    elif expected_type == "chart":
+        if isinstance(value, list) and value and all(_chart_row(r) for r in value):
+            return [[r[0], *(str(canonical_value(c, "number")) for c in r[1:])] for r in value]
     elif isinstance(value, list) and value and all(isinstance(r, list) for r in value):
         return value  # table: rows of cell strings, same shape as an extracted table
     raise _bad(index, "the value does not fit the field type.")

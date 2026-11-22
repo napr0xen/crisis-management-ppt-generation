@@ -37,7 +37,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 15 | Row-grouped table extraction | **Complete** (live-tested; `main` at `1a3b6b4`) |
 | 16 | Grounded synthesis for summary & finding fields | **Complete** (live-tested; `main` at `1a3b6b4`) |
 | 17 | MLX provider, token scanner fix, tile-card & numbered-list grouping | **Complete** (on branch, awaiting live test) |
-| 18 | Native PPTX chart population & generation | Not started |
+| 18 | Native PPTX chart population & generation | **Complete** (on branch, awaiting live test) |
 | next | Universal extraction & mapping accuracy | all four gaps addressed in Phases 13-16; Phases 17-18 follow the Phase 14-16 live test |
 
 ---
@@ -408,6 +408,32 @@ Cause (Phase 14-16 live test on a 9-slide deck): `[# 1]`..`[# 6]` stage counters
   The gain is the highlights list (conflict, conflict, missing before; all three populated and distinct after, verbatim in one records call). The keyed station cards were already right field by field and stay right in one call instead of nine. The 3 misses are the Phase 15 roster row ("drove the delivery van" written as "Driver"), unchanged.
 - **Trade-offs:** cards drawn without a container shape are not tiles; a keyed record is tied to its heading by the prompt only (group fields skip the per-field candidate check); synthesized list items are not cut to their own slot's `max_chars`; `openai_compat` sends `chat_template_kwargs`, which the OpenAI cloud API rejects (local servers only). Templates registered before Phase 17 have no `card` and keep the old grouping until re-registered.
 - **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 181 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1556 passed, 1 deselected (`perf`). `/ponytail-review`: symbol-only brackets (`Cost [€]`) had become tokens, fixed to letter-or-digit (test added); `openai_compat` cloud limit documented; synthesized list slots now carry `item = 0` so the chat summary names them. A local scan of the live deck then showed the stage counters still got only the section heading, so the own label is now appended (`Sourcing Pipeline / Requirement`, test added). `/ecc:quality-gate` clean. Live test pending.
+
+---
+
+## Phase 18: Native PPTX chart population & generation
+
+Cause: charts were skipped by the IR prompt, so a template's native chart kept its sample numbers (the live deck's spend chart showed `[Category 1..6]` with values 6..1) and a chart placeholder stayed a token.
+
+- **Entry:** Phase 17 done (branch `phase-17-mlx-and-grouping`, `ee4658f`).
+- **Deliverables:** `chart` anchor kind with `ChartRef` (type, series, category count; XY, bubble and seriesless charts skipped), `expected_type` `chart`, write modes `fill_chart` (`chart.replace_data`, styling kept, title tokens unwrapped) and `insert_chart` (native chart at the placeholder's box, type from the data's shape: pie / line / bar / column); IR rules and series columns set by code; `engine._chart_result` (one point per row, kept only when one verified quote states the category and its numbers in order, `_states_point`; at least 2 points or `missing`); empty chart plus marker title for `missing`/`conflict`; chat edits for chart rows ([system-design.md § 4-8](system-design.md#4-anchormap)).
+- **Exit:**
+  - Tests on two or more unrelated domains (weather station rainfall, library loans by genre, survey shares): scanner ids unchanged by charts, IR validation both ways, point verification (placeholder, non-numeric, duplicate, unanchored, unretrieved, injected, `1.8` vs `18`, swapped pairs in a shared quote, number before its category), `chart_type_for` branches incl. Spanish months and quarters, `replace_data` and `add_chart` outputs reopened with exact values and boxes, markers on both modes, only chart parts change;
+  - eval hard gates pass, before/after recorded; `uv run ruff check .`, `uv run ruff format --check .`, `uv run alembic check`, `uv run pytest` green.
+- **Eval** (`qwen3:14b`, `LLM_NUM_CTX=32768`; 102 fields: a `fill_chart` rainfall chart stated in prose and a markdown table, an `insert_chart` loans-by-genre chart and an absent wind-speed chart added; before = Phase 17, where `chart` fields could not exist):
+
+  | Metric | Before (Phase 17, 99 fields) | After (102 fields) |
+  |---|---|---|
+  | Fabricated citations | 0 | 0 |
+  | Citation verification | 100% | 100% |
+  | Seeded conflicts detected | 100% | 100% |
+  | Absent fields `missing` | 100% | 100% (absent chart `missing`) |
+  | Field accuracy | 95.8% (69/72) | 95.9% (71/74) |
+  | Chart fields correct | not supported | 2/2 populated with exactly the verified points |
+
+  The 3 misses are the Phase 15 roster row, unchanged. An earlier run dropped the table months May and June (`| May | 48 |` is 6 characters after normalization, under the 8-character quote minimum, so the chart was `partial`); the row prompt now asks for such a row to be quoted with its neighbour, and `_states_point` keeps a multi-point quote from backing a swapped pair. Another run in this phase gave `power_outage.estimated_cost` a conflict (an untouched path, `missing` again on re-run): run variance, noted.
+- **Trade-offs:** numbers carry no K/M scaling (`$1.2M` is 1.2); a number written before its category is not read as a point (the chart may end `partial`/`missing`, never wrong); the inserted chart type is a rule of thumb on the data's shape; a chart placeholder inside a group gets group child coordinates; docx/xlsx charts are not touched.
+- **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 183 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1633 passed, 1 deselected (`perf`). `/ponytail-review`: `markers.content` turned any `fill_table_rows` text value into one-character rows, guard restored (test added); seriesless charts now skipped; the eval finding above led to `_states_point` and the short-row quote rule (tests added). `/ecc:quality-gate` clean. Live test pending.
 
 ---
 

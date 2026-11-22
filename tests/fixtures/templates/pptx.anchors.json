@@ -19,7 +19,8 @@
         12
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s1:sp3",
@@ -38,7 +39,8 @@
         56
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s2:sp2",
@@ -57,7 +59,8 @@
         12
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s2:sp3",
@@ -79,7 +82,8 @@
         33
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp2",
@@ -98,7 +102,8 @@
         12
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r0c0",
@@ -121,7 +126,8 @@
         40
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r0c1",
@@ -144,7 +150,8 @@
         40
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r0c2",
@@ -167,7 +174,8 @@
         40
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r1c0",
@@ -190,7 +198,8 @@
         40
       ],
       "context": "Name",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r1c1",
@@ -213,7 +222,8 @@
         40
       ],
       "context": "Role",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r1c2",
@@ -236,7 +246,8 @@
         40
       ],
       "context": "Owner",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r2c0",
@@ -259,7 +270,8 @@
         40
       ],
       "context": "Name",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r2c1",
@@ -282,7 +294,8 @@
         40
       ],
       "context": "Role",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp3:r2c2",
@@ -305,7 +318,8 @@
         40
       ],
       "context": "Owner",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "pptx:s3:sp5",
@@ -326,7 +340,8 @@
         73
       ],
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     }
   ]
 }

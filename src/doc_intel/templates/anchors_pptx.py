@@ -9,7 +9,7 @@ from pptx.shapes.base import BaseShape
 from pptx.slide import Slide
 
 from doc_intel.templates.anchors import cell_context, find_tokens, has_letter, static_text
-from doc_intel.templates.schemas import Anchor, TableRef
+from doc_intel.templates.schemas import Anchor, ChartRef, TableRef
 
 
 def _shapes(shapes: Iterable[BaseShape]) -> Iterator[BaseShape]:
@@ -20,10 +20,18 @@ def _shapes(shapes: Iterable[BaseShape]) -> Iterator[BaseShape]:
 
 
 def keyed_shapes(shapes: Iterable[BaseShape]) -> Iterator[tuple[str, BaseShape]]:
-    # Real decks reuse shape ids, so the k-th text/table shape per id gets an "_k" suffix.
+    # Real decks reuse shape ids, so the k-th text/table/chart shape per id gets an "_k" suffix.
     seen: Counter[tuple[int, str]] = Counter()
     for shape in _shapes(shapes):
-        kind = "text" if shape.has_text_frame else "table" if shape.has_table else None
+        kind = (
+            "text"
+            if shape.has_text_frame
+            else "table"
+            if shape.has_table
+            else "chart"
+            if getattr(shape, "has_chart", False)
+            else None
+        )
         if kind is None:
             continue
         seen[shape.shape_id, kind] += 1
@@ -174,6 +182,38 @@ def _own_label(text: str, tokens: list[str]) -> str | None:
     return label if has_letter(label) else None
 
 
+def _chart_anchor(
+    shape: BaseShape, base: str, path: list[str], pos: tuple[int, int] | None, context: str | None
+) -> Anchor | None:
+    chart = shape.chart
+    try:
+        kind = chart.chart_type.name
+        categories = [str(c) for c in chart.plots[0].categories]
+    except (IndexError, NotImplementedError, ValueError):  # no plot, or a type python-pptx lacks
+        return None
+    # shortcut: XY and bubble charts have no category axis and are not fields, add them when a
+    # template needs numeric x values filled.
+    series = [s.name for s in chart.series]
+    if kind.startswith(("XY_SCATTER", "BUBBLE")) or not series:  # no series: nothing to fill
+        return None
+    title = chart.chart_title.text_frame.text if chart.has_title else ""
+    parts = [f"Chart {kind}", *([f"title: {title}"] if title else [])]
+    parts += [f"series: {', '.join(series)}", f"categories: {', '.join(categories)}"]
+    text = "; ".join(parts)
+    tokens = find_tokens("\n".join([title, *categories, *series]))
+    return Anchor(
+        anchor_id=base,
+        kind="chart",
+        path=path,
+        text=text[:200],
+        tokens=tokens,
+        is_placeholder=bool(tokens),
+        pos=pos,
+        context=context,
+        chart=ChartRef(chart_type=kind, series=series, categories=len(categories)),
+    )
+
+
 def extract(data: bytes) -> list[Anchor]:
     anchors: list[Anchor] = []
     prs = Presentation(BytesIO(data))
@@ -247,4 +287,17 @@ def extract(data: bytes) -> list[Anchor]:
                                 card=cards.get(key),
                             )
                         )
+            elif anchor := (
+                _chart_anchor(
+                    shape,
+                    base,
+                    path,
+                    pos,
+                    _context(shape, headings, prs.slide_width, prs.slide_height),
+                )
+                if shape.has_chart
+                else None
+            ):
+                # shortcut: a chart has no card, so repeating chart tiles are separate fields.
+                anchors.append(anchor)
     return anchors

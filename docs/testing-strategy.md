@@ -41,7 +41,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 | `storage/local` | write-once refusal without `overwrite=True`; key built only from ids; path traversal attempts rejected |
 | `ingestion/chunker` | per-format metadata; tables separate; ≤ `CHUNK_MAX_TOKENS`; contiguous `chunk_index`; no cross-section chunks |
 | `templates/anchors_*` | golden AnchorMap per fixture template; `anchor_id` grammar; formula cells excluded; vertical merges counted once; token false positives (`[1]`, `XXXL`, `___`) not anchored; `MAX_ANCHORS` boundary (400 passes, 401 and 0 anchors fail) |
-| `templates/ir_builder.validate` | unknown/duplicate anchor; invalid `write_mode` for kind; `replace_token` without matching token; `sheet_cell` allows only `fill_cell`; `fill_table_rows` only at row 1, col 0; no second field on a `fill_table_rows` table |
+| `templates/ir_builder.validate` | unknown/duplicate anchor; invalid `write_mode` for kind; `replace_token` without matching token; `sheet_cell` allows only `fill_cell`; `fill_table_rows` only at row 1, col 0; no second field on a `fill_table_rows` table; `chart` type only with `fill_chart`/`insert_chart` and back |
 | `mapping/verifier` | exact; whitespace/curly-quote/dash normalization; quote of a Markdown table row without the `|` separators; chunk not in hits; < 8 chars; typed value absent from quote; number/date canonicalization; sign and thousand/million/billion scale; comma digit grouping; European numbers and the ambiguous single-group US reading; English and Spanish month-name dates |
 | `mapping/engine` status rules | 0 → missing (each `missing_reason`); 1 → populated; incomplete → partial; ≥ 2 distinct → conflict; equal values merged; `llm_error` doesn't fail run; evidence metadata copied from hits, not LLM |
 | `mapping/schemas` | `FieldMappingResult` invariants reject: populated(rag) without evidence, missing with value, conflict with < 2 candidates |
@@ -128,7 +128,7 @@ For each fixture template × format:
 | Untouched package parts unchanged | C14N-equal | C14N-equal | zip entries byte-equal |
 | Written anchor keeps style | first-run `a:rPr` + `a:pPr` equal | `w:rPr` + `w:pPr` (incl. `w:numPr`) equal | cell `s` attribute equal |
 | Markers | `MISSING_MARKER`/`CONFLICT_MARKER` text present at the anchor for missing/conflict fields |  |  |
-| Structure | slide/shape count equal; layouts/masters untouched | headers/footers, sections, tables count equal | sheets, charts, images, defined names untouched; formula cells unchanged; `fullCalcOnLoad="1"` set |
+| Structure | slide/shape count equal (an `insert_chart` swaps one placeholder for one chart); layouts/masters untouched; only filled charts' chart parts and embedded workbooks change | headers/footers, sections, tables count equal | sheets, charts, images, defined names untouched; formula cells unchanged; `fullCalcOnLoad="1"` set |
 | Typed values | — | — | numbers written as `<v>`; dates as `<v>` only in date-formatted cells; strings and other dates as `inlineStr` |
 | Opens cleanly | `python-pptx` loads | `python-docx` loads | `openpyxl` loads |
 

@@ -18,10 +18,13 @@ AnchorKind = Literal[
     "footer_paragraph",
     "content_control",
     "sheet_cell",
+    "chart",
 ]
-WriteMode = Literal["replace_text", "replace_token", "fill_cell", "fill_table_rows"]
+WriteMode = Literal[
+    "replace_text", "replace_token", "fill_cell", "fill_table_rows", "fill_chart", "insert_chart"
+]
 ExpectedType = Literal[
-    "text", "paragraphs", "bullet_list", "number", "currency", "percent", "date", "table"
+    "text", "paragraphs", "bullet_list", "number", "currency", "percent", "date", "table", "chart"
 ]
 
 MAX_ANCHORS = 400
@@ -35,6 +38,12 @@ class TableRef(_Strict):
     row: int  # 0-based; row 0 is the header row
     col: int  # 0-based
     header: str | None  # text of row 0 in this column
+
+
+class ChartRef(_Strict):
+    chart_type: str  # the XL_CHART_TYPE member name, e.g. "BAR_CLUSTERED"
+    series: list[str]
+    categories: int  # count
 
 
 class Anchor(_Strict):
@@ -52,6 +61,8 @@ class Anchor(_Strict):
     context: str | None = None
     # pptx only: "set.member" of the repeating card (identical containers) the shape sits in
     card: str | None = None
+    # pptx only: a native category chart (kind "chart")
+    chart: ChartRef | None = None
 
 
 class AnchorMap(_Strict):
@@ -117,4 +128,6 @@ WRITE_MODE_KINDS: dict[str, frozenset[str]] = {
     "replace_token": TEXT_KINDS,
     "fill_cell": frozenset({"table_cell", "sheet_cell"}),
     "fill_table_rows": frozenset({"table_cell"}),
+    "fill_chart": frozenset({"chart"}),
+    "insert_chart": frozenset({"shape_text"}),
 }

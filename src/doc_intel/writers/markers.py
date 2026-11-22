@@ -62,7 +62,7 @@ def content(
         items = [missing_marker.replace("{label}", field.label)]
     elif result.status == "conflict":
         items = [conflict_marker]
-    elif t == "table" and field.write_mode == "fill_table_rows":
+    elif (t == "table" and field.write_mode == "fill_table_rows") or t == "chart":
         return [[_clean(cell) for cell in row] for row in value]  # type: ignore[union-attr]
     elif fmt == "xlsx" and t in ("number", "currency"):
         return value  # type: ignore[return-value]

@@ -28,6 +28,9 @@ from doc_intel.templates.schemas import IRField
 # and one truncated retry echo take PROMPT_OVERHEAD_TOKENS, so hit_budget chunks plus that fit
 # prompt_tokens(LLM_NUM_CTX) (6 at 8192, 26 at 32768) and the rest of the window is the reply.
 PROMPT_OVERHEAD_TOKENS = 3072
+# A chart plots at most this many points unless the IR sets max_items.
+# shortcut: one cap for every chart, upgrade by sizing it from the chart's category count.
+MAX_CHART_POINTS = 24
 MAX_PRIMARY_HITS = 12  # ranked hits; the rest of the budget is neighbor chunks (retriever)
 
 _SPEC_FIELDS = {"label", "description", "section_path", "expected_type", "constraints", "context"}
@@ -122,10 +125,18 @@ def _rows_spec(field: IRField) -> dict[str, Any]:
     """The spec of a `fill_table_rows` field: its constraints name the columns."""
     first = bounded_field(field)
     columns: list[dict[str, Any]] = [{"label": c} for c in first.constraints.columns or []]
+    max_rows = first.constraints.max_items
+    if first.expected_type == "chart":  # one data point per row: category, then a number per series
+        series = first.constraints.columns or [first.label]
+        columns = [
+            {"label": "category", "description": "the category or period label of one data point"},
+            *[{"label": s, "expected_type": "number"} for s in series],
+        ]
+        max_rows = max_rows or MAX_CHART_POINTS
     spec: dict[str, Any] = {
         "columns": columns,
         "description": f"{first.label}: {first.description}",
-        "max_rows": first.constraints.max_items,
+        "max_rows": max_rows,
         "section_path": first.section_path,
         "context": first.context,
     }

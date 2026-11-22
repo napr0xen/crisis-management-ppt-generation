@@ -15,7 +15,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:body:p3",
@@ -32,7 +33,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:body:p4",
@@ -49,7 +51,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:body:t0:r0c0",
@@ -69,7 +72,8 @@
       },
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:body:t0:r0c1",
@@ -89,7 +93,8 @@
       },
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:body:t0:r0c2",
@@ -109,7 +114,8 @@
       },
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:body:t0:r1c0",
@@ -129,7 +135,8 @@
       },
       "pos": null,
       "context": "Item",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:body:t0:r1c2",
@@ -149,7 +156,8 @@
       },
       "pos": null,
       "context": "Date",
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:sec1:header:p0",
@@ -166,7 +174,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:sec1:footer:p0",
@@ -181,7 +190,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "docx:sdt:owner",
@@ -193,7 +203,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     }
   ]
 }

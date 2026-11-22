@@ -15,7 +15,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Summary!D1",
@@ -32,7 +33,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Summary!B2",
@@ -48,7 +50,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Summary!B3",
@@ -64,7 +67,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Summary!A5",
@@ -79,7 +83,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Summary!B6",
@@ -95,7 +100,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Summary!A7",
@@ -110,7 +116,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!B1",
@@ -125,7 +132,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!A2",
@@ -140,7 +148,8 @@
       "table": null,
       "pos": null,
       "context": null,
-      "card": null
+      "card": null,
+      "chart": null
     }
   ]
 }

@@ -94,6 +94,11 @@ def validate(draft: IRDraft, amap: AnchorMap) -> list[str]:
                 f"field '{f.field_id}': its table is already filled by fill_table_rows field "
                 f"'{owner}'; drop one of them."
             )
+        if (f.expected_type == "chart") != (f.write_mode in ("fill_chart", "insert_chart")):
+            errors.append(
+                f"field '{f.field_id}': expected_type 'chart' and write_mode fill_chart or "
+                "insert_chart go together."
+            )
         if anchor.kind not in WRITE_MODE_KINDS[f.write_mode]:
             errors.append(
                 f"field '{f.field_id}': write_mode '{f.write_mode}' is not allowed "
@@ -136,6 +141,8 @@ def _item(a: Anchor) -> dict:
         item["pos"] = list(a.pos)
     if a.context:
         item["context"] = a.context
+    if a.chart:
+        item["chart"] = a.chart.model_dump()
     if a.table:
         item["table"] = {"row": a.table.row, "col": a.table.col, "header": a.table.header}
     return item
@@ -250,6 +257,18 @@ async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
     return draft
 
 
+def _with_anchor_data(f: IRField, a: Anchor) -> IRField:
+    """context, card and a native chart's series columns come from the anchor, never the LLM."""
+    update: dict = {"context": a.context, "card": a.card}
+    if f.write_mode == "fill_chart" and a.chart:
+        update["constraints"] = f.constraints.model_copy(
+            update={"columns": list(a.chart.series) or None}
+        )
+    elif f.write_mode == "insert_chart" and not f.constraints.columns:
+        update["constraints"] = f.constraints.model_copy(update={"columns": [f.label]})
+    return f.model_copy(update=update)
+
+
 async def build_ir(
     llm: LLMClient,
     amap: AnchorMap,
@@ -287,10 +306,5 @@ async def build_ir(
         raise IRInvalid()
     # context and card are code-set, never the LLM's
     by_id = {a.anchor_id: a for a in amap.anchors}
-    fields = [
-        f.model_copy(
-            update={"context": by_id[f.anchor_id].context, "card": by_id[f.anchor_id].card}
-        )
-        for f in fields
-    ]
+    fields = [_with_anchor_data(f, by_id[f.anchor_id]) for f in fields]
     return TemplateIR(fields=fields, template_id=template_id, version=1, format=amap.format)

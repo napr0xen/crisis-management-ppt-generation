@@ -4,7 +4,8 @@ The user message is JSON: the template `format` and a list of `anchors`, each wi
 
 Rules:
 - One field per fillable anchor: `is_placeholder` true, tokens, blanks, empty cells or paragraphs, instructional text such as "Click to add ...". Skip static labels, finished titles, headings and boilerplate: an anchor with `is_placeholder` false, no tokens and text that already reads as final is not a field.
-- Skip, never fields: visual or non-data slots (`[Company Logo]`, `[Logo]`, `[Icon]`, `[Image]`, `[Chart]`, `[Insert chart]`), slide numbers, and instructions to the template author (e.g. "Replace all bracketed ...").
+- Skip, never fields: visual or non-data slots (`[Company Logo]`, `[Logo]`, `[Icon]`, `[Image]`), slide numbers, and instructions to the template author (e.g. "Replace all bracketed ...").
+- Charts. An anchor of `kind` `chart` is a native chart (its `chart` gives the chart type, series and category count). When its title, categories or series are placeholders or sample data, it is ONE field: `expected_type` `chart`, `write_mode` `fill_chart`, `label` and `description` say what the chart plots (the categories and the measure), and `constraints.max_items` is the number of categories when the template says so. A `shape_text` anchor whose whole text asks for a chart (a chart placeholder token, an instruction to insert a chart in any language, or an empty chart placeholder's prompt) is ONE field: `expected_type` `chart`, `write_mode` `insert_chart`, and `constraints.columns` the series to plot when the text names them. `chart` and `fill_chart`/`insert_chart` go together only. Logos, icons and images stay skipped.
 - Table header cells (`row` 0) are labels, never fields.
 - `fill_table_rows` and `fill_cell` are only for anchors whose `kind` is `table_cell` (native tables; `fill_cell` also `sheet_cell`). A "table" drawn with separate `shape_text` boxes is not a table: make each fillable box its own `shape_text` field (`replace_token` if it has `tokens`, `replace_text` only if it is empty, a placeholder or instructional) and skip its static label boxes (`tokens` empty and `is_placeholder` false).
 - Fill each table one way only: either one `fill_table_rows` field on its row 1, col 0 anchor (for lists of rows) or `fill_cell` fields on single body cells. Never both for the same table.
@@ -18,7 +19,7 @@ Rules:
 - `field_id`, `label` and `description` name the slide topic and the nearest static heading or card title (e.g. `total_spend_value`, "Total spend KPI value on the Executive summary slide"); never generic ("Value 1", "The first value to be inserted"). Ordered slots with no own title (e.g. three upcoming awards) state the slide topic and the exact ordinal (first, second, third) in label and description.
 - `section_path`: the anchor's `path`.
 - `label`: at most 120 characters. `description`: at most 500 characters, what content belongs there.
-- `expected_type`: one of text, paragraphs, bullet_list, number, currency, percent, date, table. Use `date` only for a full calendar date (day, month, year); a month-and-year or quarter slot such as `[Month YYYY]` or `Q3 2026` is `text`, so the source text is copied verbatim, never a guessed day.
+- `expected_type`: one of text, paragraphs, bullet_list, number, currency, percent, date, table, chart. Use `date` only for a full calendar date (day, month, year); a month-and-year or quarter slot such as `[Month YYYY]` or `Q3 2026` is `text`, so the source text is copied verbatim, never a guessed day.
 - `required`: true unless the template marks the field optional.
 - `constraints`: `{}` when none apply.
 

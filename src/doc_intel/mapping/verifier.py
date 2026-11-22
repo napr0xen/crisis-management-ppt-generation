@@ -37,13 +37,13 @@ _MONTH_NAMES = {
     "es": "enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre"
     " diciembre",
 }
-_MONTHS = {
+MONTHS = {
     w: i
     for names in _MONTH_NAMES.values()
     for i, name in enumerate(names.split(), 1)
     for w in (name, name[:3])
 }
-_MONTHS.update({"sept": 9, "setiembre": 9})
+MONTHS.update({"sept": 9, "setiembre": 9})
 # shortcut: ISO and English/Spanish month-name dates only (no 03/04/2026: day/month order is
 # ambiguous), add formats when the eval set has them.
 _WORD = r"([^\W\d_]+)\.?"
@@ -120,13 +120,19 @@ def _date_spans(s: str) -> list[tuple[date, re.Match[str]]]:
         for m in rx.finditer(s):
             parts = dict(zip(order, m.groups(), strict=True))
             month = (
-                _MONTHS.get(parts["m"].casefold()) if not parts["m"].isdigit() else int(parts["m"])
+                MONTHS.get(parts["m"].casefold()) if not parts["m"].isdigit() else int(parts["m"])
             )
             try:
                 spans.append((date(int(parts["y"]), month, int(parts["d"])), m))
             except (ValueError, TypeError):  # "4 Marchy 2026", "31 febrero 2022": not dates
                 continue
     return spans
+
+
+def is_date(s: str) -> bool:
+    """The whole text is one date the verifier can parse (ISO or month-name)."""
+    s = s.strip()
+    return any(m[0] == s for _, m in _date_spans(s))
 
 
 def _dates(s: str) -> set[date]:
