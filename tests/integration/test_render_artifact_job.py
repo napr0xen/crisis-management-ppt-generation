@@ -108,7 +108,7 @@ def stored(key):
 async def test_run_mapping_renders_artifact_with_merged_warnings(sm, user_a, fake, monkeypatch):
     ctx, run_id, job_id, _ = await queue_run(sm, user_a)
 
-    async def fake_map(c, field, document_ids, retriever, llm):
+    async def fake_map(c, field, document_ids, retriever, llm, other_headings=()):
         return missing(field, document_ids)
 
     monkeypatch.setattr(handlers_mod, "map_field", fake_map)

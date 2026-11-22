@@ -21,7 +21,7 @@ from doc_intel.ingestion.pipeline import parse_and_chunk
 from doc_intel.ingestion.upload import artifact_key, parsed_key
 from doc_intel.jobs.worker import Handler, OnFailed, Sessionmaker, set_progress
 from doc_intel.llm.gateway import LLMClient
-from doc_intel.mapping.engine import map_field, shared_facts, summarize
+from doc_intel.mapping.engine import map_field, shared_facts, sibling_headings, summarize
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import FieldMappingResult
 from doc_intel.storage.base import StorageBackend
@@ -282,6 +282,7 @@ def make_handlers(
         results = {}
         # Copies of one fact on different slides/sheets/sections map once (one answer, one call).
         shared, by_fact = shared_facts(ir.fields), {}
+        siblings = sibling_headings(ir.fields)
         for done, field in enumerate(ir.fields, start=1):
             # field_id is template-derived and goes to jobs.progress only, never to logs
             await set_progress(
@@ -293,7 +294,9 @@ def make_handlers(
                     update={"field_id": field.field_id}
                 )
             else:
-                results[field.field_id] = await map_field(ctx, field, document_ids, retriever, llm)
+                results[field.field_id] = await map_field(
+                    ctx, field, document_ids, retriever, llm, siblings.get(field.field_id, ())
+                )
                 if key:
                     by_fact[key] = results[field.field_id]
             await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done})

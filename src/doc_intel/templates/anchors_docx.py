@@ -6,7 +6,7 @@ from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from doc_intel.templates.anchors import find_tokens
+from doc_intel.templates.anchors import cell_context, find_tokens, static_text
 from doc_intel.templates.schemas import Anchor, AnchorKind, TableRef
 
 
@@ -21,7 +21,12 @@ def _heading_level(par: Paragraph) -> int | None:
 
 
 def _anchor(
-    anchor_id: str, kind: AnchorKind, path: list[str], text: str, table: TableRef | None = None
+    anchor_id: str,
+    kind: AnchorKind,
+    path: list[str],
+    text: str,
+    table: TableRef | None = None,
+    context: str | None = None,
 ) -> Anchor:
     tokens = find_tokens(text)
     return Anchor(
@@ -33,6 +38,7 @@ def _anchor(
         # a content control exists to be filled; anything else only when unfilled
         is_placeholder=bool(tokens) or not text or kind == "content_control",
         table=table,
+        context=context,
     )
 
 
@@ -41,6 +47,7 @@ def _body(doc: DocumentObject) -> list[Anchor]:
     trail: dict[int, str] = {}
     p_idx = t_idx = 0
     prev_heading = False
+    label: str | None = None  # static text of the previous non-empty plain paragraph
     for child in doc.element.body.iterchildren():
         if child.tag == qn("w:p"):
             par = Paragraph(child, doc)
@@ -48,15 +55,20 @@ def _body(doc: DocumentObject) -> list[Anchor]:
             if level is not None:
                 trail = {k: v for k, v in trail.items() if k < level}
                 trail[level] = par.text
-                prev_heading = True
+                prev_heading, label = True, None
             else:
                 if par.text or prev_heading:
                     path = [trail[k] for k in sorted(trail)]
-                    anchors.append(_anchor(f"docx:body:p{p_idx}", "paragraph", path, par.text))
+                    anchor = _anchor(f"docx:body:p{p_idx}", "paragraph", path, par.text)
+                    if anchor.is_placeholder:
+                        anchor.context = label
+                    anchors.append(anchor)
+                if par.text.strip():
+                    label = static_text(par.text)
                 prev_heading = False
             p_idx += 1
         elif child.tag == qn("w:tbl"):
-            prev_heading = False
+            prev_heading, label = False, None
             # shortcut: nested tables are not anchored, upgrade when templates need them.
             table = Table(child, doc)
             if not table.rows:  # every row hides in a row-level sdt; keep t_idx aligned
@@ -66,13 +78,17 @@ def _body(doc: DocumentObject) -> list[Anchor]:
             headers = [c.text.strip() or None for c in table.rows[0].cells]
             seen = set()  # table-wide: a vertical merge repeats its cell in every spanned row
             for r, row in enumerate(table.rows):
+                texts = [cell.text for cell in row.cells]
                 for c, cell in enumerate(row.cells):
                     if cell._tc in seen:  # merged cells repeat; keep the first grid position
                         continue
                     seen.add(cell._tc)  # the element, not id(): proxies' ids get reused
                     ref = TableRef(row=r, col=c, header=headers[c] if c < len(headers) else None)
+                    ctx = cell_context(texts, c, ref.header) if r else None
                     anchors.append(
-                        _anchor(f"docx:body:t{t_idx}:r{r}c{c}", "table_cell", path, cell.text, ref)
+                        _anchor(
+                            f"docx:body:t{t_idx}:r{r}c{c}", "table_cell", path, cell.text, ref, ctx
+                        )
                     )
             t_idx += 1
     return anchors

@@ -33,7 +33,8 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 11 | Conversational edits & run versioning | **Complete** |
 | 12 | Hardening, evaluation & audit | **Complete** |
 | 13 | Universal accuracy: number formatting & cross-slide facts | **Complete** |
-| next | Universal extraction & mapping accuracy (remaining gaps) | next priority, not yet planned ([below](#next-priority-universal-extraction--mapping-accuracy)) |
+| 14 | Card context & 32k retrieval budget | **Complete** (on branch, `main` not yet fast-forwarded: awaiting live test) |
+| next | Universal extraction & mapping accuracy (remaining gaps) | Phases 15-16 ([below](#next-priority-universal-extraction--mapping-accuracy)) |
 
 ---
 
@@ -293,6 +294,36 @@ The first two gaps of the [next priority](#next-priority-universal-extraction--m
 
 ---
 
+## Phase 14: Spatial / card context & 32k retrieval budget
+
+Cause: repeated cards on one slide (`[Wait time]` under three headings) were mapped from the label alone and returned every card's value as a conflict, and with `LLM_NUM_CTX=32768` (since `58d5261`) the extractor still saw at most 6 chunks sized for 8k.
+
+- **Entry:** Phase 13 done (`main` at `58d5261`).
+- **Deliverables:**
+  - `Anchor.context` / `IRField.context` ([system-design.md § 4-5](system-design.md#4-anchormap)): the static heading, row label or column header next to a slot, found by code (pptx geometry, table row/column labels, docx label paragraph), set on every IR field by `build_ir` and hidden from the LLM schema;
+  - context in the retrieval query, the extraction spec and `share_key`; extraction prompt rules for context and for the kind of quantity (a count is not money);
+  - candidate check (`extractor.check_candidates`, all or nothing, context fields only, with sibling headings);
+  - `prompt_tokens(num_ctx) = max(6144, num_ctx // 2)`, `hit_budget` (6 chunks at 8192, 26 at 32768), `Retriever.search(top_n)` (12 ranked hits) and `with_neighbors` (previous chunks first, then next, reading order); `Hit.chunk_index`.
+- **Exit:**
+  - Tests on two or more unrelated domains (healthcare, agriculture, HR, environment): card headings above/left, gap limit, title never used, groups, table cell labels, docx label paragraphs, context reaches IR/query/spec/share key, sibling-only values are `missing`, conflicts under one heading stay conflicts, budget at 8k/32k, neighbors order and budget;
+  - eval hard gates pass, before/after recorded; `uv run ruff check .`, `uv run ruff format --check .`, `uv run alembic check`, `uv run pytest` green.
+- **Eval** (`qwen3:14b`, `LLM_NUM_CTX=32768`; the set grew from 39 to 55 fields with two card templates and two long parallel-section reports; "before" is the Phase 13 code on the same 55 fields, without `context`):
+
+  | Metric | Before | After |
+  |---|---|---|
+  | Fabricated citations | 0 | 0 |
+  | Citation verification | 100% | 100% |
+  | Seeded conflicts detected | 100% (5/5) | 100% (5/5) |
+  | Absent fields `missing` | 75% (12/16) | 100% (16/16) |
+  | Field accuracy | 61.8% (21/34) | 100% (34/34) |
+  | Latency p50 / max | 5.3 s / 27.4 s | 5.9 s / 16.2 s |
+
+  Q&A eval unchanged: 0 fabricated, 100% verification, unanswerable 100%, recall@8 100%.
+- **Trade-offs:** one extra LLM call per context field with candidates; at 32k a field prompt is up to ~16k tokens (more prompt time per field); a template that reuses one token under different headings no longer shares one value. Rejected while measuring: dropping single candidates in the check (it rejected one of two real conflicting values) and checking fields without context by label (it rejected many correct values).
+- **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 174 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1362 passed, 1 deselected (`perf`). `/ponytail-review`: ship, no findings (note: templates registered before this phase have IRs without `context` until uploaded again); `/ecc:quality-gate` clean. Live test pending: `main` stays at `58d5261` until it passes.
+
+---
+
 ## Next priority: universal extraction & mapping accuracy
 
 Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found in the Phase 10-12 live tests, where the filled finance deck still shows these gaps.
@@ -301,7 +332,7 @@ Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found
 1. **Completely universal.** No finance-, language- or template-specific rules, keywords, field names, labels or layouts. Every fix must generalize to any template (pptx/docx/xlsx) and any source document, and is tested on at least two unrelated domains.
 2. **Accuracy pushed to the maximum possible**, measured on the eval set ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)) before and after each change, without loosening the existing hard gates (0 fabricated citations, 100% citation verification, conflicts never auto-resolved).
 
-**Gaps** (the first two are done in [Phase 13](#phase-13-universal-accuracy-number-formatting--cross-slide-facts)):
+**Gaps** (the first two are done in [Phase 13](#phase-13-universal-accuracy-number-formatting--cross-slide-facts); card context and the 32k budget in [Phase 14](#phase-14-spatial--card-context--32k-retrieval-budget)):
 - **Clean currency and number formatting.** Typed values are written as their canonical form (for example a bare float), not formatted the way the template or source shows them (thousands separators, decimals, currency symbol or code, percent sign). The written text must follow the template's own example or the source's format; xlsx cells keep real numbers.
 - **Consistent cross-slide values.** Only fields that share one `replace_token` key share a value. Fields with different tokens or anchors that ask for the same fact (the same label and type on several slides) can still get different values or statuses.
 - **Accurate row-grouped tables.** `fill_table_rows` rows must each come from one record in the source, with cells from the same row or entity, never mixed across records. Row order and count follow the source.

@@ -49,3 +49,4 @@ class Hit(BaseModel):
     element_type: ElementType
     text: str
     score: float
+    chunk_index: int | None = None  # None for a point written before it was in the payload

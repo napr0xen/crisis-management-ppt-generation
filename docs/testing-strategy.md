@@ -113,6 +113,8 @@ Phase 12 results (2026-11-21, `qwen3:14b`; 15 questions, 5 templates with 39 fie
 | Field accuracy | ≥ 80% soft | 95.5% (21 of 22); the miss is a title that appears only as the source's first heading (`not_found_by_llm`, so `missing`, never a wrong value) |
 | Source recall@8 | ≥ 90% soft | 100% |
 
+Phase 14 results (2026-11-22, `qwen3:14b`, `LLM_NUM_CTX=32768`; 55 fields: two card templates and two long parallel-section reports added; before = Phase 13 code): fabricated 0 / 0, verification 100% / 100%, seeded conflicts 100% / 100%, absent fields 75% / 100%, field accuracy 61.8% / 100%. Q&A unchanged.
+
 ## 6. Template fidelity tests (`tests/integration/test_writers_*.py`)
 
 For each fixture template × format:

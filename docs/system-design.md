@@ -58,11 +58,13 @@ Any failure sets `status = 'failed'` and `error_code` (e.g. `parse_error`, `ocr_
 
 ## 3. Retrieval (shared by Q&A and mapping)
 
-`Retriever(embedder, store, reranker | None).search(ctx: TenantContext, query: str, document_ids: list[UUID] | None = None, k=20)` (`mapping/retriever.py`):
+`Retriever(embedder, store, reranker | None).search(ctx: TenantContext, query: str, document_ids: list[UUID] | None = None, k=20, top_n=8)` (`mapping/retriever.py`):
 1. Embed the query: dense from Ollama with Qwen3's retrieval instruction prefixed, sparse BM25 from the raw query words.
 2. `qdrant_store.hybrid_search`: prefetch `dense` limit 40 and `sparse` limit 40, both with the tenant filter, fused with RRF, limit `k`.
-3. If `RERANKER_ENABLED`, rerank to top 8; otherwise take the top 8 fused hits.
-4. Return a `Hit(chunk_id, document_id, filename, page_number, section_heading, element_type, text, score)` per result.
+3. If `RERANKER_ENABLED`, rerank to top `top_n`; otherwise take the top `top_n` fused hits (Q&A: 8; mapping: see § 7).
+4. Return a `Hit(chunk_id, document_id, filename, page_number, section_heading, element_type, text, score, chunk_index)` per result (`chunk_index` is `null` only for a point written before the payload carried it).
+
+`Retriever.with_neighbors(ctx, hits, budget)` (mapping only) cuts `hits` to `budget`, then adds the chunk at `chunk_index - 1` of every hit (rank order), then the chunk at `+ 1` of every hit, until `budget` chunks (a value's heading usually sits in the chunk before it; cause: in the Phase 14 eval a value chunk made the cut without its heading and was read as the next section's); they are fetched by id with `qdrant_store.retrieve` under the tenant filter. The result is in reading order: documents by their best hit's rank, chunks by `chunk_index` (hits without `chunk_index` last). Nothing is fetched when the budget is spent.
 
 `format_hit` (`mapping/retriever.py`) renders each hit for both Q&A and mapping; header fields are flattened to one line with `[`, `]`, `|` removed.
 
@@ -83,7 +85,8 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
       "tokens": [],
       "is_placeholder": true,
       "table": null,
-      "pos": [50, 40]
+      "pos": [50, 40],
+      "context": "Situation summary"
     },
     {
       "anchor_id": "pptx:s5:sp4:r1c2",
@@ -93,7 +96,8 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
       "tokens": [],
       "is_placeholder": true,
       "table": {"row": 1, "col": 2, "header": "Owner"},
-      "pos": [50, 70]
+      "pos": [50, 70],
+      "context": "Owner"
     }
   ]
 }
@@ -113,6 +117,12 @@ Stage 1, deterministic, no LLM. Stored in `templates.anchor_map`.
 - xlsx: candidates are non-formula cells holding a token, plus empty right and below neighbours of text label cells. Merged non-origin cells are never anchors.
 
 `is_placeholder` means unfilled: tokens present, own text empty, or a content control.
+
+`context` is the static heading or label printed next to the anchor (a card title, a row label, a column header), found by code so repeated cards on one slide stay apart; `null` when none. Static text is a non-empty line of at most 120 characters with no token (whitespace collapsed). Rules (`templates/anchors.py` `static_text`, `cell_context`):
+- pptx `shape_text`: the nearest static text shape on the same slide, never the anchor's own shape or the slide title. A heading above must start above the anchor, end above its vertical centre and overlap it horizontally; a label to the left must start left of it, end left of its horizontal centre and overlap it vertically. The smallest gap wins (ties go to above), and the gap may be at most 20% of the slide height (above) or width (left). Group children are walked like `keyed_shapes()` (`shortcut: group children use the group's child coordinates, like pos`).
+- pptx and docx `table_cell`, body rows only: `row label / column header`, where the row label is the nearest static cell to the left in the same row and the header is row 0's text in that column if static; either part may be absent. Header cells have none.
+- docx `paragraph` that is a placeholder: the directly preceding non-empty body paragraph if it is static and not a heading (headings are already `path`); a table in between gives none.
+- xlsx, header/footer paragraphs, content controls: none.
 
 `tokens` lists placeholder tokens found in the text: `{{…}}`, `[…]` and `<…>` (the last two start with a letter), `XXX` and `TBD` as whole words, and blanks of 4+ underscores (`____`). Each token is at most 100 characters inside its brackets.
 
@@ -135,7 +145,7 @@ The AnchorMap is sent in **batches**, not one prompt: a whole AnchorMap can outg
 - a table's cells stay together;
 - each batch holds at most `MAX_BATCH_ANCHORS = 40` anchors and at most `MAX_BATCH_CHARS = 12,000` characters of compact JSON (~3.5k tokens; `ir_builder.py`), and never mixes groups. A table larger than either cap is split in row order.
 
-Batches run sequentially, and each is validated against its own anchors only. Cells of a table already owned by a `fill_table_rows` field from an earlier batch are not sent again. The fields are then merged in order. A `field_id` already used by an earlier batch is renamed `{id[:60]}_{n}` with the smallest free `n ≥ 2`, and the merged IR is validated once more against the full AnchorMap.
+Each anchor's `context` (§ 4) is sent with it, and after the merged IR validates, every field's `context` is set to its anchor's by code (it is hidden from the LLM's JSON schema, `SkipJsonSchema`, so the model never writes it; an IR stored without it stays valid). Batches run sequentially, and each is validated against its own anchors only. Cells of a table already owned by a `fill_table_rows` field from an earlier batch are not sent again. The fields are then merged in order. A `field_id` already used by an earlier batch is renamed `{id[:60]}_{n}` with the smallest free `n ≥ 2`, and the merged IR is validated once more against the full AnchorMap.
 
 **Safe repair** (`ir_builder._repair`, cause: a real deck whose slide 2 "table" was drawn with separate `shape_text` boxes failed `ir_invalid` twice). Before validation, every LLM reply (first and retry) gets three mechanical slips dropped, in this order:
 1. `fill_table_rows` on an anchor that is not a `table_cell`;
@@ -200,7 +210,8 @@ Each invalid batch gets 1 LLM retry: the original prompt, the previous draft ech
               "token": {"type": "string"},
               "columns": {"type": "array", "items": {"type": "string"}}
             }
-          }
+          },
+          "context": {"type": ["string", "null"]}
         }
       }
     }
@@ -364,7 +375,7 @@ queued ─▶ retrieving ─▶ extracting ─▶ verifying ─▶ rendering ─
 
 `run_mapping` sets `extracting` when the field loop starts, then commits `results`, `summary` and `verifying` in one transaction. It then renders: it sets `rendering` (commit), writes the file, and commits the `artifacts` row together with `completed`, `finished_at` and the writer warnings appended to `summary.warnings`. `retrieving` is not used (each field is retrieved, extracted and verified in turn). A retried job whose run is `verifying`/`rendering` only renders; a `completed` run returns its artifact. `render_artifact` (payload `{mapping_run_id}`) runs the same render for a `verifying`/`rendering` run (Phase 11 edits enqueue it). Failure hooks: `run_mapping` marks any run that is not `completed`/`failed` as `failed`; `render_artifact` only fails `verifying`/`rendering` runs. `finished_at` is set at `completed` or `failed`.
 
-Fields are mapped in IR order. Fields that ask for the same fact share one `share_key` `(fact name, expected_type)` and are mapped once per run: later ones reuse the first result under their own `field_id`, so every copy gets the same value at the cost of one retrieval and one LLM call. The fact name is a named placeholder's inner text (`{{…}}`, `[…]`, `<…>`) for a `replace_token` field, label ignored: a named placeholder is one variable, as in mail merge, and `ir_builder` labels each slide differently. Generic blanks (`____`, `XXX`, `TBD`) repeat with different meanings and tokenless fields have no name, so for them the fact name is the label. Fact names are compared after `normalize`, with `_` and `-` read as spaces (`{{opening_balance}}` and `[Opening Balance]` are one fact). Copies are shared only across units (a pptx slide, an xlsx sheet, a docx heading section; a docx table cell counts as the section above its table): a key that appears twice in one unit is a repeating slot (three risk cards with `[Risk]`), so none of its fields are shared (`shared_facts`). A template that reuses one named placeholder for different facts on different slides gets one value in every copy.
+Fields are mapped in IR order. Fields that ask for the same fact share one `share_key` `(fact name, expected_type, context)` and are mapped once per run: later ones reuse the first result under their own `field_id`, so every copy gets the same value at the cost of one retrieval and one LLM call. The fact name is a named placeholder's inner text (`{{…}}`, `[…]`, `<…>`) for a `replace_token` field, label ignored: a named placeholder is one variable, as in mail merge, and `ir_builder` labels each slide differently. Generic blanks (`____`, `XXX`, `TBD`) repeat with different meanings and tokenless fields have no name, so for them the fact name is the label. Fact names are compared after `normalize`, with `_` and `-` read as spaces (`{{opening_balance}}` and `[Opening Balance]` are one fact). Copies are shared only across units (a pptx slide, an xlsx sheet, a docx heading section; a docx table cell counts as the section above its table): a key that appears twice in one unit is a repeating slot (three risk cards with `[Risk]`), so none of its fields are shared (`shared_facts`). The normalized `context` must be equal too: one token under two different card headings (or row labels) is two facts, while copies with equal (or no) context share. A template that reuses one named placeholder for different facts on different slides, with no heading to tell them apart, gets one value in every copy.
 
 A retried job recomputes every field; a run that is no longer `queued`/`retrieving`/`extracting` is returned unchanged. When the job fails for good, the `run_mapping` failure hook marks the run `failed`.
 
@@ -380,14 +391,16 @@ PENDING ─retrieve─▶ RETRIEVED ─extract─▶ EXTRACTED ─verify─▶ R
 ```
 
 1. **Retrieve.**
-   - Query = `label + " — " + description + " (" + " > ".join(section_path) + ")"`.
-   - `retriever.search(ctx, query, document_ids=run.document_ids)`.
+   - Query = `label + " — " + description + " (" + " > ".join(section_path) + ")"`, prefixed with `context + ": "` when the field has a `context` (§ 4).
+   - Budget (`mapping/extractor.py`): `hit_budget = max(1, (prompt_tokens(LLM_NUM_CTX) - 3072) // CHUNK_MAX_TOKENS)` chunks, where `prompt_tokens(n) = max(6144, n // 2)` (`llm/gateway.py`) and 3072 tokens cover the system prompt, the field spec and one truncated retry echo. That is 6 chunks at 8192 (the old fixed value) and 26 at 32768; the rest of the window is the reply (and reasoning when thinking is on).
+   - `retriever.search(ctx, query, document_ids=run.document_ids, top_n=min(hit_budget, MAX_PRIMARY_HITS = 12))`, then `retriever.with_neighbors(ctx, hits, hit_budget)` (§ 3) fills the rest of the budget with the chunks next to the ranked hits, so a value whose heading sits in the previous chunk is read with it.
    - `checked_documents` = the distinct `document_id`s in `run.document_ids`, i.e. everything that was searched, not just the documents with hits.
-   - Up to 6 hits (`MAX_FIELD_HITS`) are shown to the LLM, and only those can be cited.
-   - The query and the prompt use a bounded copy of the field: the last 4 `section_path` elements (120 chars each), at most 30 `columns`/`allowed_values` (80 chars each).
+   - Only the `hit_budget` chunks shown to the LLM (ranked hits and neighbors) can be cited.
+   - The query and the prompt use a bounded copy of the field: the last 4 `section_path` elements (120 chars each), `context` (120 chars), at most 30 `columns`/`allowed_values` (80 chars each).
 2. **Extract.** The LLM gets the field spec and the hits (each labeled with its `chunk_id`), with JSON-schema output:
    `{"candidates": [{"value": …, "quotes": [{"chunk_id": "…", "quote": "…"}]}], "not_found": bool, "incomplete": bool}`.
-   The prompt says to copy quotes verbatim (the whole sentence or table row that states the value), use only the given chunks, and return `not_found` rather than guess. A field asking for one item of a list (an ordinal slot such as the first upcoming award, or a named item) gets only that item: other items of the same list are not conflicting values. Template placeholder text is never a value.
+   The prompt says to copy quotes verbatim (the whole sentence or table row that states the value), use only the given chunks, and return `not_found` rather than guess. A field asking for one item of a list (an ordinal slot such as the first upcoming award, or a named item) gets only that item: other items of the same list are not conflicting values. Template placeholder text is never a value. A field's `context` is in its spec: the value must belong to that heading, and values under sibling headings are not this field. A value must also be the kind of quantity the field asks for (a count of people is not an amount of money).
+   **Candidate check** (`extractor.check_candidates`, prompt `llm/prompts/candidate_check.md`, cause: in the Phase 14 eval a card whose heading had no value in the source got its sibling cards' values; prompt rules alone did not stop it). Only for a field with a `context` and at least one candidate: one more call gets `{context, label, description}`, `other_headings` (`engine.sibling_headings`: the other distinct contexts of fields in the same unit, in order, at most 20, 120 chars each) and, for at most 10 candidates, the value (200 chars), its first 3 quotes (1,000 chars each), the chunk's `section_heading` and the text of the chunk just before it in the hits (500 chars). It replies `{"checks": [{"about", "match"}, ...]}`: `about` is the heading, item or entity the value is stated for, copied from the quote, section or preceding text (a reasoning aid only: never stored, logged or used by code), and `match` says whether it is the slot's `context`, in any language or wording (a value stated for one of `other_headings` never matches). **All or nothing:** if any entry matches, the extraction is kept unchanged (every candidate); if none matches, the field is `not_found` (`missing(not_found_by_llm)`). The check never drops a single candidate, so it can never choose between conflicting values (a per-candidate drop was tried and rejected one of two real conflicting values in a prototype; running the check on fields without `context`, judged by label alone, rejected many correct values, so they are not checked). Invalid output twice -> `missing(llm_error)`. Cost: one extra LLM call per context field with candidates.
    The LLM `value` is a string for text/number/currency/percent/date, a list of strings for paragraphs/bullet_list, and a list of rows (lists of cell strings, body rows only, in `constraints.columns` order) for table. `not_found = true` wins over any candidates.
 3. **Verify** (`verifier.py`, deterministic).
    - `normalize(s)` = NFKC → casefold → map curly quotes and dashes to ASCII → replace `|` with a space (so a quoted Markdown table row matches its chunk) → collapse whitespace → strip.

@@ -36,7 +36,7 @@ class FakeRetriever:
     def __init__(self, hits: list[Hit]) -> None:
         self.hits, self.calls = hits, []
 
-    async def search(self, ctx, query, document_ids=None, k=20):
+    async def search(self, ctx, query, document_ids=None, k=20, top_n=8):
         self.calls.append((ctx, query, document_ids))
         return self.hits
 

@@ -31,6 +31,24 @@ def find_tokens(text: str) -> list[str]:
     return list(dict.fromkeys(_TOKEN.findall(text)))
 
 
+MAX_CONTEXT_CHARS = 120
+
+
+def static_text(text: str) -> str | None:
+    """A short label (one collapsed line, no placeholder token), else None."""
+    one_line = " ".join(text.split())
+    if not one_line or len(one_line) > MAX_CONTEXT_CHARS or find_tokens(one_line):
+        return None
+    return one_line
+
+
+def cell_context(texts: list[str], col: int, header: str | None) -> str | None:
+    """Row label (nearest static cell to the left) and column header of a body table cell."""
+    label = next((t for x in reversed(texts[:col]) if (t := static_text(x))), None)
+    parts = [p for p in (label, static_text(header or "")) if p]
+    return " / ".join(parts) or None
+
+
 def _check_zip(data: bytes) -> None:
     # lxml/openpyxl memory scales with part size; together with zipfile reading at most the
     # declared size this bounds extraction memory.

@@ -95,7 +95,7 @@ async def test_run_mapping_lifecycle(sm, user_a, monkeypatch):
     ctx, run_id, job_id, docs = await queue_run(sm, user_a)
     calls = []
 
-    async def fake_map(c, field, document_ids, retriever, llm):
+    async def fake_map(c, field, document_ids, retriever, llm, other_headings=()):
         calls.append((field.field_id, document_ids))
         return missing(field, document_ids)
 
@@ -127,7 +127,7 @@ async def test_run_mapping_publishes_the_current_field_before_mapping_it(sm, use
     _, _, job_id, _ = await queue_run(sm, user_a)
     seen = []
 
-    async def fake_map(c, field, document_ids, retriever, llm):
+    async def fake_map(c, field, document_ids, retriever, llm, other_headings=()):
         async with sm() as s:
             seen.append((await s.get(Job, job_id)).progress)
         return missing(field, document_ids)
@@ -248,7 +248,7 @@ async def test_run_mapping_reuses_one_result_per_named_placeholder(
         ir.ir = {**ir.ir, "fields": fields}
     calls = []
 
-    async def fake_map(c, field, document_ids, retriever, llm):
+    async def fake_map(c, field, document_ids, retriever, llm, other_headings=()):
         calls.append(field.field_id)
         return missing(field, document_ids)
 
@@ -282,7 +282,7 @@ async def test_run_mapping_maps_each_slot_repeated_on_one_slide(sm, user_a, monk
         ir.ir = {**ir.ir, "fields": fields}
     calls = []
 
-    async def fake_map(c, field, document_ids, retriever, llm):
+    async def fake_map(c, field, document_ids, retriever, llm, other_headings=()):
         calls.append(field.field_id)
         return missing(field, document_ids)
 
@@ -316,7 +316,7 @@ async def test_run_mapping_reuses_one_result_per_repeated_token(sm, user_a, monk
         ir.ir = {**ir.ir, "fields": fields}
     calls, rendered = [], []
 
-    async def fake_map(c, field, document_ids, retriever, llm):
+    async def fake_map(c, field, document_ids, retriever, llm, other_headings=()):
         calls.append(field.field_id)
         return missing(field, document_ids)
 

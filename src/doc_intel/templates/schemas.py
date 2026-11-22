@@ -7,6 +7,7 @@ import uuid
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 TemplateFormat = Literal["pptx", "docx", "xlsx"]
 AnchorKind = Literal[
@@ -47,6 +48,8 @@ class Anchor(_Strict):
     # pptx only: shape centre as [x, y] percent of slide width/height, so the IR model can
     # pair a placeholder with the heading next to it
     pos: tuple[int, int] | None = None
+    # the static heading or label next to this slot (card title, row label, column header)
+    context: str | None = None
 
 
 class AnchorMap(_Strict):
@@ -78,6 +81,8 @@ class IRField(_Strict):
     required: bool
     write_mode: WriteMode
     constraints: Constraints
+    # copied from the anchor by code in build_ir; hidden from the LLM schema
+    context: SkipJsonSchema[str | None] = None
 
 
 class IRDraft(_Strict):

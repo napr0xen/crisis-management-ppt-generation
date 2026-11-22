@@ -90,9 +90,9 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `LLM_BASE_URL` | `http://127.0.0.1:11434` | `ollama`: the native API root (not `/v1`); `openai`: the `/v1` root |
 | `LLM_MODEL` | `qwen3:14b` | low-RAM fallback `qwen3:4b` |
 | `LLM_API_KEY` | empty | bearer key for `openai`; never logged |
-| `LLM_NUM_CTX` | `32768` | Ollama context window (`ollama` only); prompts are sized for 8k, the rest goes to reasoning and the reply |
+| `LLM_NUM_CTX` | `32768` | Ollama context window (`ollama` only). Field-extraction prompts take up to `max(6144, LLM_NUM_CTX // 2)` tokens (6 retrieved chunks at 8192, 26 at 32768, system-design § 7); IR and Q&A prompts stay sized for 8k; the rest goes to reasoning and the reply. Any value >= 8192 works |
 | `LLM_TIMEOUT_SECONDS` | `120` | per LLM request; covers a cold model load |
-| `LLM_ENABLE_THINKING` | `false` | Ollama `think`. Off by default: at temperature 0, `qwen3:14b` reasoning looped on one eval field (22k tokens, 20 min, no answer). With it on, `num_predict` is the window minus 6144 prompt tokens (at least 4096; off: 4096). Reasoning comes back apart from the reply, and a leading `<think>` block is stripped either way |
+| `LLM_ENABLE_THINKING` | `false` | Ollama `think`. Off by default: at temperature 0, `qwen3:14b` reasoning looped on one eval field (22k tokens, 20 min, no answer). With it on, `num_predict` is the window minus `prompt_tokens(LLM_NUM_CTX) = max(6144, LLM_NUM_CTX // 2)` (at least 4096; off: 4096). Reasoning comes back apart from the reply, and a leading `<think>` block is stripped either way |
 | `EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama |
 | `EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | any Ollama embedding model; changing it needs a re-ingest |
 | `EMBEDDING_DIMENSIONS` | `1024` | sent to Ollama (Matryoshka); must match the Qdrant collection |

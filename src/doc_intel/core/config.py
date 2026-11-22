@@ -39,7 +39,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://127.0.0.1:11434"  # ollama: native API root; openai: the /v1 root
     llm_model: str = "qwen3:14b"
     llm_api_key: SecretStr = SecretStr("")
-    llm_num_ctx: int = 32768  # ollama only; prompts stay < 6k tokens, the rest is reasoning + reply
+    # ollama only; prompts are sized from it (llm.gateway.prompt_tokens), any value >= 8192
+    llm_num_ctx: int = 32768
     llm_timeout_seconds: float = 120.0  # local 14B inference plus a cold model load
     # ollama `think`; off: at temperature 0 qwen3 reasoning can loop until the timeout
     llm_enable_thinking: bool = False

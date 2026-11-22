@@ -5,6 +5,7 @@ import uuid
 
 import pytest
 
+from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.llm.gateway import LLMError
@@ -14,15 +15,36 @@ from doc_intel.mapping.engine import (
     resolve,
     share_key,
     shared_facts,
+    sibling_headings,
     summarize,
 )
-from doc_intel.mapping.extractor import MAX_FIELD_HITS
+from doc_intel.mapping.extractor import MAX_PRIMARY_HITS, hit_budget
 from doc_intel.mapping.schemas import LLMExtraction
 from doc_intel.templates.schemas import Constraints, IRField
 from tests.fakes import FakeLLM
 
 CTX = TenantContext("user_1", uuid.uuid4())
 DOCS = [uuid.uuid4(), uuid.uuid4()]
+
+
+@pytest.fixture
+def window(monkeypatch):
+    """Set LLM_NUM_CTX for one test and drop the cached settings before and after."""
+
+    def set_window(num_ctx: int) -> None:
+        monkeypatch.setenv("LLM_NUM_CTX", str(num_ctx))
+        get_settings.cache_clear()
+
+    yield set_window
+    monkeypatch.undo()
+    get_settings.cache_clear()
+
+
+_CHECK_NO = '{"checks": [{"about": "Emergency department", "match": false}]}'
+_CHECK_YES = '{"checks": [{"about": "Wheat", "match": true}]}'
+
+
+NOT_FOUND = '{"candidates": [], "not_found": true, "incomplete": false}'
 
 
 def _hit(text, page=4, section="Impact", filename="ops.pdf"):
@@ -41,12 +63,18 @@ def _hit(text, page=4, section="Impact", filename="ops.pdf"):
 class FakeRetriever:
     def __init__(self, hits=(), error=None):
         self.hits, self.error, self.calls = list(hits), error, []
+        self.top_ns, self.budgets, self.neighbors = [], [], []
 
-    async def search(self, ctx, query, document_ids=None, k=20):
+    async def search(self, ctx, query, document_ids=None, k=20, top_n=8):
         self.calls.append((ctx, query, document_ids))
+        self.top_ns.append(top_n)
         if self.error:
             raise self.error
-        return self.hits
+        return self.hits[:top_n]
+
+    async def with_neighbors(self, ctx, hits, budget):
+        self.budgets.append(budget)
+        return [*hits, *self.neighbors][:budget]
 
 
 def _field(expected_type="text", fid="f", **constraints):
@@ -134,8 +162,11 @@ async def test_retriever_exception_propagates():
         await map_field(CTX, _field(), DOCS, FakeRetriever(error=RuntimeError()), FakeLLM())
 
 
-async def test_hits_beyond_max_are_neither_shown_nor_accepted():
-    hits = [_hit(f"filler chunk number {i} text") for i in range(MAX_FIELD_HITS)]
+async def test_hits_beyond_budget_are_neither_shown_nor_accepted(window):
+    window(8192)
+    budget = hit_budget(8192, 512)
+    assert budget == 6
+    hits = [_hit(f"filler chunk number {i} text") for i in range(budget)]
     extra = _hit("The extra chunk says 777 customers were affected.")
     reply = json.dumps(
         {
@@ -145,9 +176,47 @@ async def test_hits_beyond_max_are_neither_shown_nor_accepted():
         }
     )
     llm = FakeLLM(reply)
-    r = await map_field(CTX, _field("number"), DOCS, FakeRetriever([*hits, extra]), llm)
+    retriever = FakeRetriever([*hits, extra])
+    r = await map_field(CTX, _field("number"), DOCS, retriever, llm)
     assert str(extra.chunk_id) not in llm.calls[0][0][1]["content"]
     assert (r.status, r.missing_reason) == ("missing", "evidence_failed_verification")
+    assert retriever.top_ns == [6] and retriever.budgets == [6]
+
+
+async def test_32k_window_asks_for_twelve_primary_hits_within_a_26_chunk_budget(window):
+    window(32768)
+    retriever = FakeRetriever([_hit("text one")])
+    await map_field(CTX, _field(), DOCS, retriever, FakeLLM(NOT_FOUND))
+    assert (retriever.top_ns, retriever.budgets) == ([min(26, MAX_PRIMARY_HITS)], [26])
+    assert MAX_PRIMARY_HITS == 12
+
+
+async def test_neighbor_chunks_are_shown_and_their_quotes_verify(window):
+    window(32768)
+    primary = _hit("The clinic opened in 2019.")
+    neighbor = _hit("The ward holds 48 beds in total.")
+    retriever = FakeRetriever([primary])
+    retriever.neighbors = [neighbor]
+    reply = json.dumps(
+        {
+            "candidates": [_cand("48", (neighbor, "The ward holds 48 beds in total."))],
+            "not_found": False,
+            "incomplete": False,
+        }
+    )
+    llm = FakeLLM(reply)
+    r = await map_field(CTX, _field("number"), DOCS, retriever, llm)
+    assert str(neighbor.chunk_id) in llm.calls[0][0][1]["content"]
+    assert (r.status, r.value) == ("populated", 48)
+    assert r.evidence[0].chunk_id == neighbor.chunk_id
+
+
+def test_field_query_includes_context_when_present():
+    f = _field().model_copy(update={"context": "Emergency department"})
+    assert field_query(f).startswith("Emergency department: Customers")
+    assert field_query(_field()).startswith("Customers")
+    g = _field().model_copy(update={"context": "Wheat yield"})
+    assert field_query(g).startswith("Wheat yield: Customers")
 
 
 def test_not_found_wins_over_candidates():
@@ -510,3 +579,152 @@ def test_shared_facts_docx_sections_share_across_headings():
     ]
     keys = shared_facts(fields)
     assert keys["o1"] == keys["o2"]
+
+
+def _ctx_field(fid, anchor_id, context, tok="[Count]"):
+    return _slot(fid, anchor_id, tok, "Count").model_copy(update={"context": context})
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [("Emergency department", "Outpatient clinic"), ("Wheat yield", "Barley yield")],
+)
+def test_share_key_differs_by_context_and_ignores_case_and_spacing(a, b):
+    assert share_key(_ctx_field("x", "pptx:s1:sp1", a)) != share_key(_ctx_field("y", "p", b))
+    assert share_key(_ctx_field("x", "pptx:s1:sp1", a)) == share_key(
+        _ctx_field("y", "pptx:s2:sp1", a.upper() + "  ")
+    )
+    assert share_key(_ctx_field("x", "p", None))[2] == ""
+
+
+@pytest.mark.parametrize(
+    "ctx_a, ctx_b, shared",
+    [
+        ("Emergency department", "Outpatient clinic", False),
+        ("Emergency department", "emergency  department", True),
+        ("Wheat yield", "Barley yield", False),
+        ("Wheat yield", "Wheat yield", True),
+    ],
+)
+def test_shared_facts_needs_equal_context_across_slides(ctx_a, ctx_b, shared):
+    fields = [
+        _ctx_field("a", "pptx:s1:sp2", ctx_a),
+        _ctx_field("b", "pptx:s2:sp2", ctx_b),
+    ]
+    assert bool(shared_facts(fields)) is shared
+
+
+def _reply_for(value, h, quote):
+    return json.dumps(
+        {"candidates": [_cand(value, (h, quote))], "not_found": False, "incomplete": False}
+    )
+
+
+@pytest.mark.parametrize(
+    "context, label, quote, value",
+    [
+        ("Radiology", "Median wait", "Emergency department waited 47 minutes.", "47"),
+        ("Maize", "Average yield", "Wheat plots yielded 6.8 tonnes per hectare.", "6.8"),
+    ],
+)
+async def test_sibling_only_values_are_missing_and_matching_ones_are_populated(
+    context, label, quote, value
+):
+    h = _hit(quote)
+    field = _field("number").model_copy(update={"context": context, "label": label})
+    sibling = FakeLLM(_reply_for(value, h, quote), _CHECK_NO)
+    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), sibling)
+    assert (r.status, r.missing_reason) == ("missing", "not_found_by_llm")
+    assert len(sibling.calls) == 2
+    match = FakeLLM(_reply_for(value, h, quote), _CHECK_YES)
+    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), match)
+    assert r.status == "populated" and r.evidence[0].chunk_id == h.chunk_id
+
+
+async def test_context_check_failure_is_missing_llm_error():
+    h = _hit("Emergency department waited 47 minutes.")
+    field = _field("number").model_copy(update={"context": "Radiology"})
+    llm = FakeLLM(_reply_for("47", h, "waited 47 minutes"), "bad", "worse")
+    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), llm)
+    assert (r.status, r.missing_reason) == ("missing", "llm_error")
+
+
+async def test_two_values_under_the_same_heading_stay_a_conflict():
+    a, b = _hit("Wheat yielded 6.8 tonnes."), _hit("Wheat yielded 7.1 tonnes.")
+    reply = json.dumps(
+        {
+            "candidates": [
+                _cand("6.8", (a, "Wheat yielded 6.8")),
+                _cand("7.1", (b, "Wheat yielded 7.1")),
+            ],
+            "not_found": False,
+            "incomplete": False,
+        }
+    )
+    field = _field("number").model_copy(update={"context": "Wheat"})
+    r = await map_field(
+        CTX,
+        field,
+        DOCS,
+        FakeRetriever([a, b]),
+        FakeLLM(reply, _CHECK_YES),
+    )
+    assert r.status == "conflict"
+
+
+@pytest.mark.parametrize(
+    "label, quote, value",
+    [
+        ("Berlin headcount", "Headcount at quarter end was 120 at the Osaka office.", "120"),
+        ("Plot area", "The orchard covers 14 hectares of the northern estate.", "14"),
+    ],
+)
+async def test_a_field_without_context_is_never_checked(label, quote, value):
+    h = _hit(quote)
+    field = _field("number").model_copy(update={"label": label})
+    llm = FakeLLM(_reply_for(value, h, quote))
+    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), llm)
+    assert r.status == "populated" and len(llm.calls) == 1
+
+
+@pytest.mark.parametrize("others", [["Emergency", "Day surgery"], ["Wheat", "Barley"]])
+async def test_map_field_sends_the_sibling_headings_to_the_check(others):
+    h = _hit("Emergency department waited 47 minutes.")
+    field = _field("number").model_copy(update={"context": "Radiology"})
+    llm = FakeLLM(_reply_for("47", h, "waited 47 minutes"), _CHECK_NO)
+    await map_field(CTX, field, DOCS, FakeRetriever([h]), llm, other_headings=others)
+    assert json.loads(llm.calls[1][0][1]["content"])["other_headings"] == others
+
+
+def _ctxf(fid, anchor_id, context):
+    return _slot(fid, anchor_id, "[X]").model_copy(update={"context": context})
+
+
+def test_sibling_headings_are_per_unit_distinct_ordered_and_exclude_own():
+    fields = [
+        _ctxf("a", "pptx:s1:sp1", "Emergency department"),
+        _ctxf("b", "pptx:s1:sp2", "Day surgery"),
+        _ctxf("c", "pptx:s1:sp3", "Day surgery"),  # duplicate heading
+        _ctxf("d", "pptx:s1:sp4", "Radiology"),
+        _ctxf("e", "pptx:s2:sp1", "Wheat"),  # other slide
+        _ctxf("f", "pptx:s2:sp2", "Barley"),
+        _slot("g", "pptx:s1:sp5"),  # no context: gets no entry and adds none
+    ]
+    got = sibling_headings(fields)
+    assert got["a"] == ["Day surgery", "Radiology"]
+    assert got["b"] == ["Emergency department", "Radiology"] == got["c"]
+    assert got["e"] == ["Barley"] and got["f"] == ["Wheat"]
+    assert "g" not in got
+
+
+def test_sibling_headings_are_capped_in_count_and_length():
+    fields = [_ctxf(f"f{i}", f"pptx:s1:sp{i}", f"H{i}" + "x" * 300) for i in range(30)]
+    got = sibling_headings(fields)["f0"]
+    assert len(got) == 20 and all(len(h) == 120 for h in got)
+    assert got[0].startswith("H1")
+
+
+async def test_no_check_call_when_the_extraction_found_nothing():
+    llm = FakeLLM(NOT_FOUND)
+    r = await map_field(CTX, _field(), DOCS, FakeRetriever([_hit("text one")]), llm)
+    assert r.missing_reason == "not_found_by_llm" and len(llm.calls) == 1

@@ -2,12 +2,20 @@
 
 import re
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
+from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.llm.gateway import LLMClient, LLMInvalidOutput
-from doc_intel.mapping.extractor import bounded_field, extract, fit_hits
+from doc_intel.mapping.extractor import (
+    MAX_PRIMARY_HITS,
+    bounded_field,
+    check_candidates,
+    extract,
+    hit_budget,
+)
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import (
     MAX_QUOTE_CHARS,
@@ -35,15 +43,17 @@ _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
 CONF_TYPED, CONF_TEXT, CONF_PARTIAL = 0.9, 0.8, 0.5
 
 
-def share_key(field: IRField) -> tuple[str, str]:
+def share_key(field: IRField) -> tuple[str, str, str]:
     """Fields with an equal key are one fact: they share one answer and one edit. A named
     placeholder (`{{x}}`, `[x]`, `<x>`) is a variable, so the same name is the same fact and the
     label is ignored (the IR labels each slide differently). A generic blank ("____", "XXX",
-    "TBD") or a tokenless field shares only on an equal label and type."""
+    "TBD") or a tokenless field shares only on an equal label and type. The template context (card
+    heading, row label) must be equal too: one token under two headings is two facts."""
     token = field.constraints.token if field.write_mode == "replace_token" else None
     named = token.strip("{}[]<> ") if token and token.startswith(("{{", "[", "<")) else ""
     fact = normalize(named or field.label).replace("_", " ").replace("-", " ")
-    return " ".join(fact.split()), field.expected_type
+    context = " ".join(normalize(field.context or "").split())
+    return " ".join(fact.split()), field.expected_type, context
 
 
 _SLIDE = re.compile(r"^pptx:s(\d+):")
@@ -62,12 +72,12 @@ def _unit(field: IRField) -> object:
     return tuple(path)  # a table cell's "Table N" is dropped: cards under one heading are slots
 
 
-def shared_facts(fields: list[IRField]) -> dict[str, tuple[str, str]]:
+def shared_facts(fields: list[IRField]) -> dict[str, tuple[str, str, str]]:
     """field_id -> `share_key` for the fields that share one answer and one edit: copies of one
     key on different slides, sheets or docx sections. A key seen twice in one of them is a
     repeating slot (three risk cards with `[Risk]`), so none of its fields are shared."""
     keys = {f.field_id: share_key(f) for f in fields}
-    units: dict[tuple[str, str], list[object]] = {}
+    units: dict[tuple[str, str, str], list[object]] = {}
     for f in fields:
         units.setdefault(keys[f.field_id], []).append(_unit(f))
     return {
@@ -77,9 +87,27 @@ def shared_facts(fields: list[IRField]) -> dict[str, tuple[str, str]]:
     }
 
 
+_MAX_SIBLINGS, _MAX_HEADING = 20, 120
+
+
+def sibling_headings(fields: list[IRField]) -> dict[str, list[str]]:
+    """field_id -> the other distinct contexts in the field's slide, sheet or section, so the
+    context check can reject a value stated under a sibling card's heading."""
+    by_unit: dict[object, list[str]] = {}
+    for f in fields:
+        if f.context and f.context not in by_unit.setdefault(_unit(f), []):
+            by_unit[_unit(f)].append(f.context)
+    return {
+        f.field_id: [h[:_MAX_HEADING] for h in by_unit[_unit(f)] if h != f.context][:_MAX_SIBLINGS]
+        for f in fields
+        if f.context
+    }
+
+
 def field_query(field: IRField) -> str:
     field = bounded_field(field)  # template-derived text must not size the embedding query
-    return f"{field.label} — {field.description} ({' > '.join(field.section_path)})"
+    query = f"{field.label} — {field.description} ({' > '.join(field.section_path)})"
+    return f"{field.context}: {query}" if field.context else query
 
 
 async def map_field(
@@ -88,12 +116,19 @@ async def map_field(
     document_ids: list[uuid.UUID],
     retriever: Retriever,
     llm: LLMClient,
+    other_headings: Sequence[str] = (),
 ) -> FieldMappingResult:
-    hits = fit_hits(await retriever.search(ctx, field_query(field), document_ids=document_ids))
+    s = get_settings()
+    budget = hit_budget(s.llm_num_ctx, s.chunk_max_tokens)
+    hits = await retriever.search(
+        ctx, field_query(field), document_ids=document_ids, top_n=min(budget, MAX_PRIMARY_HITS)
+    )
+    hits = await retriever.with_neighbors(ctx, hits, budget) if hits else hits
     if not hits:
         return _missing(field, "no_relevant_chunks", document_ids)
     try:
         extraction = await extract(llm, field, hits)
+        extraction = await check_candidates(llm, field, hits, extraction, other_headings)
     except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
         return _missing(field, "llm_error", document_ids)
     return resolve(field, hits, extraction, checked_documents=document_ids)

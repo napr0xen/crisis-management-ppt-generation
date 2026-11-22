@@ -208,7 +208,14 @@ async def wait_run(ac, user, project, run_id) -> dict:
 async def test_every_handler_and_chat_path_logs_no_sentinel(
     migrated_db, vector_store, user_a, logs
 ):
-    llm = ScriptedLLM(_LLMIntent=[], BatchDraft=[], LLMExtraction=[], _LLMAnswer=[], _LLMEdits=[])
+    llm = ScriptedLLM(
+        _LLMIntent=[],
+        BatchDraft=[],
+        LLMExtraction=[],
+        LLMCandidateCheck=lambda _: '{"checks": [{"about": "x", "match": true}]}',
+        _LLMAnswer=[],
+        _LLMEdits=[],
+    )
     async with live_app(migrated_db, vector_store, llm) as (ac, _, app):
         # ingest_document x2, extract_template, run_mapping (verification failure, conflict,
         # invalid JSON), render_artifact

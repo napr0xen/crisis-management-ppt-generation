@@ -19,7 +19,7 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.ollama import OllamaQwen3Embedder
 from doc_intel.ingestion.schemas import ChunkPayload
 from doc_intel.llm.gateway import make_llm_client
-from doc_intel.mapping.engine import map_field
+from doc_intel.mapping.engine import map_field, sibling_headings
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import FieldMappingResult
 from doc_intel.mapping.verifier import normalize
@@ -87,10 +87,13 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
                     ctx, chunks, await embedder.embed_documents(paragraphs)
                 )
 
-            for raw in case["template"]["fields"]:
-                field = IRField.model_validate(raw)
+            fields = [IRField.model_validate(raw) for raw in case["template"]["fields"]]
+            siblings = sibling_headings(fields)
+            for field in fields:
                 started = time.perf_counter()
-                result = await map_field(ctx, field, doc_ids, retriever, llm)
+                result = await map_field(
+                    ctx, field, doc_ids, retriever, llm, siblings.get(field.field_id, ())
+                )
                 latency = time.perf_counter() - started
                 expected = case["expected"][field.field_id]
                 fabricated = [

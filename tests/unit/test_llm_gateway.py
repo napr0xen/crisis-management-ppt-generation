@@ -8,7 +8,6 @@ from pydantic import BaseModel, SecretStr
 
 from doc_intel.core.config import Settings, get_settings
 from doc_intel.llm.gateway import (
-    PROMPT_TOKENS,
     REPLY_TOKENS,
     RETRY_ECHO_CHARS,
     LLMError,
@@ -206,7 +205,8 @@ def test_window_and_thinking_come_from_env(monkeypatch):
     "num_ctx, think, num_predict",
     [
         (32768, False, REPLY_TOKENS),  # no reasoning: the degenerate-loop cap, as at 8k
-        (32768, True, 32768 - PROMPT_TOKENS),  # reasoning + reply get all the prompt leaves
+        (32768, True, 32768 - 16384),  # reasoning + reply get all the prompt leaves
+        (16384, True, 16384 - 8192),
         (8192, True, 4096),  # a small window never gives the reply less than half
     ],
 )

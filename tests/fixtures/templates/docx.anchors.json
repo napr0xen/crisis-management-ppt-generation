@@ -13,7 +13,8 @@
       "tokens": [],
       "is_placeholder": true,
       "table": null,
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:body:p3",
@@ -28,7 +29,8 @@
       ],
       "is_placeholder": true,
       "table": null,
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:body:p4",
@@ -43,7 +45,8 @@
       ],
       "is_placeholder": true,
       "table": null,
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:body:t0:r0c0",
@@ -61,7 +64,8 @@
         "col": 0,
         "header": "Item"
       },
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:body:t0:r0c1",
@@ -79,7 +83,8 @@
         "col": 1,
         "header": "Owner"
       },
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:body:t0:r0c2",
@@ -97,7 +102,8 @@
         "col": 2,
         "header": "Date"
       },
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:body:t0:r1c0",
@@ -115,7 +121,8 @@
         "col": 0,
         "header": "Item"
       },
-      "pos": null
+      "pos": null,
+      "context": "Item"
     },
     {
       "anchor_id": "docx:body:t0:r1c2",
@@ -133,7 +140,8 @@
         "col": 2,
         "header": "Date"
       },
-      "pos": null
+      "pos": null,
+      "context": "Date"
     },
     {
       "anchor_id": "docx:sec1:header:p0",
@@ -148,7 +156,8 @@
       ],
       "is_placeholder": true,
       "table": null,
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:sec1:footer:p0",
@@ -161,7 +170,8 @@
       "tokens": [],
       "is_placeholder": false,
       "table": null,
-      "pos": null
+      "pos": null,
+      "context": null
     },
     {
       "anchor_id": "docx:sdt:owner",
@@ -171,7 +181,8 @@
       "tokens": [],
       "is_placeholder": true,
       "table": null,
-      "pos": null
+      "pos": null,
+      "context": null
     }
   ]
 }

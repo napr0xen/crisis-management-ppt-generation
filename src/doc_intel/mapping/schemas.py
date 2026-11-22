@@ -53,6 +53,17 @@ class LLMExtraction[V](_Strict):
     incomplete: bool
 
 
+class LLMCheck(_Strict):
+    about: str  # reasoning aid only: never logged, stored or read by code
+    match: bool
+
+
+class LLMCandidateCheck(_Strict):
+    """One entry per numbered quote of the candidate check (extractor.check_candidates)."""
+
+    checks: list[LLMCheck]
+
+
 class Evidence(_Strict):
     """Every field except `quote` is copied from the verified hit, never from the LLM."""
 

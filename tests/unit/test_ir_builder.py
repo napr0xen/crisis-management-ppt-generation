@@ -628,3 +628,38 @@ def test_repair_keeps_what_validate_must_judge():
     ]
     draft = BatchDraft(fields=fields)
     assert _repair(draft, amap).fields == fields
+
+
+@pytest.mark.parametrize("heading", ["Emergency department", "Wheat yield"])
+async def test_context_reaches_the_prompt_and_every_field_even_if_the_llm_omits_it(heading):
+    amap = AnchorMap(
+        format="pptx",
+        anchors=[_anchor("a1", tokens=["{{t}}"]).model_copy(update={"context": heading})],
+    )
+    llm = FakeLLM(_reply(_field("a", "a1", "replace_token", token="{{t}}")))
+    ir = await build_ir(llm, amap, TID)
+    item = json.loads(llm.calls[0][0][1]["content"].split("\n\n", 1)[1])["anchors"][0]
+    assert item["context"] == heading
+    assert [f.context for f in ir.fields] == [heading]
+    # an LLM-invented context is overwritten by the anchor's
+    forged = _field("a", "a1", "replace_token", token="{{t}}").model_copy(
+        update={"context": "forged"}
+    )
+    ir = await build_ir(FakeLLM(_reply(forged)), amap, TID)
+    assert ir.fields[0].context == heading
+
+
+async def test_no_context_means_no_key_and_none():
+    llm = FakeLLM(_reply(_field("a", "a1")))
+    ir = await build_ir(llm, AMAP, TID)
+    assert '"context"' not in llm.calls[0][0][1]["content"]
+    assert ir.fields[0].context is None
+
+
+def test_context_is_hidden_from_the_llm_schema_but_optional_in_stored_json():
+    assert "context" not in IRField.model_json_schema()["properties"]
+    assert "context" not in BatchDraft.model_json_schema()["$defs"]["IRField"]["properties"]
+    stored = _field("a", "a1").model_dump(mode="json")
+    stored.pop("context", None)
+    assert IRField.model_validate(stored).context is None
+    assert "context" in load_prompt("template_ir")

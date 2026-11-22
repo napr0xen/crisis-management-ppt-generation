@@ -43,7 +43,8 @@ def _tenant_filter(ctx: TenantContext, *conditions: m.Condition) -> m.Filter:
 
 
 def _hit(point_id: str | int, payload: dict, score: float) -> Hit:
-    return Hit(chunk_id=point_id, score=score, **{k: payload[k] for k in _HIT_KEYS})
+    fields = {k: payload[k] for k in _HIT_KEYS if k != "chunk_index"}
+    return Hit(chunk_id=point_id, score=score, chunk_index=payload.get("chunk_index"), **fields)
 
 
 class QdrantStore:

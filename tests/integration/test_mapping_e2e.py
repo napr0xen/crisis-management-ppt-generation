@@ -11,6 +11,7 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.db.models import Job
 from doc_intel.db.session import make_engine
 from doc_intel.ingestion.schemas import ChunkPayload
+from doc_intel.jobs import handlers
 from doc_intel.jobs.handlers import make_failure_hooks, make_handlers
 from doc_intel.jobs.worker import run_one
 from doc_intel.mapping.retriever import Retriever
@@ -85,8 +86,21 @@ async def drain_one(migrated_db, vector_store, llm) -> None:
 
 
 async def test_mapping_run_populates_misses_and_conflicts(
-    client, session, migrated_db, vector_store, user_a, project
+    client, session, migrated_db, vector_store, user_a, project, monkeypatch
 ):
+    seen: dict[str, list[str]] = {}
+    real_map_field = handlers.map_field
+
+    async def spy(ctx, field, docs, retriever, llm, other_headings=()):
+        seen[field.field_id] = list(other_headings)
+        return await real_map_field(ctx, field, docs, retriever, llm, other_headings)
+
+    monkeypatch.setattr(handlers, "map_field", spy)
+    monkeypatch.setattr(
+        handlers,
+        "sibling_headings",
+        lambda fields: {f.field_id: [f"Sib {f.field_id}"] for f in fields},
+    )
     ctx = TenantContext(user_a, uuid.UUID(project))
     _, extract_job = await queue_job(client, session, user_a, project, "pptx")
     await drain_one(migrated_db, vector_store, FakeLLM(draft_reply()))
@@ -142,6 +156,7 @@ async def test_mapping_run_populates_misses_and_conflicts(
         "warnings": [],
     }
     assert len(llm.calls) == 3
+    assert seen == {fid: [f"Sib {fid}"] for fid in seen} and len(seen) == 3  # handler wiring
 
     summary = body["results"]["incident_summary"]
     assert summary["status"] == "populated"

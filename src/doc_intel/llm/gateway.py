@@ -17,9 +17,15 @@ from doc_intel.core.errors import UpstreamUnavailable
 Messages = list[dict[str, str]]
 _THINK = re.compile(r"\A\s*<think>.*?</think>", re.DOTALL)
 RETRY_ECHO_CHARS = 1500  # a failed reply is echoed truncated, so a retry never outgrows num_ctx
-# Prompts are sized for an 8k window (extractor, ir_builder, Q&A budgets: about 5-6k tokens).
-PROMPT_TOKENS = 6144
 REPLY_TOKENS = 4096  # every reply fits; the cap stops a degenerate JSON/whitespace loop early
+# shortcut: ir_builder and Q&A stay sized for the 8k floor, upgrade if they need the big window.
+
+
+def prompt_tokens(num_ctx: int) -> int:
+    """Token budget for one prompt (>= 6144); the rest of the window is reasoning plus reply."""
+    return max(6144, num_ctx // 2)
+
+
 RETRY_PROMPT = "That reply was not valid JSON for the required schema. Reply with only the JSON."
 
 
@@ -76,7 +82,7 @@ class OllamaClient:
         # leaves, else a long reasoning cuts the JSON off.
         num_predict = min(self._num_ctx // 2, REPLY_TOKENS)
         if self._think:
-            num_predict = max(num_predict, self._num_ctx - PROMPT_TOKENS)
+            num_predict = max(num_predict, self._num_ctx - prompt_tokens(self._num_ctx))
         body: dict[str, Any] = {
             "model": self._model,
             "messages": messages,

@@ -109,7 +109,7 @@ async def test_hybrid_search_dense_sparse_and_fused(vector_store):
     dense_only = await vector_store.hybrid_search(ctx, emb(0, UNUSED_SPARSE))
     assert dense_only[0].chunk_id == ids[0]
     assert dense_only[0] == Hit(
-        chunk_id=ids[0], score=dense_only[0].score, **chunks[0].model_dump(exclude={"chunk_index"})
+        chunk_id=ids[0], score=dense_only[0].score, **chunks[0].model_dump()
     )
     assert dense_only[0].score > 0
 
@@ -177,10 +177,7 @@ async def test_retrieve_returns_own_chunks(vector_store):
 
     hits = await vector_store.retrieve(ctx, ids)
 
-    expected = [
-        Hit(chunk_id=chunk_id(doc, i), score=0.0, **chunks[i].model_dump(exclude={"chunk_index"}))
-        for i in (0, 2)
-    ]
+    expected = [Hit(chunk_id=chunk_id(doc, i), score=0.0, **chunks[i].model_dump()) for i in (0, 2)]
     assert sorted(hits, key=str) == sorted(expected, key=str)
     assert await vector_store.retrieve(ctx, []) == []
 

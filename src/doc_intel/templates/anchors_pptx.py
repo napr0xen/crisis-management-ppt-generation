@@ -7,7 +7,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.shapes.base import BaseShape
 from pptx.slide import Slide
 
-from doc_intel.templates.anchors import find_tokens
+from doc_intel.templates.anchors import cell_context, find_tokens, static_text
 from doc_intel.templates.schemas import Anchor, TableRef
 
 
@@ -56,12 +56,53 @@ def _pos(shape: BaseShape, width: int, height: int) -> tuple[int, int] | None:
     return min(100, max(0, round(x))), min(100, max(0, round(y)))
 
 
+def _box(shape: BaseShape) -> tuple[int, int, int, int] | None:
+    if None in (shape.left, shape.top, shape.width, shape.height):
+        return None
+    return shape.left, shape.top, shape.left + shape.width, shape.top + shape.height
+
+
+def _context(
+    target: BaseShape, headings: list[tuple[str, BaseShape]], width: int, height: int
+) -> str | None:
+    """The nearest static text above (or left of) the target, else None. Ties go to above."""
+    # shortcut: group children use the group's child coordinates, like _pos.
+    t = _box(target)
+    if t is None:
+        return None
+    tl, tt, tr, tb = t
+    best: tuple[int, int, str] | None = None  # (gap, 0 above / 1 left, text)
+    for text, shape in headings:
+        h = _box(shape)
+        if h is None or shape == target:
+            continue
+        hl, ht, hr, hb = h
+        if ht < tt and hb <= tt + (tb - tt) / 2 and min(hr, tr) > max(hl, tl):
+            gap, side, limit = max(0, tt - hb), 0, height
+        elif hl < tl and hr <= tl + (tr - tl) / 2 and min(hb, tb) > max(ht, tt):
+            gap, side, limit = max(0, tl - hr), 1, width
+        else:
+            continue
+        if gap <= limit / 5 and (best is None or (gap, side) < best[:2]):
+            best = (gap, side, text)
+    return best[2] if best else None
+
+
 def extract(data: bytes) -> list[Anchor]:
     anchors: list[Anchor] = []
     prs = Presentation(BytesIO(data))
     for n, slide in enumerate(prs.slides, start=1):
         title = slide.shapes.title.text_frame.text.strip() if slide.shapes.title else ""
-        for key, shape in keyed_shapes(slide.shapes):
+        keyed = list(keyed_shapes(slide.shapes))
+        slide_title = slide.shapes.title
+        headings = [
+            (text, shape)
+            for _, shape in keyed
+            if shape.has_text_frame
+            and shape != slide_title
+            and (text := static_text(shape.text_frame.text))
+        ]
+        for key, shape in keyed:
             path = [f"Slide {n}", *([title] if title else []), shape.name]
             base = f"pptx:s{n}:{key}"
             pos = _pos(shape, prs.slide_width, prs.slide_height)
@@ -87,12 +128,14 @@ def extract(data: bytes) -> list[Anchor]:
                         tokens=tokens,
                         is_placeholder=bool(tokens) or not own,
                         pos=pos,
+                        context=_context(shape, headings, prs.slide_width, prs.slide_height),
                     )
                 )
             elif shape.has_table:
                 rows = shape.table.rows
                 headers = [c.text.strip() or None for c in rows[0].cells]
                 for r, row in enumerate(rows):
+                    texts = [cell.text for cell in row.cells]
                     for c, cell in enumerate(row.cells):
                         if cell.is_spanned:
                             continue
@@ -108,6 +151,7 @@ def extract(data: bytes) -> list[Anchor]:
                                 is_placeholder=bool(tokens) or not text,
                                 table=TableRef(row=r, col=c, header=headers[c]),
                                 pos=pos,
+                                context=cell_context(texts, c, headers[c]) if r else None,
                             )
                         )
     return anchors
