@@ -17,6 +17,7 @@ from doc_intel.llm.gateway import (
     complete_json,
     make_llm_client,
     strip_think,
+    with_schema,
 )
 from tests.fakes import FakeLLM
 
@@ -95,7 +96,7 @@ async def test_openai_compat_sends_bearer_key_and_json_schema_response_format():
     assert req.headers["authorization"] == "Bearer sk-test"
     assert body == {
         "model": "gpt-x",
-        "messages": MESSAGES,
+        "messages": with_schema(MESSAGES, SCHEMA),
         "temperature": 0,
         "max_tokens": 4096,
         "response_format": {
@@ -345,3 +346,55 @@ def test_invalid_output_is_an_llm_error_but_transport_errors_are_not_invalid_out
 def test_invalid_output_is_not_retried_by_jobs_but_transport_errors_are():
     assert LLMInvalidOutput.retry is False
     assert getattr(LLMError(), "retry", True) is True
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '```json\n{"answer": "x"}\n```',  # markdown fence
+        '```\n{"answer": "x"}\n```',  # fence without a language
+        'Sure! Here is the JSON:\n{"answer": "x"}\nHope that helps.',  # prose around it
+        '<think>plan {not json}</think>\n```json\n{"answer": "x"}\n```',  # reasoning, then fence
+    ],
+)
+async def test_openai_compat_json_is_extracted_from_fences_and_prose(reply):
+    requests: list[httpx.Request] = []
+    http = _scripted([reply], requests)
+    assert await complete_json(_openai(http), MESSAGES, Out) == Out(answer="x")
+    assert len(requests) == 1
+
+
+async def test_openai_compat_puts_the_schema_in_the_prompt_without_touching_the_caller_messages():
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"choices": [{"message": {"content": '{"answer": "x"}'}}]})
+    original = [dict(m) for m in MESSAGES]
+    await _openai(http).complete(MESSAGES, SCHEMA)
+    sent = json.loads(requests[0].content)["messages"]
+    assert MESSAGES == original
+    assert len(sent) == len(MESSAGES)
+    assert sent[-1]["content"].startswith(MESSAGES[-1]["content"])
+    assert json.dumps(SCHEMA, separators=(",", ":")) in sent[-1]["content"]
+
+
+async def test_openai_compat_plain_text_reply_is_returned_as_is():
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"choices": [{"message": {"content": "```py\nx = {1}\n```"}}]})
+    assert await _openai(http).complete(MESSAGES) == "```py\nx = {1}\n```"
+    assert json.loads(requests[0].content)["messages"] == MESSAGES
+
+
+async def test_openai_compat_retry_names_the_failing_field():
+    requests: list[httpx.Request] = []
+    http = _scripted(['{"anwser": "x"}', '{"answer": "x"}'], requests)
+    assert await complete_json(_openai(http), MESSAGES, Out) == Out(answer="x")
+    retry = json.loads(requests[1].content)["messages"]
+    assert retry[-2] == {"role": "assistant", "content": '{"anwser": "x"}'}
+    feedback = retry[-1]["content"]
+    assert "answer: Field required" in feedback
+    assert "secret document text" not in feedback  # field paths and messages, not input values
+
+
+async def test_retry_feedback_for_unparsable_json_says_so():
+    llm = FakeLLM("not json", '{"answer": "Paris"}')
+    await complete_json(llm, MESSAGES, Out)
+    assert "Invalid JSON" in llm.calls[1][0][-1]["content"]

@@ -6,6 +6,7 @@ Ollama is called on `/api/chat`, not its OpenAI-compatible `/v1`: `/v1` ignores 
 and runs at 4096 tokens, which would silently cut the start (the instructions) of a Q&A prompt.
 """
 
+import json
 import re
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -37,6 +38,44 @@ def reply_tokens(num_ctx: int, think: bool) -> int:
 
 
 RETRY_PROMPT = "That reply was not valid JSON for the required schema. Reply with only the JSON."
+MAX_RETRY_ERRORS = 10  # a reply missing every field still gets a short, fixable list
+# Servers that ignore response_format (mlx_lm.server) see the schema only in the prompt.
+SCHEMA_PROMPT = "Reply with only one JSON object, no markdown or prose, matching this JSON schema:"
+
+
+def _retry_prompt(exc: ValidationError) -> str:
+    """RETRY_PROMPT plus each error's field path and message; never the input values, which can
+    be document text."""
+    lines = [
+        f"- {'.'.join(map(str, e['loc'])) or '(reply)'}: {e['msg']}"
+        for e in exc.errors(include_url=False, include_input=False)[:MAX_RETRY_ERRORS]
+    ]
+    return "\n".join([RETRY_PROMPT, "Errors:", *lines])
+
+
+def with_schema(messages: Messages, schema: dict) -> Messages:
+    """The messages with the schema instruction appended to the last user turn (a copy)."""
+    note = f"\n\n{SCHEMA_PROMPT}\n{json.dumps(schema, separators=(',', ':'))}"
+    if messages and messages[-1]["role"] == "user":
+        return [*messages[:-1], {**messages[-1], "content": messages[-1]["content"] + note}]
+    return [*messages, {"role": "user", "content": note.lstrip()}]
+
+
+_DECODER = json.JSONDecoder()
+
+
+def extract_json(text: str) -> str:
+    """The first JSON object in a reply wrapped in markdown fences or prose; the text unchanged
+    when it holds none (validation then fails and names the problem)."""
+    text = strip_think(text)
+    for start in (i for i, ch in enumerate(text) if ch == "{"):
+        try:
+            obj, end = _DECODER.raw_decode(text, start)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return text[start:end]
+    return text
 
 
 class LLMError(UpstreamUnavailable):
@@ -121,9 +160,11 @@ class OpenAICompatClient:
         self._headers = {"Authorization": f"Bearer {key}"} if key else None
 
     async def complete(self, messages: Messages, json_schema: dict | None = None) -> str:
+        # shortcut: the schema text costs prompt tokens beyond prompt_tokens(), taken from the
+        # reply headroom; fine while schemas stay a few KB, budget it if a schema grows large.
         body: dict[str, Any] = {
             "model": self._model,
-            "messages": messages,
+            "messages": messages if json_schema is None else with_schema(messages, json_schema),
             "temperature": 0,
             "max_tokens": reply_tokens(self._num_ctx, self._think),  # mlx_lm.server defaults to 512
         }
@@ -135,7 +176,7 @@ class OpenAICompatClient:
                 "type": "json_schema",
                 "json_schema": {"name": "output", "schema": json_schema},
             }
-        return await _post(
+        reply = await _post(
             self._http,
             self._url,
             body,
@@ -143,6 +184,7 @@ class OpenAICompatClient:
             lambda d: d["choices"][0]["message"]["content"],
             self._headers,
         )
+        return reply if json_schema is None else extract_json(reply)
 
 
 def make_llm_client(settings: Settings, http: httpx.AsyncClient) -> LLMClient:
@@ -180,11 +222,11 @@ async def complete_json[M: BaseModel](llm: LLMClient, messages: Messages, model:
         reply = strip_think(await llm.complete(attempt, schema))
         try:
             return model.model_validate_json(reply)
-        except ValidationError:
+        except ValidationError as exc:
             # Rebuilt from the original messages: failed attempts never stack up.
             attempt = [
                 *messages,
                 {"role": "assistant", "content": reply[:RETRY_ECHO_CHARS]},
-                {"role": "user", "content": RETRY_PROMPT},
+                {"role": "user", "content": _retry_prompt(exc)},
             ]
     raise LLMInvalidOutput("The language model returned invalid output twice.")
