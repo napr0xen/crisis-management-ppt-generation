@@ -5,10 +5,16 @@ from collections.abc import Sequence
 from typing import Any
 
 from doc_intel.embeddings.schemas import Hit
-from doc_intel.llm.gateway import LLMClient, complete_json, prompt_tokens
+from doc_intel.llm.gateway import (
+    RETRY_ECHO_CHARS,
+    LLMClient,
+    LLMInvalidOutput,
+    complete_json,
+    prompt_tokens,
+)
 from doc_intel.llm.prompts import load_prompt
 from doc_intel.mapping.retriever import format_hit
-from doc_intel.mapping.schemas import LLMCandidateCheck, LLMExtraction, LLMRows
+from doc_intel.mapping.schemas import LLMCandidateCheck, LLMExtraction, LLMRows, LLMSynthesis
 from doc_intel.templates.schemas import IRField
 
 # Context budget: a chunk is <= CHUNK_MAX_TOKENS (512) tokens, and the system prompt, field spec
@@ -71,6 +77,38 @@ async def extract(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMExtract
         {"role": "user", "content": f"Field:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
     return await complete_json(llm, messages, EXTRACTION_MODELS[field.expected_type])
+
+
+async def synthesize(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMSynthesis:
+    """One call writing short items for a list field; `hits` must be those used for verification."""
+    spec = bounded_field(field).model_dump_json(include=_SPEC_FIELDS, exclude_none=True)
+    sources = "\n\n".join(format_hit(h) for h in hits)
+    messages = [
+        {"role": "system", "content": load_prompt("field_synthesis")},
+        {"role": "user", "content": f"Field:\n{spec}\n\nChunks:\n\n{sources}"},
+    ]
+    draft = await complete_json(llm, messages, LLMSynthesis)
+    c = field.constraints
+    values = [i.value for i in draft.items]
+    chars = len("\n".join(values))
+    too_many = c.max_items is not None and len(values) > c.max_items
+    too_long = c.max_chars is not None and chars > c.max_chars
+    if not (too_many or too_long):
+        return draft
+    limits = [
+        f"{n} {unit}" for n, unit in ((c.max_chars, "characters"), (c.max_items, "items")) if n
+    ]
+    ask = (
+        f"Your items total {chars} characters and {len(values)} items; the limit is "
+        f"{' and '.join(limits)}. Rewrite them shorter: keep the most important facts, drop "
+        "details, keep every quote verbatim."
+    )
+    echo = draft.model_dump_json()[:RETRY_ECHO_CHARS]
+    retry = [*messages, {"role": "assistant", "content": echo}, {"role": "user", "content": ask}]
+    try:  # one corrective retry; it may still overflow, the engine then falls back
+        return await complete_json(llm, retry, LLMSynthesis)
+    except LLMInvalidOutput:
+        return draft
 
 
 def _rows_spec(group: list[list[IRField]]) -> dict[str, Any]:

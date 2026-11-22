@@ -348,3 +348,17 @@ def test_render_edits_names_every_op_by_label() -> None:
     assert lines[0].startswith("- Set **Label a** to Ann") and "![" not in lines[0]
     assert lines[1] == "- Used value 2 for **Label b**"
     assert lines[2] == "- Cleared **zz**"
+
+
+def test_summary_marks_fields_summarised_from_quotes() -> None:
+    item_ev = _ev().model_copy(update={"item": 0})
+    results = {
+        "syn": _res("syn", "populated", value=["a sentence"], evidence=[item_ev]),
+        "plain": _res("plain", "populated", value="v", evidence=[_ev()]),
+    }
+    summary = {"populated": 2, "partial": 0, "missing": 0, "conflict": 0, "warnings": []}
+    out = render_summary(results, summary, _ir("syn", "plain"), None)
+    assert "Summarised from the cited quotes" in out
+    assert "Label syn" in out and "Label plain" not in out
+    plain = render_summary({"plain": results["plain"]}, summary, _ir("plain"), None)
+    assert "Summarised" not in plain

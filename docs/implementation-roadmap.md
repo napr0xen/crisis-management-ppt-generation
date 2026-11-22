@@ -35,7 +35,8 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 13 | Universal accuracy: number formatting & cross-slide facts | **Complete** |
 | 14 | Card context & 32k retrieval budget | **Complete** (on branch, `main` not yet fast-forwarded: awaiting live test) |
 | 15 | Row-grouped table extraction | **Complete** (on branch, awaiting live test) |
-| next | Universal extraction & mapping accuracy (remaining gaps) | Phases 15-16 ([below](#next-priority-universal-extraction--mapping-accuracy)) |
+| 16 | Grounded synthesis for summary & finding fields | **Complete** (on branch, awaiting live test) |
+| next | Universal extraction & mapping accuracy | all four gaps addressed in Phases 13-16; next: live test, then fast-forward `main` |
 
 ---
 
@@ -351,6 +352,33 @@ The third gap of the [next priority](#next-priority-universal-extraction--mappin
 
 ---
 
+## Phase 16: Grounded synthesis for summary & finding fields
+
+The fourth gap of the [next priority](#next-priority-universal-extraction--mapping-accuracy) list (cause: `paragraphs`/`bullet_list` summary fields ended `partial`, `missing`, or, measured in this phase, a fake `conflict` of one candidate per source paragraph; verbatim lists overflowed their slot).
+
+- **Entry:** Phase 15 done (branch `phase-15-row-grouped-tables`, `98515e9`).
+- **Deliverables:** `extractor.synthesize` (one call, one corrective retry when the reply overflows `max_items`/`max_chars`), `verifier.supported` (exact canonical numbers, >= 60% content words, <= 400 chars per item), `engine._synthesized` (structural trigger, all-or-fallback replacement, confidence `0.7`), `Evidence.item` (per-sentence citations), the chat summary line, and the list one-candidate extraction rule ([system-design.md § 7](system-design.md#7-mapping-engine-stage-3) step 5).
+- **Exit:**
+  - Tests on two or more unrelated domains (museum survey, warehouse incident; Spanish and German text for `supported`): trigger and its refusals (not found, no chunks, LLM error, conflict, fitting verbatim, other types), unbacked items dropped, unretrieved quotes rejected, `1.8` never backed by `18`, injection text is data, overflow retry, verbatim value replaced only by a complete fitting synthesis, `Evidence.item` round-trips, old runs without it validate;
+  - eval hard gates pass, before/after recorded; `uv run ruff check .`, `uv run ruff format --check .`, `uv run alembic check`, `uv run pytest` green.
+- **Eval** (`qwen3:14b`, `LLM_NUM_CTX=32768`; 85 fields: summary and findings fields in museum, app beta, warehouse and Spanish library sources added; before = Phase 15 code: the full 81-field run plus a probe of the 4 fields added after it):
+
+  | Metric | Before | After |
+  |---|---|---|
+  | Fabricated citations | 0 | 0 |
+  | Citation verification | 100% | 100% |
+  | Seeded conflicts detected | 100% (5/5) | 100% (5/5) |
+  | Absent fields `missing` | 100% | 100% (19/19) |
+  | Field accuracy | 93.3% (56/60) | 95.0% (57/60) |
+  | Values over `max_chars`/`max_items` | not measured (metric added here) | 3 |
+  | Synthesized values in the run | n/a | 0 |
+
+  The accuracy gain is the one-candidate rule: the one-sentence incident summary was a fake conflict and is now `populated`. The 3 overflows are verbatim but correct values (museum summary, incident summary, Spanish findings), kept because the synthesis did not pass the bar in this run: one paraphrase item had 56% word support, one retry was still 20 characters over, and the third varied by run (probes on the same input gave a fitting, fully backed 150-character summary in one run and the verbatim fallback in another). Q&A eval unchanged.
+- **Trade-offs:** synthesized values are `populated` at confidence `0.7` only when every item passes `supported`; the word check is a sanity filter (an item can still add a few unbacked words), the hard guarantees are verified quotes and exact numbers. A field with limits can cost up to 4 LLM calls. Synthesis is not deterministic on `qwen3:14b`; when it fails the verbatim value stays (never a worse value). For `paragraphs`/`bullet_list`, items from different chunks are now one candidate, so a list conflict needs chunks that contradict each other about the same item.
+- **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 178 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1460 passed, 1 deselected (`perf`). `/ponytail-review`: before the eval, synthesized numbers were compared with separators stripped (`1.8` matched `18`); fixed to canonical numbers (test added), then ship. `/ecc:quality-gate` clean. Live test pending.
+
+---
+
 ## Next priority: universal extraction & mapping accuracy
 
 Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found in the Phase 10-12 live tests, where the filled finance deck still shows these gaps.
@@ -359,7 +387,7 @@ Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found
 1. **Completely universal.** No finance-, language- or template-specific rules, keywords, field names, labels or layouts. Every fix must generalize to any template (pptx/docx/xlsx) and any source document, and is tested on at least two unrelated domains.
 2. **Accuracy pushed to the maximum possible**, measured on the eval set ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)) before and after each change, without loosening the existing hard gates (0 fabricated citations, 100% citation verification, conflicts never auto-resolved).
 
-**Gaps** (the first two are done in [Phase 13](#phase-13-universal-accuracy-number-formatting--cross-slide-facts); card context and the 32k budget in [Phase 14](#phase-14-spatial--card-context--32k-retrieval-budget)):
+**Gaps** (the first two are done in [Phase 13](#phase-13-universal-accuracy-number-formatting--cross-slide-facts); card context and the 32k budget in [Phase 14](#phase-14-spatial--card-context--32k-retrieval-budget); row-grouped tables in [Phase 15](#phase-15-row-grouped-table-extraction); grounded synthesis in [Phase 16](#phase-16-grounded-synthesis-for-summary--finding-fields)):
 - **Clean currency and number formatting.** Typed values are written as their canonical form (for example a bare float), not formatted the way the template or source shows them (thousands separators, decimals, currency symbol or code, percent sign). The written text must follow the template's own example or the source's format; xlsx cells keep real numbers.
 - **Consistent cross-slide values.** Only fields that share one `replace_token` key share a value. Fields with different tokens or anchors that ask for the same fact (the same label and type on several slides) can still get different values or statuses.
 - **Accurate row-grouped tables.** `fill_table_rows` rows must each come from one record in the source, with cells from the same row or entity, never mixed across records. Row order and count follow the source.

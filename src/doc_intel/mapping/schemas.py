@@ -60,6 +60,13 @@ class LLMRows(_Strict):
     not_found: bool
 
 
+class LLMSynthesis(_Strict):
+    """Items written from the chunks (extractor.synthesize); each is grounded by its quotes."""
+
+    items: list[LLMCandidate[str]]
+    not_found: bool
+
+
 class LLMCheck(_Strict):
     about: str  # reasoning aid only: never logged, stored or read by code
     match: bool
@@ -80,6 +87,7 @@ class Evidence(_Strict):
     page_number: int | None
     section_heading: str | None
     quote: str = Field(min_length=MIN_QUOTE_CHARS, max_length=MAX_QUOTE_CHARS)
+    item: int | None = Field(None, ge=0)  # synthesized values: index in `value` the quote backs
 
 
 class Candidate(_Strict):

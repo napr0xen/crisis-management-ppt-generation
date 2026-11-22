@@ -42,6 +42,18 @@ def _quotes(result: FieldMappingResult) -> list:
     return [*result.evidence, *(e for c in candidates for e in c.evidence)]
 
 
+def _fits(field: IRField, result: FieldMappingResult) -> bool | None:
+    """Whether a populated/partial list value fits the field's max_items / max_chars."""
+    c, value = field.constraints, result.value
+    if result.status not in ("populated", "partial") or not isinstance(value, list):
+        return None
+    if c.max_items is None and c.max_chars is None:
+        return None
+    too_many = c.max_items is not None and len(value) > c.max_items
+    too_long = c.max_chars is not None and len("\n".join(map(str, value))) > c.max_chars
+    return not (too_many or too_long)
+
+
 def _row_matches(actual: list, expected: list) -> bool:
     return len(actual) == len(expected) and all(
         normalize(str(e)) in normalize(str(a)) for a, e in zip(actual, expected, strict=True)
@@ -127,6 +139,8 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
                         "latency_s": round(latency, 2),
                         "missing_reason": result.missing_reason,
                         "evidence_count": len(_quotes(result)),
+                        "synthesized": any(e.item is not None for e in _quotes(result)),
+                        "fits": _fits(field, result),
                         "fabricated_citations": len(fabricated),
                         "value_correct": (
                             _matches(result.value, expected["value"])
@@ -162,6 +176,8 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
             bool(r["value_correct"]) and r["status"] == "populated" for r in present
         )
         / len(present),
+        "synthesized": sum(r["synthesized"] for r in rows),
+        "length_violations": sum(r["fits"] is False for r in rows),
         "calibration": calibration,
         "latency_p50_s": statistics.median(latencies),
         "latency_max_s": max(latencies),

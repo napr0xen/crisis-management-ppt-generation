@@ -16,6 +16,7 @@ from doc_intel.mapping.extractor import (
     extract,
     extract_rows,
     hit_budget,
+    synthesize,
 )
 from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import (
@@ -37,13 +38,15 @@ from doc_intel.mapping.verifier import (
     TYPED_TYPES,
     canonical_value,
     normalize,
+    supported,
     value_in_quotes,
     verify_quote,
 )
 from doc_intel.templates.schemas import IRField
 
 _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
-CONF_TYPED, CONF_TEXT, CONF_PARTIAL = 0.9, 0.8, 0.5
+CONF_TYPED, CONF_TEXT, CONF_SYNTH, CONF_PARTIAL = 0.9, 0.8, 0.7, 0.5
+_LISTS = ("paragraphs", "bullet_list")
 
 
 def share_key(field: IRField) -> tuple[str, str, str]:
@@ -207,7 +210,67 @@ async def map_field(
         extraction = await check_candidates(llm, field, hits, extraction, other_headings)
     except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
         return _missing(field, "llm_error", document_ids)
-    return resolve(field, hits, extraction, checked_documents=document_ids)
+    result = resolve(field, hits, extraction, checked_documents=document_ids)
+    if field.expected_type in _LISTS and _needs_synthesis(field, result):
+        return await _synthesized(llm, field, hits, result, document_ids)
+    return result
+
+
+def _fits(field: IRField, items: list[str]) -> bool:
+    c = field.constraints
+    too_many = c.max_items is not None and len(items) > c.max_items
+    return not too_many and (c.max_chars is None or len("\n".join(items)) <= c.max_chars)
+
+
+def _needs_synthesis(field: IRField, result: FieldMappingResult) -> bool:
+    """The source has the content but not as verbatim items, or the verbatim items overflow."""
+    if result.status == "populated":
+        return isinstance(result.value, list) and not _fits(field, [str(i) for i in result.value])
+    return result.status != "conflict" and result.missing_reason in (
+        "evidence_failed_verification",
+        "insufficient_evidence",
+    )
+
+
+async def _synthesized(
+    llm: LLMClient,
+    field: IRField,
+    hits: list[Hit],
+    first: FieldMappingResult,
+    docs: list[uuid.UUID],
+) -> FieldMappingResult:
+    """Items written by the LLM, each kept only if `supported` by its own verified quotes. Any
+    failure, or nothing kept, returns the first-pass result unchanged."""
+    try:
+        draft = await synthesize(llm, field, hits)
+    except LLMInvalidOutput:
+        return first
+    values: list[str] = []
+    evidence: list[Evidence] = []
+    for cand in draft.items:
+        quotes = _evidence(hits, cand.quotes)
+        text = _BULLET.sub("", cand.value.strip())
+        if text and supported(text, [e.quote for e in quotes]):
+            evidence += [e.model_copy(update={"item": len(values)}) for e in quotes]
+            values.append(text)
+    if draft.not_found or not values:
+        return first
+    c = field.constraints
+    whole = len(values) == len(draft.items) and _fits(field, values)
+    if first.status == "populated" and not whole:
+        return first  # a populated verbatim value is replaced only by a complete, fitting one
+    ok = whole and (c.min_items is None or len(values) >= c.min_items)
+    return FieldMappingResult(
+        field_id=field.field_id,
+        status="populated" if ok else "partial",
+        value=values,
+        evidence=evidence,
+        confidence=CONF_SYNTH if ok else CONF_PARTIAL,
+        missing_reason=None if ok else "insufficient_evidence",
+        checked_documents=docs,
+        conflict_details=None,
+        provenance="rag",
+    )
 
 
 def _missing(field: IRField, reason: MissingReason, docs: list[uuid.UUID]) -> FieldMappingResult:

@@ -155,6 +155,10 @@ def render_summary(
     if partial:
         out.append("\n**Partial**")
         out += [f"- {label(r.field_id)}: {_value(r.value)}" for r in partial if r.value is not None]
+    summarised = [r for r in results.values() if any(e.item is not None for e in r.evidence)]
+    if summarised:
+        out.append("\n**Summarised from the cited quotes**")
+        out += [f"- {label(r.field_id)}" for r in summarised]
     if summary.get("warnings"):
         out.append("\n**Warnings**")
         out += [

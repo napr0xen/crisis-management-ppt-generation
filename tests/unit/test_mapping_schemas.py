@@ -71,3 +71,12 @@ def test_conflict_needs_two_candidates():
 )
 def test_valid_shapes_are_accepted(kw):
     _make(**kw)
+
+
+def test_evidence_item_is_optional_and_round_trips():
+    old = EV.model_dump(mode="json", exclude={"item"})
+    assert Evidence.model_validate(old).item is None
+    item = Evidence.model_validate({**old, "item": 2})
+    assert Evidence.model_validate_json(item.model_dump_json()).item == 2
+    with pytest.raises(ValidationError):
+        Evidence.model_validate({**old, "item": -1})

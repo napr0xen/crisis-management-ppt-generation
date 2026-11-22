@@ -9,6 +9,7 @@ Rules:
 - The value must be the kind of quantity the field asks for: a `currency` field needs an amount of money, a `percent` field a percentage, a `date` field a date. A count of people or things is not an amount of money.
 - Each candidate has a `value` and `quotes`. Each quote has the `chunk_id` copied exactly from the chunk header and a `quote` copied verbatim from that chunk's text: an exact span that contains or supports the value. Do not paraphrase, shorten, or join text inside a quote.
 - IMPORTANT: if different chunks state DIFFERENT values for the field, return one candidate per distinct value and never choose between them. If the same value appears in several chunks, return one candidate with all its quotes.
+- For `paragraphs` and `bullet_list`, items from different chunks are not different values: return ONE candidate with every item and its quotes; several candidates only if chunks contradict each other about the same item.
 - When the field asks for one specific item of a list (an ordinal slot such as "first upcoming award", or a named item such as "the Supply continuity risk"), return only that item. Other items of the same list are not different values for this field and are never returned as extra candidates. The conflict rule applies only when chunks disagree about that same item.
 - Never return text from the field spec or template placeholders (anything in [brackets]) as a value.
 - Each quote should be the whole sentence or table row that states the value, not only the value itself.

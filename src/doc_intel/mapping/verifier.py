@@ -79,6 +79,29 @@ def verify_quote(hits: list[Hit], chunk_id: str, quote: str) -> Hit | None:
 _NUMBER_CI = re.compile(_NUMBER.pattern, re.IGNORECASE)  # source_text keeps the source's case
 
 
+MAX_ITEM_CHARS, MIN_SUPPORT, _STEM = 400, 0.6, 5
+_WORDS = re.compile(r"\w{4,}")
+
+
+def supported(text: str, quotes: list[str]) -> bool:
+    """A synthesized item is backed by its verified quotes: every number appears in them and at
+    least 60% of its content words (4+ characters, same first 5 characters) do too."""
+    # shortcut: scripts written without spaces (CJK, Thai) form one long word per run and need
+    # the whole run verbatim, add a tokenizer when such sources matter.
+    if not quotes or not text.strip() or len(text) > MAX_ITEM_CHARS:
+        return False
+    item, source = normalize(text), normalize(" ".join(quotes))
+    if not _numbers(item) <= _numbers(source):  # canonical values: 1.8 is never 18
+        return False
+    have = [w for w in _WORDS.findall(source) if not w.isdigit()]
+    words = [w for w in _WORDS.findall(item) if not w.isdigit()]
+
+    def found(w: str) -> bool:
+        return any(w[: (n := min(_STEM, len(w), len(q)))] == q[:n] for q in have)
+
+    return not words or sum(map(found, words)) / len(words) >= MIN_SUPPORT
+
+
 def _number_spans(s: str, rx: re.Pattern[str]) -> list[tuple[Decimal, re.Match[str]]]:
     spans = []
     for m in rx.finditer(s):

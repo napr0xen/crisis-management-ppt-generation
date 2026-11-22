@@ -279,7 +279,8 @@ Stage 3 output, one per field, stored in `mapping_runs.results[field_id]`.
         "filename": {"type": "string"},
         "page_number": {"type": ["integer", "null"]},
         "section_heading": {"type": ["string", "null"]},
-        "quote": {"type": "string", "minLength": 8, "maxLength": 1000}
+        "quote": {"type": "string", "minLength": 8, "maxLength": 1000},
+        "item": {"type": ["integer", "null"], "minimum": 0}
       }
     },
     "Value": {"type": ["string", "number", "array", "null"]}
@@ -355,6 +356,7 @@ Example (conflict):
 **`confidence`** is a deterministic tier for display only; it never drives `status`:
 - `populated` + typed value matched literally in a quote → `0.9`
 - `populated` text, list or table whose every item (cell) appears in a verified quote → `0.8`
+- `populated` list synthesized from verified quotes (step 5 below) → `0.7`
 - `partial` → `0.5`
 - `missing` / `conflict` → `0.0`
 - `provenance = user` → `1.0`
@@ -427,9 +429,11 @@ PENDING ─retrieve─▶ RETRIEVED ─extract─▶ EXTRACTED ─verify─▶ R
    5. 1 candidate → `populated`. It becomes `partial` (`missing_reason = "insufficient_evidence"`) when:
       - the LLM flagged `incomplete`, or
       - `min_items` is not met, or
-      - a text, list or table value has an item (cell) that appears in no verified quote of that candidate (synthesized or paraphrased text is never `populated`), or
+      - a text, list or table value has an item (cell) that appears in no verified quote of that candidate (paraphrased text is never `populated` by extraction; see step 5 for grounded synthesis of lists), or
       - a `table` row has fewer than `len(columns)` non-empty cells.
-   6. A value longer than `max_chars` is still written; a warning (`{"field_id", "code": "max_chars_exceeded"}`) goes into `mapping_runs.summary.warnings`. Values are never silently truncated.
+   6. A value longer than `max_chars` is still written (after step 5 had its chance to fit it); a warning (`{"field_id", "code": "max_chars_exceeded"}`) goes into `mapping_runs.summary.warnings`. Values are never silently truncated.
+
+5. **Grounded synthesis** (`engine._synthesized`, `extractor.synthesize`, prompt `llm/prompts/field_synthesis.md`, `verifier.supported`; cause: summary and finding fields ended `partial`, a fake `conflict` of one candidate per paragraph, or a verbatim list far over the slot). Only for `paragraphs` and `bullet_list` fields, never for row-group fields, and the trigger is structural (no label words): the result is `partial` or `missing` with reason `evidence_failed_verification` / `insufficient_evidence` (the source has the content, not as verbatim items), or `populated` but over `max_items` or `max_chars`. Never after `not_found_by_llm`, `no_relevant_chunks`, `llm_error`, or a `conflict`: absent fields stay missing and conflicts are never resolved. One call on the same hits (plus one corrective retry that states the measured length when the reply exceeds `max_items`/`max_chars`) returns `{"items": [{"value": "<one sentence or bullet>", "quotes": [{chunk_id, quote}]}], "not_found"}`. An item is kept only if at least one of its quotes verifies (step 3) and `supported(item, its verified quotes)`: every number in the item equals (canonically, as typed values: `1.8` is never `18`) a number in its quotes, at least 60% of its content words (a sanity filter: the guarantees are verified quotes and exact numbers) (`\w{4,}` after `normalize`) occur in them (a word matches a quote word sharing its first `min(5, len)` characters: light, language-agnostic inflection), and the item is at most 400 characters (`shortcut: scripts written without spaces (CJK, Thai) form one long word per run, add a tokenizer when such sources matter`). Kept items get their evidence with `item` = their index in `value`, so every sentence keeps its own citations. Result: every item kept, fits `max_items`/`max_chars` and meets `min_items` → `populated`, confidence `0.7`; otherwise `partial`. A `populated` verbatim value is replaced only by a complete, fitting synthesis; anything else (no item kept, `not_found`, invalid output) returns the first-pass result unchanged. The chat summary names fields summarised from quotes. Extraction itself returns one candidate listing every item for `paragraphs`/`bullet_list` (items from different chunks are not different values; several candidates only when chunks contradict each other about the same item).
 
 Fields run sequentially (`JOB_CONCURRENCY=1`), one bounded LLM call each (at most 2 attempts, each reply capped by `num_predict`). `jobs.progress` is set before each field to `{"stage": "mapping", "done": i, "total": n, "field": "<field_id>"}` and after it to `{"stage": "mapping", "done": i + 1, "total": n}`. Stored results are a historical snapshot: deleting a source later does not change them.
 
