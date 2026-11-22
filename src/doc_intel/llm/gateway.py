@@ -17,6 +17,9 @@ from doc_intel.core.errors import UpstreamUnavailable
 Messages = list[dict[str, str]]
 _THINK = re.compile(r"\A\s*<think>.*?</think>", re.DOTALL)
 RETRY_ECHO_CHARS = 1500  # a failed reply is echoed truncated, so a retry never outgrows num_ctx
+# Prompts are sized for an 8k window (extractor, ir_builder, Q&A budgets: about 5-6k tokens).
+PROMPT_TOKENS = 6144
+REPLY_TOKENS = 4096  # every reply fits; the cap stops a degenerate JSON/whitespace loop early
 RETRY_PROMPT = "That reply was not valid JSON for the required schema. Reply with only the JSON."
 
 
@@ -68,18 +71,18 @@ class OllamaClient:
         self._num_ctx, self._think = num_ctx, think
 
     async def complete(self, messages: Messages, json_schema: dict | None = None) -> str:
+        # Uncapped, a degenerate JSON/whitespace loop runs until the timeout. Reasoning counts
+        # against the same cap, so with thinking on the reply gets all the window the prompt
+        # leaves, else a long reasoning cuts the JSON off.
+        num_predict = min(self._num_ctx // 2, REPLY_TOKENS)
+        if self._think:
+            num_predict = max(num_predict, self._num_ctx - PROMPT_TOKENS)
         body: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "stream": False,
             "think": self._think,
-            # a reply may use at most half the window; uncapped, a degenerate JSON/whitespace loop
-            # runs until the timeout
-            "options": {
-                "num_ctx": self._num_ctx,
-                "temperature": 0,
-                "num_predict": self._num_ctx // 2,
-            },
+            "options": {"num_ctx": self._num_ctx, "temperature": 0, "num_predict": num_predict},
         }
         if json_schema is not None:
             body["format"] = json_schema

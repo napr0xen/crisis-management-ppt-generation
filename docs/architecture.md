@@ -149,13 +149,13 @@ Peak at steady state (one mapping run active, Docker up, default 14B model, rera
 |---|---|---|
 | macOS + desktop apps | 5.0 | browser with Open WebUI tab included |
 | Docker VM (Open WebUI ~1.0, Postgres ~0.5, Qdrant ~0.5, VM overhead) | 3.0 | cap the VM at 3 GB in Docker Desktop; compose `mem_limit`s: open-webui 1.5g, postgres 512m, qdrant 1g |
-| Ollama `qwen3:14b` Q4_K_M, weights + KV cache (8k ctx, one slot) | 10.0 | measured with `ollama ps` at `num_ctx=8192`; `OLLAMA_KEEP_ALIVE=10m`, `OLLAMA_NUM_PARALLEL=1`: each extra parallel slot adds its own KV cache |
+| Ollama `qwen3:14b` Q4_K_M, weights + KV cache (32k ctx, one slot) | 14.0 | measured with `ollama ps` at `num_ctx=32768` (10.0 at `num_ctx=8192`: f16 KV cache is 160 KB per token). Set `LLM_NUM_CTX=8192` to get the 10.0 GB back; `OLLAMA_KEEP_ALIVE=10m`, `OLLAMA_NUM_PARALLEL=1`: each extra parallel slot adds its own KV cache |
 | Ollama `qwen3-embedding:0.6b` (`num_ctx=1024`) | 0.8 | measured: 0.81 GB (1.24 GB at the default context); unloaded after `OLLAMA_KEEP_ALIVE` when idle. Ollama must be allowed ≥ 2 loaded models (LLM + embedder; its default allows more) |
 | FastAPI process (Python, Docling idle) | 0.5 | |
-| **Subtotal (mapping)** | **19.3** | ~4.7 GB headroom |
+| **Subtotal (mapping)** | **23.3** | ~0.7 GB headroom |
 | + Docling layout/TableFormer/RapidOCR (only during ingestion) | +2.0 | loaded lazily, worker concurrency 1 |
 | + BGE reranker v2-m3 (only if `RERANKER_ENABLED=true`) | +1.5 | lazy-loaded |
-| **Worst case (ingest + LLM + reranker)** | **22.8** | near the limit: switch to `qwen3:4b` (measured 3.9 GB, −6.1 GB) |
+| **Worst case (ingest + LLM + reranker)** | **26.8** | over the limit: set `LLM_NUM_CTX=8192` (22.8 GB) or switch to `qwen3:4b` (measured 3.9 GB at 8k) |
 
 Rules this budget implies:
 - `JOB_CONCURRENCY=1` and `OLLAMA_NUM_PARALLEL=1` (chat Q&A and a running job then queue at Ollama instead of each reserving their own KV cache);

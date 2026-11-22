@@ -8,6 +8,8 @@ from pydantic import BaseModel, SecretStr
 
 from doc_intel.core.config import Settings, get_settings
 from doc_intel.llm.gateway import (
+    PROMPT_TOKENS,
+    REPLY_TOKENS,
     RETRY_ECHO_CHARS,
     LLMError,
     LLMInvalidOutput,
@@ -127,6 +129,8 @@ async def test_unreachable_server_raises_llm_error():
         # A quoted document may contain the tag: only a leading reasoning block is removed.
         ('{"quote": "close it with </think> here"}', '{"quote": "close it with </think> here"}'),
         ('<think>x</think>{"quote": "a </think> b"}', '{"quote": "a </think> b"}'),
+        # reasoning that drafts JSON, with leading whitespace: only the final JSON is kept
+        ('\n <think>\n{"a": 0}\n</think>\n{"a": 1}', '{"a": 1}'),
     ],
 )
 def test_strip_think(raw, clean):
@@ -178,6 +182,42 @@ def test_make_llm_client_picks_the_provider():
     assert isinstance(make_llm_client(Settings(**base), http), OllamaClient)
     openai = Settings(**base, llm_provider="openai", llm_base_url="https://api.example.com/v1")
     assert isinstance(make_llm_client(openai, http), OpenAICompatClient)
+
+
+async def test_default_settings_send_a_32k_window_with_thinking_off():
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"message": {"content": '{"answer": "x"}'}})
+    settings = Settings(_env_file=None, pipe_shared_secret="x" * 32, signing_secret="y" * 32)
+    await make_llm_client(settings, http).complete(MESSAGES, SCHEMA)
+    body = json.loads(requests[0].content)
+    assert body["think"] is False
+    assert body["options"]["num_ctx"] == 32768
+    assert body["options"]["num_predict"] == REPLY_TOKENS
+
+
+def test_window_and_thinking_come_from_env(monkeypatch):
+    monkeypatch.setenv("LLM_NUM_CTX", "8192")
+    monkeypatch.setenv("LLM_ENABLE_THINKING", "true")
+    s = Settings(_env_file=None, pipe_shared_secret="x" * 32, signing_secret="y" * 32)
+    assert (s.llm_num_ctx, s.llm_enable_thinking) == (8192, True)
+
+
+@pytest.mark.parametrize(
+    "num_ctx, think, num_predict",
+    [
+        (32768, False, REPLY_TOKENS),  # no reasoning: the degenerate-loop cap, as at 8k
+        (32768, True, 32768 - PROMPT_TOKENS),  # reasoning + reply get all the prompt leaves
+        (8192, True, 4096),  # a small window never gives the reply less than half
+    ],
+)
+async def test_thinking_gets_the_window_the_prompt_leaves(num_ctx, think, num_predict):
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"message": {"content": "hi"}})
+    await OllamaClient(http, "http://o:11434", "m", num_ctx, 120.0, think).complete(MESSAGES)
+    body = json.loads(requests[0].content)
+    assert body["think"] is think
+    assert body["options"]["num_ctx"] == num_ctx
+    assert body["options"]["num_predict"] == num_predict
 
 
 def test_unknown_provider_fails_at_startup():

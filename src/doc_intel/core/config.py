@@ -39,8 +39,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://127.0.0.1:11434"  # ollama: native API root; openai: the /v1 root
     llm_model: str = "qwen3:14b"
     llm_api_key: SecretStr = SecretStr("")
-    llm_num_ctx: int = 8192  # ollama only; 8 chunks x 512 tokens + prompt + answer fit
+    llm_num_ctx: int = 32768  # ollama only; prompts stay < 6k tokens, the rest is reasoning + reply
     llm_timeout_seconds: float = 120.0  # local 14B inference plus a cold model load
+    # ollama `think`; off: at temperature 0 qwen3 reasoning can loop until the timeout
     llm_enable_thinking: bool = False
     qdrant_collection: str = "doc_chunks"  # tests use their own collection
     # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
