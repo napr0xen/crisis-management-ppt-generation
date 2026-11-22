@@ -41,10 +41,21 @@ def _ollama(http: httpx.AsyncClient, think: bool = False) -> OllamaClient:
 
 
 def _openai(
-    http: httpx.AsyncClient, key: str = "sk-test", num_ctx: int = 32768, think: bool = False
+    http: httpx.AsyncClient,
+    key: str = "sk-test",
+    num_ctx: int = 32768,
+    think: bool = False,
+    template_kwargs: bool = False,
 ) -> OpenAICompatClient:
     return OpenAICompatClient(
-        http, "http://localhost:8080/v1/", "gpt-x", SecretStr(key), num_ctx, 120.0, think
+        http,
+        "http://localhost:8080/v1/",
+        "gpt-x",
+        SecretStr(key),
+        num_ctx,
+        120.0,
+        think,
+        template_kwargs,
     )
 
 
@@ -87,7 +98,6 @@ async def test_openai_compat_sends_bearer_key_and_json_schema_response_format():
         "messages": MESSAGES,
         "temperature": 0,
         "max_tokens": 4096,
-        "chat_template_kwargs": {"enable_thinking": False},
         "response_format": {
             "type": "json_schema",
             "json_schema": {"name": "output", "schema": SCHEMA},
@@ -95,14 +105,32 @@ async def test_openai_compat_sends_bearer_key_and_json_schema_response_format():
     }
 
 
-async def test_openai_compat_thinking_gets_the_larger_budget_and_flag():
+async def test_openai_compat_thinking_gets_the_larger_budget():
     requests: list[httpx.Request] = []
     http = _mock(requests, {"choices": [{"message": {"content": "hi"}}]})
     await _openai(http, think=True).complete(MESSAGES)
     body = json.loads(requests[0].content)
     assert body["max_tokens"] == 32768 - 16384
-    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "chat_template_kwargs" not in body  # strict OpenAI-compatible servers reject it
     assert "response_format" not in body
+
+
+@pytest.mark.parametrize("think", [False, True])
+async def test_openai_compat_sends_the_thinking_switch_only_when_configured(think):
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"choices": [{"message": {"content": "hi"}}]})
+    await _openai(http, think=think, template_kwargs=True).complete(MESSAGES)
+    assert json.loads(requests[0].content)["chat_template_kwargs"] == {"enable_thinking": think}
+
+
+async def test_make_llm_client_passes_the_template_kwargs_setting(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compat")
+    monkeypatch.setenv("LLM_CHAT_TEMPLATE_KWARGS", "true")
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"choices": [{"message": {"content": "hi"}}]})
+    settings = Settings(_env_file=None, pipe_shared_secret="x" * 32, signing_secret="y" * 32)
+    await make_llm_client(settings, http).complete(MESSAGES)
+    assert json.loads(requests[0].content)["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def _scripted(contents: list[str], requests: list[httpx.Request]) -> httpx.AsyncClient:
