@@ -14,7 +14,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:body:p3",
@@ -30,7 +31,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:body:p4",
@@ -46,7 +48,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:body:t0:r0c0",
@@ -65,7 +68,8 @@
         "header": "Item"
       },
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:body:t0:r0c1",
@@ -84,7 +88,8 @@
         "header": "Owner"
       },
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:body:t0:r0c2",
@@ -103,7 +108,8 @@
         "header": "Date"
       },
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:body:t0:r1c0",
@@ -122,7 +128,8 @@
         "header": "Item"
       },
       "pos": null,
-      "context": "Item"
+      "context": "Item",
+      "card": null
     },
     {
       "anchor_id": "docx:body:t0:r1c2",
@@ -141,7 +148,8 @@
         "header": "Date"
       },
       "pos": null,
-      "context": "Date"
+      "context": "Date",
+      "card": null
     },
     {
       "anchor_id": "docx:sec1:header:p0",
@@ -157,7 +165,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:sec1:footer:p0",
@@ -171,7 +180,8 @@
       "is_placeholder": false,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "docx:sdt:owner",
@@ -182,7 +192,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     }
   ]
 }

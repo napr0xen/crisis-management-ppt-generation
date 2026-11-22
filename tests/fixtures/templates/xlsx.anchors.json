@@ -14,7 +14,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Summary!D1",
@@ -30,7 +31,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Summary!B2",
@@ -45,7 +47,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Summary!B3",
@@ -60,7 +63,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Summary!A5",
@@ -74,7 +78,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Summary!B6",
@@ -89,7 +94,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Summary!A7",
@@ -103,7 +109,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!B1",
@@ -117,7 +124,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!A2",
@@ -131,7 +139,8 @@
       "is_placeholder": true,
       "table": null,
       "pos": null,
-      "context": null
+      "context": null,
+      "card": null
     }
   ]
 }

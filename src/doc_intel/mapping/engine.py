@@ -14,6 +14,7 @@ from doc_intel.mapping.extractor import (
     bounded_field,
     check_candidates,
     extract,
+    extract_records,
     extract_rows,
     hit_budget,
     synthesize,
@@ -25,8 +26,11 @@ from doc_intel.mapping.schemas import (
     ConflictDetails,
     Evidence,
     FieldMappingResult,
+    LLMCandidate,
     LLMExtraction,
     LLMQuote,
+    LLMRecord,
+    LLMRecords,
     LLMRows,
     MappingSummary,
     MappingWarning,
@@ -42,7 +46,8 @@ from doc_intel.mapping.verifier import (
     value_in_quotes,
     verify_quote,
 )
-from doc_intel.templates.schemas import IRField
+from doc_intel.templates.anchors import has_letter
+from doc_intel.templates.schemas import Constraints, IRField
 
 _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
 CONF_TYPED, CONF_TEXT, CONF_SYNTH, CONF_PARTIAL = 0.9, 0.8, 0.7, 0.5
@@ -118,7 +123,9 @@ _CELL = re.compile(r"^(.*):r(\d+)c(\d+)$")
 
 
 def _slot_grids(fields: list[IRField]) -> list[list[list[IRField]]]:
-    """Numbered slot grids: `[Date 1] [Item 1] ... [Date 3] [Item 3]` is 3 rows of 2 columns."""
+    """Numbered slot grids: `[Date 1] [Item 1] ... [Date 3] [Item 3]` is 3 rows of 2 columns. A
+    single stem numbered 1..N (`[Key message 1] [Key message 2]`) is a list: N rows of one field,
+    when the stem names a fact (has a letter) and the slots share one heading (or none)."""
     slots: dict[object, list[tuple[str, int, IRField]]] = {}
     for f in fields:
         token = f.constraints.token if f.write_mode == "replace_token" else None
@@ -142,8 +149,33 @@ def _slot_grids(fields: list[IRField]) -> list[list[list[IRField]]]:
             if stem not in repeated:
                 by_numbers.setdefault(frozenset(by_n), []).append(stem)
         for numbers, stems in by_numbers.items():
-            if len(stems) >= 2 and len(numbers) >= 2 and max(numbers) == len(numbers):
+            if len(numbers) < 2 or max(numbers) != len(numbers):
+                continue
+            if len(stems) >= 2:
                 groups.append([[cells[s][n] for s in stems] for n in sorted(numbers)])
+            elif has_letter(stems[0]):
+                slots_1_n = [cells[stems[0]][n] for n in sorted(numbers)]
+                if len({f.context for f in slots_1_n if has_letter(f.context)}) <= 1:
+                    groups.append([[f] for f in slots_1_n])
+    return groups
+
+
+_CARD = re.compile(r"(\d+)\.(\d+)")
+
+
+def _tile_groups(fields: list[IRField]) -> list[list[list[IRField]]]:
+    """Fields of repeating cards (`IRField.card` "set.member"): the members of one set on one slide
+    are the rows, their fields the columns. A member with a single field is no row."""
+    sets: dict[tuple[object, str], dict[int, list[IRField]]] = {}
+    for f in fields:
+        if f.expected_type != "table" and f.write_mode != "fill_table_rows" and f.card:
+            if m := _CARD.fullmatch(f.card):
+                sets.setdefault((_unit(f), m[1]), {}).setdefault(int(m[2]), []).append(f)
+    groups = []
+    for members in sets.values():
+        rows = [members[k] for k in sorted(members) if len(members[k]) >= 2]
+        if len(rows) >= 2:
+            groups.append(rows)
     return groups
 
 
@@ -166,13 +198,17 @@ def _cell_grids(fields: list[IRField]) -> list[list[list[IRField]]]:
 
 
 def row_groups(fields: list[IRField]) -> list[list[list[IRField]]]:
-    """Groups of fields that are the rows of one table: groups -> rows in slot order -> fields in
-    column order. Numbered slot grids, native cell grids and `fill_table_rows` fields (one
-    one-field group each), by first field in the IR. Any other field is not grouped."""
-    groups = [*_slot_grids(fields), *_cell_grids(fields)]
+    """Groups of fields that map in one call: groups -> rows in slot order -> fields in column
+    order. In precedence (a field joins one group): repeating-card tiles, numbered slot grids and
+    lists, native cell grids, then `fill_table_rows` fields (one one-field group each). Groups come
+    by their first field in the IR. Any other field is not grouped."""
+    tiles = _tile_groups(fields)
+    taken = {f.field_id for g in tiles for row in g for f in row}
+    rest = [f for f in fields if f.field_id not in taken]
+    groups = [*tiles, *_slot_grids(rest), *_cell_grids(rest)]
     groups += [[[f]] for f in fields if f.expected_type == "table"]
     order = {f.field_id: i for i, f in enumerate(fields)}
-    return sorted(groups, key=lambda g: order[g[0][0].field_id])
+    return sorted(groups, key=lambda g: min(order[f.field_id] for row in g for f in row))
 
 
 def field_query(field: IRField) -> str:
@@ -303,6 +339,11 @@ def _convert(raw: Any, expected_type: str) -> tuple[Value, Any] | None:
     return (items, tuple(normalize(i) for i in items)) if items else None
 
 
+def _cell_value(cell: str, expected_type: str) -> tuple[Value, Any] | None:
+    """`_convert` for one string cell: a list type gets a one-item list, not the characters."""
+    return _convert([cell] if expected_type in _LISTS else cell, expected_type)
+
+
 def _evidence(hits: list[Hit], quotes: list[LLMQuote]) -> list[Evidence]:
     """The quotes that verify against `hits`, with the hit's metadata."""
     evidence: list[Evidence] = []
@@ -419,13 +460,20 @@ def resolve(
     )
 
 
+_MAX_QUERY_LABELS = 300
+
+
 def _group_query(group: list[list[IRField]]) -> str:
     first = group[0][0]
     if first.expected_type == "table":
         return field_query(first)
-    labels = " ".join(bounded_field(f).label for f in group[0])
-    query = f"{labels} ({' > '.join(bounded_field(first).section_path)})"
-    return f"{bounded_field(first).context}: {query}" if first.context else query
+    tiles = all(f.card for row in group for f in row)
+    # tiles repeat one set of labels: the first field of each row, once
+    names = [bounded_field(row[0]).label for row in group] if tiles else None
+    labels = " ".join(dict.fromkeys(names or [bounded_field(f).label for f in group[0]]))
+    query = f"{labels[:_MAX_QUERY_LABELS]} ({' > '.join(bounded_field(first).section_path)})"
+    shared = len({f.context for row in group for f in row}) == 1
+    return f"{bounded_field(first).context}: {query}" if first.context and shared else query
 
 
 async def map_group(
@@ -444,16 +492,22 @@ async def map_group(
     hits = await _retrieve(ctx, _group_query(group), document_ids, retriever)
     if not hits:
         return all_missing("no_relevant_chunks")
-    try:
-        rows = await extract_rows(llm, group, hits)
-    except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
+    first = group[0][0]
+    try:  # a transport LLMError propagates: the worker retries
+        if first.expected_type == "table":
+            rows = await extract_rows(llm, first, hits)
+            if rows.not_found or not rows.rows:
+                return all_missing("not_found_by_llm")
+            return {first.field_id: _table_result(first, hits, rows, document_ids)}
+        records = await extract_records(llm, group, hits)
+    except LLMInvalidOutput:
         return all_missing("llm_error")
-    if rows.not_found or not rows.rows:
+    if records.not_found or not records.records:
         return all_missing("not_found_by_llm")
-    if group[0][0].expected_type == "table":
-        field = group[0][0]
-        return {field.field_id: _table_result(field, hits, rows, document_ids)}
-    return _grid_results(group, hits, rows, document_ids)
+    results = _record_results(group, hits, records, document_ids)
+    if all(len(row) == 1 for row in group):  # a list: duplicates collapse, gaps may be synthesized
+        return await _list_results(llm, group, hits, results, document_ids)
+    return results
 
 
 def _supports(expected_type: str, cell: str, quote: str) -> bool:
@@ -464,40 +518,42 @@ def _supports(expected_type: str, cell: str, quote: str) -> bool:
     return normalize(cell) in normalize(quote)
 
 
-def _verified_rows(
-    types: list[str], hits: list[Hit], rows: LLMRows
-) -> list[tuple[list[str], list[Evidence], list[list[bool]], bool]]:
-    """Per LLM row: cells, verified evidence, `support[cell][quote]`, and whether ONE quote
-    supports every non-empty cell (the row is one source record)."""
-    out = []
-    for row in rows.rows:
-        cells = [c.strip() for c in (row.value + [""] * len(types))[: len(types)]]
-        evidence = _evidence(hits, row.quotes)
-        support = [
-            [bool(c) and _supports(t, c, e.quote) for e in evidence]
-            for c, t in zip(cells, types, strict=True)
-        ]
-        anchored = any(cells) and any(
-            all(support[j][i] for j, c in enumerate(cells) if c) for i in range(len(evidence))
-        )
-        out.append((cells, evidence, support, anchored))
-    return out
+def _verified_row(
+    types: list[str], hits: list[Hit], row: LLMCandidate[list[str]] | LLMRecord
+) -> tuple[list[str], list[Evidence], list[list[bool]], bool]:
+    """A row's cells, verified evidence, `support[cell][quote]`, and whether ONE quote supports
+    every non-empty cell (the row is one source record)."""
+    cells = [c.strip() for c in (row.value + [""] * len(types))[: len(types)]]
+    evidence = _evidence(hits, row.quotes)
+    support = [
+        [bool(c) and _supports(t, c, e.quote) for e in evidence]
+        for c, t in zip(cells, types, strict=True)
+    ]
+    anchored = any(cells) and any(
+        all(support[j][i] for j, c in enumerate(cells) if c) for i in range(len(evidence))
+    )
+    return cells, evidence, support, anchored
 
 
-def _grid_results(
-    group: list[list[IRField]], hits: list[Hit], rows: LLMRows, docs: list[uuid.UUID]
+def _record_results(
+    group: list[list[IRField]], hits: list[Hit], records: LLMRecords, docs: list[uuid.UUID]
 ) -> dict[str, FieldMappingResult]:
-    verified = _verified_rows([f.expected_type for f in group[0]], hits, rows)
+    by_n: dict[int, LLMRecord] = {}
+    for record in records.records:
+        by_n.setdefault(record.n, record)  # the first of a repeated n wins, other n drop
     results = {}
-    for i, row_fields in enumerate(group):  # LLM row i fills slot i + 1, rows beyond the slots drop
+    for i, row_fields in enumerate(group):  # record n fills slot row n
+        record = by_n.get(i + 1)
+        cells, evidence, support, anchored = (
+            _verified_row([f.expected_type for f in row_fields], hits, record)
+            if record
+            else ([], [], [], False)
+        )
         for j, field in enumerate(row_fields):
-            cells, evidence, support, anchored = (
-                verified[i] if i < len(verified) else ([], [], [], False)
-            )
             cell = cells[j] if cells else ""
             if not cell:
                 results[field.field_id] = _missing(field, "not_found_by_llm", docs)
-            elif not any(support[j]) or (value := _convert(cell, field.expected_type)) is None:
+            elif not any(support[j]) or (value := _cell_value(cell, field.expected_type)) is None:
                 results[field.field_id] = _missing(field, "evidence_failed_verification", docs)
             else:
                 typed = field.expected_type in TYPED_TYPES
@@ -515,6 +571,77 @@ def _grid_results(
     return results
 
 
+async def _list_results(
+    llm: LLMClient,
+    group: list[list[IRField]],
+    hits: list[Hit],
+    results: dict[str, FieldMappingResult],
+    docs: list[uuid.UUID],
+) -> dict[str, FieldMappingResult]:
+    """A numbered list: the distinct verified items fill slots 1..N in order; when that leaves
+    slots empty, the source may state the items in prose, so `synthesize` may fill them."""
+    slots = [row[0] for row in group]
+    kept, seen = [], set()
+    for f in slots:
+        r = results[f.field_id]
+        if r.status in ("populated", "partial") and (key := normalize(str(r.value))) not in seen:
+            seen.add(key)
+            kept.append(r)
+    collapsed = {
+        f.field_id: kept[k].model_copy(update={"field_id": f.field_id})
+        if k < len(kept)
+        else _missing(f, "not_found_by_llm", docs)
+        for k, f in enumerate(slots)
+    }
+    have = sum(r.status == "populated" for r in collapsed.values())
+    if have == len(slots) or any(f.expected_type in TYPED_TYPES for f in slots):
+        return collapsed
+    # shortcut: the limit is the slots' total, synthesized items are not cut to their own slot's
+    # max_chars (summarize warns), upgrade by asking per-item limits.
+    limits = [f.constraints.max_chars for f in slots]
+    pseudo = slots[0].model_copy(
+        update={
+            "expected_type": "bullet_list",
+            "constraints": Constraints(
+                max_items=len(slots), max_chars=sum(limits) if all(limits) else None
+            ),
+        }
+    )
+    try:
+        draft = await synthesize(llm, pseudo, hits)
+    except LLMInvalidOutput:
+        return collapsed
+    items: list[tuple[str, list[Evidence]]] = []
+    seen = set()
+    for cand in draft.items:
+        quotes = _evidence(hits, cand.quotes)
+        text = _BULLET.sub("", cand.value.strip())
+        if text and normalize(text) not in seen and supported(text, [e.quote for e in quotes]):
+            seen.add(normalize(text))
+            items.append((text, quotes))
+    items = items[: len(slots)]
+    if len(items) <= have:
+        return collapsed
+    filled = {}
+    for k, f in enumerate(slots):
+        if k >= len(items):
+            filled[f.field_id] = _missing(f, "not_found_by_llm", docs)
+            continue
+        text, quotes = items[k]
+        filled[f.field_id] = FieldMappingResult(
+            field_id=f.field_id,
+            status="populated",
+            value=[text] if f.expected_type in _LISTS else text,
+            evidence=[e.model_copy(update={"item": 0}) for e in quotes],  # summarised: item 0
+            confidence=CONF_SYNTH,
+            missing_reason=None,
+            checked_documents=docs,
+            conflict_details=None,
+            provenance="rag",
+        )
+    return filled
+
+
 def _table_result(
     field: IRField, hits: list[Hit], rows: LLMRows, docs: list[uuid.UUID]
 ) -> FieldMappingResult:
@@ -522,9 +649,7 @@ def _table_result(
     types = ["text"] * len(field.constraints.columns or rows.rows[0].value)
     llm_rows = rows.rows[: field.constraints.max_items]
     kept, evidence, all_anchored = [], [], True
-    for cells, ev, support, anchored in _verified_rows(
-        types, hits, rows.model_copy(update={"rows": llm_rows})
-    ):
+    for cells, ev, support, anchored in (_verified_row(types, hits, r) for r in llm_rows):
         if ev and any(cells) and all(not c or any(s) for c, s in zip(cells, support, strict=True)):
             kept.append(cells)
             evidence += [
@@ -562,8 +687,8 @@ async def map_fields(
 ) -> dict[str, FieldMappingResult]:
     """Map a whole IR: one call per row group, one per fact shared across slides, one per other
     field. `on_field(done, field_id)` runs before each unit with its first field, and
-    `on_field(done, "")` after it. Fields of a group are mapped at the position of the first."""
-    groups = {g[0][0].field_id: g for g in row_groups(fields)}
+    `on_field(done, "")` after it. A group is mapped at its first field in the IR."""
+    groups = {f.field_id: g for g in row_groups(fields) for row in g for f in row}
     shared = shared_facts(fields)
     siblings = sibling_headings(fields)
     results: dict[str, FieldMappingResult] = {}

@@ -32,6 +32,7 @@ Why each choice was made: [DECISIONS.md](DECISIONS.md). Names: [data-model.md](d
                                                      │ Ollama (native, Metal)          │
                                                      │ 127.0.0.1:11434                 │
                                                      │ swappable: OpenAI-compatible    │
+                                                     │ e.g. mlx_lm.server :8080/v1     │
                                                      └─────────────────────────────────┘
 ```
 

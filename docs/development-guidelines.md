@@ -86,13 +86,13 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `SIGNING_SECRET` | — (required, ≥ 32 chars) | HMAC key for download URLs |
 | `SIGNED_URL_TTL_S` | `900` | |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | prefix for `download_url` |
-| `LLM_PROVIDER` | `ollama` | `ollama` \| `openai` (any OpenAI-compatible endpoint); `anthropic` planned (ADR-005) |
-| `LLM_BASE_URL` | `http://127.0.0.1:11434` | `ollama`: the native API root (not `/v1`); `openai`: the `/v1` root |
+| `LLM_PROVIDER` | `ollama` | `ollama` \| `openai_compat` (any OpenAI-compatible `/v1` server, e.g. `mlx_lm.server`, LM Studio, vLLM); `anthropic` planned (ADR-005) |
+| `LLM_BASE_URL` | `http://127.0.0.1:11434` | `ollama`: the native API root (not `/v1`); `openai_compat`: the `/v1` root (`http://127.0.0.1:8080/v1` for `mlx_lm.server --model mlx-community/Qwen3-14B-4bit --host 127.0.0.1 --port 8080`) |
 | `LLM_MODEL` | `qwen3:14b` | low-RAM fallback `qwen3:4b` |
-| `LLM_API_KEY` | empty | bearer key for `openai`; never logged |
-| `LLM_NUM_CTX` | `32768` | Ollama context window (`ollama` only). Field-extraction prompts take up to `max(6144, LLM_NUM_CTX // 2)` tokens (6 retrieved chunks at 8192, 26 at 32768, system-design § 7); IR and Q&A prompts stay sized for 8k; the rest goes to reasoning and the reply. Any value >= 8192 works |
+| `LLM_API_KEY` | empty | bearer key for `openai_compat` (empty = no header); never logged |
+| `LLM_NUM_CTX` | `32768` | Context window. `ollama` sends it as `num_ctx`; `openai_compat` does not send it, so set it to the server's context. Field-extraction prompts take up to `max(6144, LLM_NUM_CTX // 2)` tokens (6 retrieved chunks at 8192, 26 at 32768, system-design § 7); IR and Q&A prompts stay sized for 8k; the rest goes to reasoning and the reply. Any value >= 8192 works |
 | `LLM_TIMEOUT_SECONDS` | `120` | per LLM request; covers a cold model load |
-| `LLM_ENABLE_THINKING` | `false` | Ollama `think`. Off by default: at temperature 0, `qwen3:14b` reasoning looped on one eval field (22k tokens, 20 min, no answer). With it on, `num_predict` is the window minus `prompt_tokens(LLM_NUM_CTX) = max(6144, LLM_NUM_CTX // 2)` (at least 4096; off: 4096). Reasoning comes back apart from the reply, and a leading `<think>` block is stripped either way |
+| `LLM_ENABLE_THINKING` | `false` | Ollama `think`; `openai_compat`: `chat_template_kwargs.enable_thinking`, reply cap `max_tokens`. Off by default: at temperature 0, `qwen3:14b` reasoning looped on one eval field (22k tokens, 20 min, no answer). With it on, `num_predict` is the window minus `prompt_tokens(LLM_NUM_CTX) = max(6144, LLM_NUM_CTX // 2)` (at least 4096; off: 4096). Reasoning comes back apart from the reply, and a leading `<think>` block is stripped either way |
 | `EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama |
 | `EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | any Ollama embedding model; changing it needs a re-ingest |
 | `EMBEDDING_DIMENSIONS` | `1024` | sent to Ollama (Matryoshka); must match the Qdrant collection |

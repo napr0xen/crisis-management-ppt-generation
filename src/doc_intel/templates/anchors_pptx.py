@@ -1,3 +1,4 @@
+import re
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from io import BytesIO
@@ -7,7 +8,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.shapes.base import BaseShape
 from pptx.slide import Slide
 
-from doc_intel.templates.anchors import cell_context, find_tokens, static_text
+from doc_intel.templates.anchors import cell_context, find_tokens, has_letter, static_text
 from doc_intel.templates.schemas import Anchor, TableRef
 
 
@@ -88,6 +89,91 @@ def _context(
     return best[2] if best else None
 
 
+_SAME_SIZE = 0.02
+
+
+def _area(box: tuple[int, int, int, int]) -> int:
+    return (box[2] - box[0]) * (box[3] - box[1])
+
+
+def _size(box: tuple[int, int, int, int]) -> tuple[int, int]:
+    return box[2] - box[0], box[3] - box[1]
+
+
+def _contains(outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[2] >= inner[2]
+        and outer[3] >= inner[3]
+        and _area(outer) > _area(inner)
+    )
+
+
+def _reading_order(members: list[int], boxes: list[tuple[int, int, int, int]]) -> list[int]:
+    """Rows by top (a new row when the top is half a member height below the row's first),
+    left to right inside a row."""
+    ordered = sorted(members, key=lambda i: boxes[i][1])
+    bands: list[list[int]] = []
+    for i in ordered:
+        first = bands[-1][0] if bands else None
+        if first is not None and boxes[i][1] < boxes[first][1] + (boxes[i][3] - boxes[i][1]) / 2:
+            bands[-1].append(i)
+        else:
+            bands.append([i])
+    return [i for band in bands for i in sorted(band, key=lambda j: boxes[j][0])]
+
+
+def _card_ids(keyed: list[tuple[str, BaseShape]], shapes: list[BaseShape]) -> dict[str, str]:
+    """anchor key -> "set.member" for shapes inside a card: one of >= 2 containers of equal size
+    (within 2%) that each hold >= 2 anchor shapes."""
+    # shortcut: tiles drawn without a container shape are not detected, group them by position
+    # if real decks need it.
+    boxes = [b if (b := _box(s)) else (0, 0, 0, 0) for s in shapes]
+    anchor_keys = {
+        key: next(i for i, s in enumerate(shapes) if s == shape)
+        for key, shape in keyed
+        if shape.has_table or (shape.has_text_frame and shape.text_frame.text.strip())
+    }
+    container: dict[str, int] = {}
+    for key, i in anchor_keys.items():
+        if _box(shapes[i]) is None:
+            continue
+        around = [j for j in range(len(shapes)) if j != i and _contains(boxes[j], boxes[i])]
+        if around:
+            container[key] = min(around, key=lambda j: _area(boxes[j]))
+    held = Counter(container.values())
+    sets: list[list[int]] = []  # containers of one size
+    for j in sorted(c for c, n in held.items() if n >= 2):
+        w, h = _size(boxes[j])
+        for members in sets:
+            mw, mh = _size(boxes[members[0]])
+            if abs(w - mw) <= _SAME_SIZE * max(w, mw) and abs(h - mh) <= _SAME_SIZE * max(h, mh):
+                members.append(j)
+                break
+        else:
+            sets.append([j])
+    cards: dict[int, str] = {}
+    ordered = [_reading_order(m, boxes) for m in sets if len(m) >= 2]
+    for n, members in enumerate(
+        sorted(ordered, key=lambda m: (boxes[m[0]][1], boxes[m[0]][0])), start=1
+    ):
+        cards |= {j: f"{n}.{k}" for k, j in enumerate(members, start=1)}
+    return {key: cards[j] for key, j in container.items() if j in cards}
+
+
+_LABEL_EDGE = " |:\u00b7-\u2013\u2014,;/"
+
+
+def _own_label(text: str, tokens: list[str]) -> str | None:
+    """The shape's own label beside its tokens: the one run of text around them that has a letter
+    (a token line, then the line "Requirement"); a sentence with a token in the middle
+    (`Date [x] status`) has two runs and no label."""
+    runs = [r for r in re.split("|".join(map(re.escape, tokens)), text) if has_letter(r)]
+    label = (static_text(runs[0]) or "").strip(_LABEL_EDGE) if len(runs) == 1 else ""
+    return label if has_letter(label) else None
+
+
 def extract(data: bytes) -> list[Anchor]:
     anchors: list[Anchor] = []
     prs = Presentation(BytesIO(data))
@@ -102,6 +188,7 @@ def extract(data: bytes) -> list[Anchor]:
             and shape != slide_title
             and (text := static_text(shape.text_frame.text))
         ]
+        cards = _card_ids(keyed, list(_shapes(slide.shapes)))
         for key, shape in keyed:
             path = [f"Slide {n}", *([title] if title else []), shape.name]
             base = f"pptx:s{n}:{key}"
@@ -119,6 +206,10 @@ def extract(data: bytes) -> list[Anchor]:
                 # empty placeholder: the layout prompt ("Click to add ...") is its instruction
                 text = own or (_layout_text(slide, shape) if shape.is_placeholder else "")
                 tokens = find_tokens(text)
+                ctx = _context(shape, headings, prs.slide_width, prs.slide_height)
+                # the shape's own label is the most specific; a section or card heading stays
+                if tokens and (own_label := _own_label(text, tokens)):
+                    ctx = f"{ctx} / {own_label}" if has_letter(ctx) else own_label
                 anchors.append(
                     Anchor(
                         anchor_id=base,
@@ -128,7 +219,8 @@ def extract(data: bytes) -> list[Anchor]:
                         tokens=tokens,
                         is_placeholder=bool(tokens) or not own,
                         pos=pos,
-                        context=_context(shape, headings, prs.slide_width, prs.slide_height),
+                        context=ctx,
+                        card=cards.get(key),
                     )
                 )
             elif shape.has_table:
@@ -152,6 +244,7 @@ def extract(data: bytes) -> list[Anchor]:
                                 table=TableRef(row=r, col=c, header=headers[c]),
                                 pos=pos,
                                 context=cell_context(texts, c, headers[c]) if r else None,
+                                card=cards.get(key),
                             )
                         )
     return anchors

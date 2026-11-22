@@ -663,3 +663,32 @@ def test_context_is_hidden_from_the_llm_schema_but_optional_in_stored_json():
     stored.pop("context", None)
     assert IRField.model_validate(stored).context is None
     assert "context" in load_prompt("template_ir")
+
+
+@pytest.mark.parametrize("card", ["1.1", "2.3"])
+async def test_card_is_copied_by_code_and_never_sent_to_the_llm(card):
+    amap = AnchorMap(
+        format="pptx",
+        anchors=[_anchor("a1", tokens=["{{t}}"]).model_copy(update={"card": card})],
+    )
+    llm = FakeLLM(_reply(_field("a", "a1", "replace_token", token="{{t}}")))
+    ir = await build_ir(llm, amap, TID)
+    assert '"card"' not in llm.calls[0][0][1]["content"]
+    assert [f.card for f in ir.fields] == [card]
+    forged = _field("a", "a1", "replace_token", token="{{t}}").model_copy(update={"card": "9.9"})
+    ir = await build_ir(FakeLLM(_reply(forged)), amap, TID)
+    assert ir.fields[0].card == card
+
+
+async def test_an_anchor_without_a_card_overwrites_a_forged_one_with_none():
+    forged = _field("a", "a1").model_copy(update={"card": "9.9"})
+    ir = await build_ir(FakeLLM(_reply(forged)), AMAP, TID)
+    assert ir.fields[0].card is None
+
+
+def test_card_is_hidden_from_the_llm_schema_but_optional_in_stored_json():
+    assert "card" not in BatchDraft.model_json_schema()["$defs"]["IRField"]["properties"]
+    stored = _field("a", "a1").model_dump(mode="json")
+    stored.pop("card", None)
+    assert IRField.model_validate(stored).card is None
+    assert Anchor.model_validate(_anchor("a1").model_dump()).card is None

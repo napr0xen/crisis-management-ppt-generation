@@ -91,7 +91,7 @@ No auth. Returns `200` if the API is up, and reports each dependency.
 
 - Each dependency is `"ok"` or `"unavailable"`.
 - `status` is `"degraded"` if any dependency is not `"ok"`. The response code is still `200`, so the Pipe can report the problem to the user.
-- `llm` is the active provider's reachability (Ollama `GET /api/version`, OpenAI-compatible `GET /models`; no generation). `llm_provider` names the active provider (NFR-1), so a cloud provider is always visible.
+- `llm` is the active provider's reachability (Ollama `GET /api/version`, OpenAI-compatible `GET /models`; no generation). `llm_provider` names the active provider, `ollama` or `openai_compat` (NFR-1), so a cloud provider is always visible.
 
 ---
 

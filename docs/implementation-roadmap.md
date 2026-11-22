@@ -33,10 +33,12 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 11 | Conversational edits & run versioning | **Complete** |
 | 12 | Hardening, evaluation & audit | **Complete** |
 | 13 | Universal accuracy: number formatting & cross-slide facts | **Complete** |
-| 14 | Card context & 32k retrieval budget | **Complete** (on branch, `main` not yet fast-forwarded: awaiting live test) |
-| 15 | Row-grouped table extraction | **Complete** (on branch, awaiting live test) |
-| 16 | Grounded synthesis for summary & finding fields | **Complete** (on branch, awaiting live test) |
-| next | Universal extraction & mapping accuracy | all four gaps addressed in Phases 13-16; next: live test, then fast-forward `main` |
+| 14 | Card context & 32k retrieval budget | **Complete** (live-tested; `main` at `1a3b6b4`) |
+| 15 | Row-grouped table extraction | **Complete** (live-tested; `main` at `1a3b6b4`) |
+| 16 | Grounded synthesis for summary & finding fields | **Complete** (live-tested; `main` at `1a3b6b4`) |
+| 17 | MLX provider, token scanner fix, tile-card & numbered-list grouping | **Complete** (on branch, awaiting live test) |
+| 18 | Native PPTX chart population & generation | Not started |
+| next | Universal extraction & mapping accuracy | all four gaps addressed in Phases 13-16; Phases 17-18 follow the Phase 14-16 live test |
 
 ---
 
@@ -376,6 +378,36 @@ The fourth gap of the [next priority](#next-priority-universal-extraction--mappi
   The accuracy gain is the one-candidate rule: the one-sentence incident summary was a fake conflict and is now `populated`. The 3 overflows are verbatim but correct values (museum summary, incident summary, Spanish findings), kept because the synthesis did not pass the bar in this run: one paraphrase item had 56% word support, one retry was still 20 characters over, and the third varied by run (probes on the same input gave a fitting, fully backed 150-character summary in one run and the verbatim fallback in another). Q&A eval unchanged.
 - **Trade-offs:** synthesized values are `populated` at confidence `0.7` only when every item passes `supported`; the word check is a sanity filter (an item can still add a few unbacked words), the hard guarantees are verified quotes and exact numbers. A field with limits can cost up to 4 LLM calls. Synthesis is not deterministic on `qwen3:14b`; when it fails the verbatim value stays (never a worse value). For `paragraphs`/`bullet_list`, items from different chunks are now one candidate, so a list conflict needs chunks that contradict each other about the same item.
 - **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 178 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1460 passed, 1 deselected (`perf`). `/ponytail-review`: before the eval, synthesized numbers were compared with separators stripped (`1.8` matched `18`); fixed to canonical numbers (test added), then ship. `/ecc:quality-gate` clean. Live test pending.
+
+---
+
+## Phase 17: MLX provider, token scanner fix, tile-card & numbered-list grouping
+
+Cause (Phase 14-16 live test on a 9-slide deck): `[# 1]`..`[# 6]` stage counters were never detected (the bracket token needed a letter) and stayed in the output; repeating KPI, award and risk cards were mapped slot by slot, so sibling slots came back `missing`/`conflict` and award values numbered `[Value 5..7]` fell out of the 1..3 grid; numbered `[Key message 1..3]`, `[Insight 1..3]` lists cost one call per slot and gave duplicate sentences or conflicts; and a faster local LLM server was wanted.
+
+- **Entry:** Phase 16 done and live-tested (`main` at `1a3b6b4`).
+- **Deliverables:**
+  - `LLM_PROVIDER=openai_compat` (renamed from `openai`): `max_tokens` (same cap as Ollama), `temperature: 0`, `chat_template_kwargs.enable_thinking`, `response_format` json_schema, `<think>` stripping via `complete_json`; `mlx_lm.server` launch command in `.env.example` and development-guidelines § 8 ([DECISIONS.md ADR-005](DECISIONS.md)).
+  - Token scanner: `[…]` with any non-space first character and a letter or digit inside (`[# 1]`, `[$ 0.0]`); `[1]` markers and symbol-only units (`Cost [€]`) are not tokens. Own-label context `heading / own label` ([system-design.md § 4](system-design.md#4-anchormap)).
+  - `Anchor.card` / `IRField.card` (code-set, hidden from the LLM): repeating cards found by identical container shapes, numbered in reading order.
+  - Mapping: tile groups and numbered lists in `row_groups`; one records call per group (`extractor.extract_records`, prompt `slot_records.md`, records keyed by `n`), per-record verification; lists collapse duplicates and fall back to grounded synthesis ([system-design.md § 7](system-design.md#7-mapping-engine-stage-3)).
+- **Exit:**
+  - Tests on two or more unrelated domains (museum, clinic, garden club, ferry, cycling scheme, choir): provider request shape, think stripping, schema-ignoring server retried; token rules incl. linearity; own label; card detection and refusals; tile and list grouping and refusals; keyed records with skipped `n`; list duplicate collapse; synthesis fallback and its refusals (not after `not_found`, not for typed slots, only when it fills more slots); unretrieved quotes rejected; injected text is data;
+  - eval hard gates pass, before/after recorded; `uv run ruff check .`, `uv run ruff format --check .`, `uv run alembic check`, `uv run pytest` green.
+- **Eval** (`qwen3:14b`, `LLM_NUM_CTX=32768`; 99 fields: a 3-card station tile group keyed by district, stated in another order in the source, a prose `[Highlight 1..3]` list and an absent `[Sponsor 1..2]` list added; before = Phase 16 code on the same 99 fields, `card` stripped since that code has no tiles):
+
+  | Metric | Before | After |
+  |---|---|---|
+  | Fabricated citations | 0 | 0 |
+  | Citation verification | 100% | 100% |
+  | Seeded conflicts detected | 100% | 100% |
+  | Absent fields `missing` | 100% | 100% |
+  | Field accuracy | 91.7% (66/72) | 95.8% (69/72) |
+  | Latency p50 / max | 5.6 s / 29.1 s | 4.1 s / 30.3 s |
+
+  The gain is the highlights list (conflict, conflict, missing before; all three populated and distinct after, verbatim in one records call). The keyed station cards were already right field by field and stay right in one call instead of nine. The 3 misses are the Phase 15 roster row ("drove the delivery van" written as "Driver"), unchanged.
+- **Trade-offs:** cards drawn without a container shape are not tiles; a keyed record is tied to its heading by the prompt only (group fields skip the per-field candidate check); synthesized list items are not cut to their own slot's `max_chars`; `openai_compat` sends `chat_template_kwargs`, which the OpenAI cloud API rejects (local servers only). Templates registered before Phase 17 have no `card` and keep the old grouping until re-registered.
+- **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 181 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1556 passed, 1 deselected (`perf`). `/ponytail-review`: symbol-only brackets (`Cost [€]`) had become tokens, fixed to letter-or-digit (test added); `openai_compat` cloud limit documented; synthesized list slots now carry `item = 0` so the chat summary names them. A local scan of the live deck then showed the stage counters still got only the section heading, so the own label is now appended (`Sourcing Pipeline / Requirement`, test added). `/ecc:quality-gate` clean. Live test pending.
 
 ---
 

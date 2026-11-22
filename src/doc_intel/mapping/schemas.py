@@ -60,6 +60,20 @@ class LLMRows(_Strict):
     not_found: bool
 
 
+class LLMRecord(_Strict):
+    """One record of a slot group: `n` is the record's number in the spec, `value` has one string
+    per slot in slot order."""
+
+    n: int
+    value: list[str]
+    quotes: list[LLMQuote]
+
+
+class LLMRecords(_Strict):
+    records: list[LLMRecord]
+    not_found: bool
+
+
 class LLMSynthesis(_Strict):
     """Items written from the chunks (extractor.synthesize); each is grounded by its quotes."""
 

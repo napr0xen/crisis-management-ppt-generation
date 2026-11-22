@@ -14,7 +14,14 @@ from doc_intel.llm.gateway import (
 )
 from doc_intel.llm.prompts import load_prompt
 from doc_intel.mapping.retriever import format_hit
-from doc_intel.mapping.schemas import LLMCandidateCheck, LLMExtraction, LLMRows, LLMSynthesis
+from doc_intel.mapping.schemas import (
+    LLMCandidateCheck,
+    LLMExtraction,
+    LLMRecords,
+    LLMRows,
+    LLMSynthesis,
+)
+from doc_intel.templates.anchors import has_letter
 from doc_intel.templates.schemas import IRField
 
 # Context budget: a chunk is <= CHUNK_MAX_TOKENS (512) tokens, and the system prompt, field spec
@@ -111,34 +118,70 @@ async def synthesize(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMSynt
         return draft
 
 
-def _rows_spec(group: list[list[IRField]]) -> dict[str, Any]:
-    first = bounded_field(group[0][0])
-    if first.expected_type == "table":  # a fill_table_rows field: its constraints name the columns
-        columns: list[dict[str, Any]] = [{"label": c} for c in first.constraints.columns or []]
-        spec: dict[str, Any] = {
-            "columns": columns,
-            "description": f"{first.label}: {first.description}",
-            "max_rows": first.constraints.max_items,
-        }
-    else:  # a grid: one column per field of the first row, one row per slot
-        columns = []
-        for f in map(bounded_field, group[0]):
-            col = {"label": f.label, "description": f.description, "expected_type": f.expected_type}
-            columns.append({**col, "context": f.context} if f.context else col)
-        spec = {"columns": columns, "max_rows": len(group)}
-    spec |= {"section_path": first.section_path, "context": first.context}
+def _rows_spec(field: IRField) -> dict[str, Any]:
+    """The spec of a `fill_table_rows` field: its constraints name the columns."""
+    first = bounded_field(field)
+    columns: list[dict[str, Any]] = [{"label": c} for c in first.constraints.columns or []]
+    spec: dict[str, Any] = {
+        "columns": columns,
+        "description": f"{first.label}: {first.description}",
+        "max_rows": first.constraints.max_items,
+        "section_path": first.section_path,
+        "context": first.context,
+    }
     return {k: v for k, v in spec.items() if v is not None}
 
 
-async def extract_rows(llm: LLMClient, group: list[list[IRField]], hits: list[Hit]) -> LLMRows:
-    """One schema-constrained call for a whole row group; `hits` are later used for verification."""
-    spec = json.dumps(_rows_spec(group), ensure_ascii=False)
+async def extract_rows(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMRows:
+    """One schema-constrained call for a `fill_table_rows` field; `hits` verify it later."""
+    spec = json.dumps(_rows_spec(field), ensure_ascii=False)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("table_rows")},
         {"role": "user", "content": f"Table:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
     return await complete_json(llm, messages, LLMRows)
+
+
+def _slot_spec(field: IRField) -> dict[str, Any]:
+    spec: dict[str, Any] = {
+        "label": field.label,
+        "description": field.description,
+        "expected_type": field.expected_type,
+    }
+    token = field.constraints.token if field.write_mode == "replace_token" else None
+    if token and (inner := token.strip("{}[]<> ")):
+        spec["placeholder"] = inner
+    return spec
+
+
+def _records_spec(group: list[list[IRField]]) -> dict[str, Any]:
+    """One record per slot row. A record's context is the first of its fields' contexts with a
+    letter; equal contexts (and lists, whose slots share one heading) are sent once on top."""
+    rows = [list(map(bounded_field, row)) for row in group]
+    contexts = [next((f.context for f in row if has_letter(f.context)), None) for row in rows]
+    is_list = all(len(row) == 1 for row in group)
+    keyed = len(set(contexts)) > 1 and not is_list
+    records = []
+    for n, (row, context) in enumerate(zip(rows, contexts, strict=True), start=1):
+        record: dict[str, Any] = {"n": n, "slots": [_slot_spec(f) for f in row]}
+        records.append({**record, "context": context} if keyed and context else record)
+    top = None if keyed else next((c for c in contexts if c), None)
+    spec = {"records": records, "section_path": rows[0][0].section_path, "context": top}
+    return {k: v for k, v in spec.items() if v is not None}
+
+
+async def extract_records(
+    llm: LLMClient, group: list[list[IRField]], hits: list[Hit]
+) -> LLMRecords:
+    """One schema-constrained call for a slot group (tiles, grids, lists); `hits` verify it."""
+    spec = json.dumps(_records_spec(group), ensure_ascii=False)
+    sources = "\n\n".join(format_hit(h) for h in hits)
+    messages = [
+        {"role": "system", "content": load_prompt("slot_records")},
+        {"role": "user", "content": f"Records:\n{spec}\n\nChunks:\n\n{sources}"},
+    ]
+    return await complete_json(llm, messages, LLMRecords)
 
 
 _MAX_CHECKED, _MAX_QUOTES_PER_CANDIDATE, _MAX_QUOTE, _MAX_BEFORE = 10, 3, 1000, 500

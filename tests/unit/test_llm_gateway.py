@@ -40,8 +40,12 @@ def _ollama(http: httpx.AsyncClient, think: bool = False) -> OllamaClient:
     return OllamaClient(http, "http://ollama:11434/", "qwen3:14b", 8192, 120.0, think)
 
 
-def _openai(http: httpx.AsyncClient, key: str = "sk-test") -> OpenAICompatClient:
-    return OpenAICompatClient(http, "https://api.example.com/v1/", "gpt-x", SecretStr(key), 120.0)
+def _openai(
+    http: httpx.AsyncClient, key: str = "sk-test", num_ctx: int = 32768, think: bool = False
+) -> OpenAICompatClient:
+    return OpenAICompatClient(
+        http, "http://localhost:8080/v1/", "gpt-x", SecretStr(key), num_ctx, 120.0, think
+    )
 
 
 async def test_ollama_uses_native_chat_with_num_ctx_think_off_and_schema_format():
@@ -76,13 +80,71 @@ async def test_openai_compat_sends_bearer_key_and_json_schema_response_format():
     assert await _openai(http).complete(MESSAGES, SCHEMA) == '{"answer": "x"}'
     [req] = requests
     body = json.loads(req.content)
-    assert str(req.url) == "https://api.example.com/v1/chat/completions"
+    assert str(req.url) == "http://localhost:8080/v1/chat/completions"
     assert req.headers["authorization"] == "Bearer sk-test"
-    assert body["temperature"] == 0
-    assert body["response_format"] == {
-        "type": "json_schema",
-        "json_schema": {"name": "output", "schema": SCHEMA},
+    assert body == {
+        "model": "gpt-x",
+        "messages": MESSAGES,
+        "temperature": 0,
+        "max_tokens": 4096,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "output", "schema": SCHEMA},
+        },
     }
+
+
+async def test_openai_compat_thinking_gets_the_larger_budget_and_flag():
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"choices": [{"message": {"content": "hi"}}]})
+    await _openai(http, think=True).complete(MESSAGES)
+    body = json.loads(requests[0].content)
+    assert body["max_tokens"] == 32768 - 16384
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "response_format" not in body
+
+
+def _scripted(contents: list[str], requests: list[httpx.Request]) -> httpx.AsyncClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        reply = {"choices": [{"message": {"content": contents[len(requests) - 1]}}]}
+        return httpx.Response(200, json=reply)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_openai_compat_complete_json_strips_think():
+    requests: list[httpx.Request] = []
+    http = _scripted(['<think>reasoning</think>\n{"answer": "x"}'], requests)
+    assert await complete_json(_openai(http), MESSAGES, Out) == Out(answer="x")
+    assert len(requests) == 1
+
+
+async def test_openai_compat_server_ignoring_the_schema_once_is_retried():
+    requests: list[httpx.Request] = []
+    http = _scripted(["Sure! here you go", '{"answer": "x"}'], requests)
+    assert await complete_json(_openai(http), MESSAGES, Out) == Out(answer="x")
+    assert len(requests) == 2
+
+
+async def test_openai_compat_two_invalid_replies_raise_invalid_output():
+    requests: list[httpx.Request] = []
+    http = _scripted(["nope", "still nope"], requests)
+    with pytest.raises(LLMInvalidOutput):
+        await complete_json(_openai(http), MESSAGES, Out)
+    assert len(requests) == 2
+
+
+async def test_openai_compat_unreachable_server_raises_llm_error_without_text_or_key():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(LLMError) as exc:
+        await _openai(http).complete(MESSAGES)
+    assert "secret document text" not in str(exc.value)
+    assert "sk-test" not in str(exc.value)
 
 
 async def test_openai_compat_without_key_sends_no_auth_header():
@@ -179,8 +241,12 @@ def test_make_llm_client_picks_the_provider():
     base = {"_env_file": None, "pipe_shared_secret": "x" * 32, "signing_secret": "y" * 32}
     http = httpx.AsyncClient()
     assert isinstance(make_llm_client(Settings(**base), http), OllamaClient)
-    openai = Settings(**base, llm_provider="openai", llm_base_url="https://api.example.com/v1")
-    assert isinstance(make_llm_client(openai, http), OpenAICompatClient)
+    compat = Settings(**base, llm_provider="openai_compat", llm_base_url="http://localhost:8080/v1")
+    client = make_llm_client(compat, http)
+    assert isinstance(client, OpenAICompatClient)
+    assert (client._num_ctx, client._think) == (32768, False)
+    with pytest.raises(ValueError):  # the old name has no alias
+        Settings(**base, llm_provider="openai")
 
 
 async def test_default_settings_send_a_32k_window_with_thinking_off():

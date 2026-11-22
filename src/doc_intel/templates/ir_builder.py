@@ -285,6 +285,12 @@ async def build_ir(
     if not fields or errors:
         log.warning("ir_invalid", errors=_loggable(errors), anchor_count=len(amap.anchors))
         raise IRInvalid()
-    context = {a.anchor_id: a.context for a in amap.anchors}  # code-set, never the LLM's
-    fields = [f.model_copy(update={"context": context.get(f.anchor_id)}) for f in fields]
+    # context and card are code-set, never the LLM's
+    by_id = {a.anchor_id: a for a in amap.anchors}
+    fields = [
+        f.model_copy(
+            update={"context": by_id[f.anchor_id].context, "card": by_id[f.anchor_id].card}
+        )
+        for f in fields
+    ]
     return TemplateIR(fields=fields, template_id=template_id, version=1, format=amap.format)

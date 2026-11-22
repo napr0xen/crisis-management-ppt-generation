@@ -1,4 +1,6 @@
-"""Provider-agnostic LLM gateway (ADR-005): Ollama native API by default, OpenAI-compatible else.
+"""Provider-agnostic LLM gateway (ADR-005): Ollama native API by default, else `openai_compat`.
+
+`openai_compat` is mlx_lm.server, LM Studio, vLLM or any OpenAI-compatible /v1 server.
 
 Ollama is called on `/api/chat`, not its OpenAI-compatible `/v1`: `/v1` ignores `num_ctx`
 and runs at 4096 tokens, which would silently cut the start (the instructions) of a Q&A prompt.
@@ -24,6 +26,14 @@ REPLY_TOKENS = 4096  # every reply fits; the cap stops a degenerate JSON/whitesp
 def prompt_tokens(num_ctx: int) -> int:
     """Token budget for one prompt (>= 6144); the rest of the window is reasoning plus reply."""
     return max(6144, num_ctx // 2)
+
+
+def reply_tokens(num_ctx: int, think: bool) -> int:
+    """Reply cap. Uncapped, a degenerate JSON/whitespace loop runs until the timeout. Reasoning
+    counts against the same cap, so with thinking on the reply gets all the window the prompt
+    leaves, else a long reasoning cuts the JSON off."""
+    cap = min(num_ctx // 2, REPLY_TOKENS)
+    return max(cap, num_ctx - prompt_tokens(num_ctx)) if think else cap
 
 
 RETRY_PROMPT = "That reply was not valid JSON for the required schema. Reply with only the JSON."
@@ -77,12 +87,7 @@ class OllamaClient:
         self._num_ctx, self._think = num_ctx, think
 
     async def complete(self, messages: Messages, json_schema: dict | None = None) -> str:
-        # Uncapped, a degenerate JSON/whitespace loop runs until the timeout. Reasoning counts
-        # against the same cap, so with thinking on the reply gets all the window the prompt
-        # leaves, else a long reasoning cuts the JSON off.
-        num_predict = min(self._num_ctx // 2, REPLY_TOKENS)
-        if self._think:
-            num_predict = max(num_predict, self._num_ctx - prompt_tokens(self._num_ctx))
+        num_predict = reply_tokens(self._num_ctx, self._think)
         body: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -104,16 +109,28 @@ class OpenAICompatClient:
         base_url: str,
         model: str,
         api_key: SecretStr,
+        num_ctx: int,
         timeout_s: float,
+        think: bool,
     ) -> None:
         self._http, self._model, self._timeout = http, model, timeout_s
+        self._num_ctx, self._think = num_ctx, think
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         key = api_key.get_secret_value()
         self._headers = {"Authorization": f"Bearer {key}"} if key else None
 
     async def complete(self, messages: Messages, json_schema: dict | None = None) -> str:
-        body: dict[str, Any] = {"model": self._model, "messages": messages, "temperature": 0}
+        body: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": reply_tokens(self._num_ctx, self._think),  # mlx_lm.server defaults to 512
+            # shortcut: local servers (mlx_lm, LM Studio, vLLM) take this, the OpenAI cloud API
+            # rejects unknown fields; drop it if a cloud endpoint is ever configured.
+            "chat_template_kwargs": {"enable_thinking": self._think},
+        }
         if json_schema is not None:
+            # Servers that ignore this (mlx_lm.server) are covered by complete_json's retry.
             body["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {"name": "output", "schema": json_schema},
@@ -143,7 +160,9 @@ def make_llm_client(settings: Settings, http: httpx.AsyncClient) -> LLMClient:
         settings.llm_base_url,
         settings.llm_model,
         settings.llm_api_key,
+        settings.llm_num_ctx,
         settings.llm_timeout_seconds,
+        settings.llm_enable_thinking,
     )
 
 

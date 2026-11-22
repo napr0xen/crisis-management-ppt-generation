@@ -129,6 +129,16 @@ def test_docx_row_level_sdt_does_not_fail_the_template():
         ("[1] and [ x] and [2024]", []),
         ("a < b > c", []),
         ("[client name] <classification>", ["[client name]", "<classification>"]),
+        # a symbol or number-led label is a token; a purely numeric marker is not
+        ("[# 1]\nRequirement", ["[# 1]"]),
+        (
+            "[$ 0.0] [0.0] [\u2026 text] [3rd ward] [\u20acm]",
+            ["[$ 0.0]", "[0.0]", "[\u2026 text]", "[3rd ward]", "[\u20acm]"],
+        ),
+        # a symbol-only bracket is a unit in a label, not a slot
+        ("Cost [\u20ac] and growth [%] in [$] or [#]", []),
+        ("[12] [1] [ ] [] see [7]", []),
+        ("[\u00bfCu\u00e1ntos?] [N\u00ba 4]", ["[\u00bfCu\u00e1ntos?]", "[N\u00ba 4]"]),
     ],
 )
 def test_find_tokens(text, expected):
@@ -137,6 +147,8 @@ def test_find_tokens(text, expected):
 
 def test_find_tokens_linear_on_hostile_input():
     assert find_tokens("[" * 50_000 + "{{" * 50_000) == []
+    assert find_tokens("[1" * 50_000) == []
+    assert find_tokens("[" + "1" * 50_000) == []
 
 
 def _many_xlsx(n: int) -> bytes:

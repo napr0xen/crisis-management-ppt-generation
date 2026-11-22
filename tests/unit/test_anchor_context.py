@@ -211,3 +211,72 @@ def test_docx_non_placeholder_paragraph_has_no_context():
         doc.add_paragraph("Finished sentence.")
 
     assert _docx_ctx(build)["Finished sentence."] is None
+
+
+# ---- own residual label ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "marker, text, token, label",
+    [
+        # a symbol-led token above its own label line
+        (None, "[# 1]\nRequirement", "[# 1]", "Requirement"),
+        (None, "[$ 1]\nBed occupancy", "[$ 1]", "Bed occupancy"),
+        # a static numeric marker box to the left has no letter: the own label wins
+        ("01", "Executive Summary\n[Short description 1]", "[Short description 1]",
+         "Executive Summary"),
+        ("2", "Ward round | [Notes 2]", "[Notes 2]", "Ward round"),
+    ],
+)  # fmt: skip
+def test_pptx_own_label_replaces_a_letterless_neighbour_context(marker, text, token, label):
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    if marker:
+        _box(slide.shapes, marker, 0.3, 1.0, width=0.5, height=0.5)
+    _box(slide.shapes, text, 1.0, 1.0, width=4.0, height=0.8)
+    got = {a.text: a.context for a in extract_pptx(_save(prs))}
+    assert got[text] == label
+
+
+def test_pptx_neighbour_context_with_a_letter_is_kept_over_the_own_label():
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _box(slide.shapes, "Flood risk", 0.5, 1.0, height=0.5)
+    _box(slide.shapes, "Risk: [Risk description 1] | Action: [Mitigation action 1]", 0.5, 1.6)
+    box = "Risk: [Risk description 1] | Action: [Mitigation action 1]"
+    assert _ctx(extract_pptx(_save(prs)))[box] == "Flood risk"
+
+
+@pytest.mark.parametrize(
+    "heading, text, combined",
+    [
+        ("Ferry crossings", "[# 1]\nMorning sailings", "Ferry crossings / Morning sailings"),
+        ("Ward capacity", "Beds free | [Count 2]", "Ward capacity / Beds free"),
+    ],
+)
+def test_pptx_own_label_is_appended_to_a_neighbour_heading_with_a_letter(heading, text, combined):
+    # slot tiles under one section heading keep it and still get their own label
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _box(slide.shapes, heading, 0.5, 1.0, height=0.5)
+    _box(slide.shapes, text, 0.5, 1.6)
+    assert _ctx(extract_pptx(_save(prs)))[text] == combined
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[# 1]",
+        "[# 1] | [# 2]",
+        "[Slot]",
+        "12\n[Slot]",
+        "Date [Start] status",  # text on both sides of a token: a sentence, not a label
+        "Risk: [Risk description 1] | Action: [Mitigation action 1]",
+        "Visits in [Month] were [Count]",
+    ],
+)
+def test_pptx_no_letter_in_the_own_residual_means_no_context(text):
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _box(slide.shapes, text, 1.0, 1.0)
+    assert extract_pptx(_save(prs))[0].context is None

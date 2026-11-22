@@ -16,9 +16,12 @@ MAX_TEMPLATE_PARTS = 5000
 MAX_TEMPLATE_PART_BYTES = 32 * 1024 * 1024
 MAX_TEMPLATE_BYTES = 128 * 1024 * 1024
 
-# Bounded inner lengths and no nested quantifiers keep matching linear.
+# Bounded inner lengths and no nested quantifiers keep matching linear. A bracket token starts
+# with any non-space character and holds a letter or digit (`[# 1]`, `[0.0]`), but `[1]` / `[12]`
+# (footnote or citation markers) and symbol-only units in labels (`Cost [€]`, `[%]`) are not.
 _TOKEN = re.compile(
-    r"\{\{[^{}\n]{1,100}\}\}|\[[A-Za-z][^\[\]\n]{0,99}\]|<[A-Za-z][^<>\n]{0,99}>|\bXXX\b|\bTBD\b|_{4,}"
+    r"\{\{[^{}\n]{1,100}\}\}|\[(?!\d{1,100}\])(?=[^\[\]\n]{0,99}?[^\W_])[^\[\]\s][^\[\]\n]{0,99}\]"
+    r"|<[A-Za-z][^<>\n]{0,99}>|\bXXX\b|\bTBD\b|_{4,}"
 )
 
 
@@ -32,6 +35,10 @@ def find_tokens(text: str) -> list[str]:
 
 
 MAX_CONTEXT_CHARS = 120
+
+
+def has_letter(text: str | None) -> bool:
+    return bool(text) and any(c.isalpha() for c in text)
 
 
 def static_text(text: str) -> str | None:

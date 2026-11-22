@@ -50,6 +50,8 @@ class Anchor(_Strict):
     pos: tuple[int, int] | None = None
     # the static heading or label next to this slot (card title, row label, column header)
     context: str | None = None
+    # pptx only: "set.member" of the repeating card (identical containers) the shape sits in
+    card: str | None = None
 
 
 class AnchorMap(_Strict):
@@ -83,6 +85,7 @@ class IRField(_Strict):
     constraints: Constraints
     # copied from the anchor by code in build_ir; hidden from the LLM schema
     context: SkipJsonSchema[str | None] = None
+    card: SkipJsonSchema[str | None] = None
 
 
 class IRDraft(_Strict):

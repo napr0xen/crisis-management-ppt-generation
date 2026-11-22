@@ -35,14 +35,17 @@ class Settings(BaseSettings):
     reranker_enabled: bool = False
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     # anthropic is planned (FR-17), not built: an unknown provider fails at startup.
-    llm_provider: Literal["ollama", "openai"] = "ollama"
-    llm_base_url: str = "http://127.0.0.1:11434"  # ollama: native API root; openai: the /v1 root
+    llm_provider: Literal["ollama", "openai_compat"] = "ollama"
+    # ollama: native API root; openai_compat: the /v1 root, e.g. http://127.0.0.1:8080/v1
+    llm_base_url: str = "http://127.0.0.1:11434"
     llm_model: str = "qwen3:14b"
     llm_api_key: SecretStr = SecretStr("")
-    # ollama only; prompts are sized from it (llm.gateway.prompt_tokens), any value >= 8192
+    # Prompts are sized from it (llm.gateway.prompt_tokens), any value >= 8192. Ollama also gets
+    # it as num_ctx; for openai_compat it must match the server's context (it is not sent).
     llm_num_ctx: int = 32768
     llm_timeout_seconds: float = 120.0  # local 14B inference plus a cold model load
-    # ollama `think`; off: at temperature 0 qwen3 reasoning can loop until the timeout
+    # ollama `think` / openai_compat chat_template_kwargs.enable_thinking; off: at temperature 0
+    # qwen3 reasoning can loop until the timeout
     llm_enable_thinking: bool = False
     qdrant_collection: str = "doc_chunks"  # tests use their own collection
     # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
