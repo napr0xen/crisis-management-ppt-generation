@@ -1,9 +1,11 @@
 """Turns a field mapping result into the content a writer puts at the anchor (system-design § 8)."""
 
 import re
+import unicodedata
 from datetime import date
 
 from doc_intel.mapping.schemas import FieldMappingResult
+from doc_intel.mapping.verifier import source_text
 from doc_intel.templates.schemas import IRField, TemplateFormat
 from doc_intel.writers import Content
 
@@ -11,24 +13,40 @@ from doc_intel.writers import Content
 _ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f￾￿\ud800-\udfff]")
 
 
+_CODE = re.compile(r"\b[A-Z]{3}\b")
+
+
+def _has_marker(span: str, unit: str) -> bool:
+    """The span already shows a currency symbol, a currency code or the unit itself."""
+    return (
+        unit in span
+        or bool(_CODE.search(span))
+        or any(unicodedata.category(c) == "Sc" for c in span)
+    )
+
+
 def _clean(text: str) -> str:
     return _ILLEGAL.sub("", text)
 
 
-def _paragraphs(field: IRField, value: object) -> list[str]:
+def _paragraphs(field: IRField, result: FieldMappingResult) -> list[str]:
     """The value as one string per paragraph, for text targets."""
-    t, unit = field.expected_type, field.constraints.unit
+    t, unit, value = field.expected_type, field.constraints.unit, result.value
     if t in ("paragraphs", "bullet_list"):
         return [str(v) for v in value]  # type: ignore[attr-defined]
     if t == "table":
         return [" | ".join(row) for row in value]  # type: ignore[attr-defined]
+    # Typed values are written as the source wrote them; no evidence span (a user-set value)
+    # falls back to the canonical value.
+    span = source_text(value, t, [e.quote for e in result.evidence])  # type: ignore[arg-type]
     if t in ("number", "currency"):
-        return [f"{value} {unit}" if unit else str(value)]
+        text = span or str(value)
+        return [f"{text} {unit}" if unit and not (span and _has_marker(span, unit)) else text]
     if t == "percent":
-        return [f"{value}%"]
-    # shortcut: date_format is free text from the LLM, not a strftime pattern; dates are written
-    # ISO, upgrade when the IR emits a strftime pattern.
-    return [str(value)]
+        return [span if span and "%" in span else f"{span or value}%"]
+    # shortcut: dates follow the source span (any format that reads as the ISO date); a user-set
+    # value has none and is written ISO, upgrade when the IR emits a strftime pattern.
+    return [span or str(value)]
 
 
 def content(
@@ -57,6 +75,6 @@ def content(
     elif t == "text":
         items = [str(value)]
     else:
-        items = _paragraphs(field, value)
+        items = _paragraphs(field, result)
     items = [_clean(i) for i in items]
     return ["; ".join(items)] if fmt == "xlsx" else items

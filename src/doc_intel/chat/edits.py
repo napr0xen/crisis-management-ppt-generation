@@ -12,7 +12,7 @@ from doc_intel.chat.router import ChatMessage
 from doc_intel.core.errors import ValidationFailed
 from doc_intel.llm.gateway import LLMClient, complete_json
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.mapping.engine import CONF_TEXT, CONF_TYPED, share_key
+from doc_intel.mapping.engine import CONF_TEXT, CONF_TYPED, shared_facts
 from doc_intel.mapping.schemas import FieldMappingResult, Value
 from doc_intel.mapping.verifier import TYPED_TYPES, canonical_value, normalize
 from doc_intel.templates.schemas import IRField, TemplateIR
@@ -123,13 +123,16 @@ def apply_edits(
         edited[op.field_id] = _apply(i, op, fields[op.field_id], results[op.field_id])
     out = dict(results)
     out.update(edited)
-    for i, op in enumerate(ops):  # repeated-token siblings follow the edit (map_run maps them once)
-        key = share_key(fields[op.field_id])
+    shared = shared_facts(ir.fields)
+    for i, op in enumerate(ops):  # shared-fact siblings follow the edit (map_run maps them once)
+        key = shared.get(op.field_id)
         for sibling in ir.fields:
-            if sibling.field_id == op.field_id or key is None or share_key(sibling) != key:
+            if key is None or sibling.field_id == op.field_id:
+                continue
+            if shared.get(sibling.field_id) != key:
                 continue
             if sibling.field_id in named:
-                raise _bad(i, "a field sharing this token is also edited.")
+                raise _bad(i, "a field sharing this fact is also edited.")
             if sibling.field_id in results:
                 out[sibling.field_id] = edited[op.field_id].model_copy(
                     update={"field_id": sibling.field_id}
@@ -161,14 +164,15 @@ async def parse_edits(
 ) -> list[EditOp]:
     """One LLM call: the last user message as edit ops. `LLMInvalidOutput` propagates; an op
     without its argument, or a new value the user did not write, is `ValidationFailed`."""
-    # One line per repeated-token group: an edit follows to its siblings, and listing every copy
+    # One line per shared-fact group: an edit follows to its siblings, and listing every copy
     # would grow the prompt and invite duplicate ops.
     # shortcut: no token budget for the field list; a template with hundreds of distinct fields
     # can overflow LLM_NUM_CTX, add a budget (or a field pre-filter) if that happens.
     lines, seen = [], set()
+    shared = shared_facts(ir.fields)
     for f in ir.fields:
-        r, key = results.get(f.field_id), share_key(f)
-        if r is None or (key is not None and key in seen):
+        r, key = results.get(f.field_id), shared.get(f.field_id, f.field_id)
+        if r is None or key in seen:
             continue
         seen.add(key)
         current = _clip(r.value) if r.value is not None else ""
@@ -184,15 +188,13 @@ async def parse_edits(
         {"role": "system", "content": load_prompt("edits")},
         {"role": "user", "content": "Fields:\n" + "\n".join(lines) + f"\n\nMessage:\n{last}"},
     ]
-    fields = {f.field_id: f for f in ir.fields}
     ops: list[EditOp] = []
     keys: set[object] = set()
     for i, e in enumerate((await complete_json(llm, prompt, _LLMEdits)).edits):
         if len(e.field_id) > 64:  # never a field: keep pydantic errors (and the text) out
             raise _bad(i, "unknown field_id.")
-        field = fields.get(e.field_id)
-        key = (share_key(field) if field else None) or e.field_id
-        if key in keys:  # the model repeated a field or a token sibling: the first op wins
+        key = shared.get(e.field_id, e.field_id)
+        if key in keys:  # the model repeated a field or a shared-fact sibling: the first op wins
             continue
         keys.add(key)
         if e.op == "set_value":

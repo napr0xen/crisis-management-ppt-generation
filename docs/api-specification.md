@@ -289,7 +289,7 @@ Applies edits **on top of `{run_id}`**, creating a new run (see [system-design.m
 ```
 
 `edits`: 1 to 50 ops; `field_id` up to 64 chars; a `set_value` value up to 10,000 chars. `EditOp` validation:
-- `field_id` must exist in the run's IR, at most once per request (fields sharing one repeated token count as one, see [system-design.md § 10](system-design.md#10-conversational-edits-chateditspy));
+- `field_id` must exist in the run's IR, at most once per request (fields sharing one fact count as one, see [system-design.md § 10](system-design.md#10-conversational-edits-chateditspy));
 - `choose_candidate` requires the field to be `conflict` and `0 <= candidate_index < len(candidates)`;
 - `set_value` requires `value` of the field's shape: a non-empty string for `text`; a string or list of strings for `paragraphs`/`bullet_list`; a number or a string that states exactly one number or date for `number`/`currency`/`percent`/`date`; a list of rows for `table`.
 

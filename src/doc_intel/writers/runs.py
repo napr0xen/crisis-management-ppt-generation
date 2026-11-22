@@ -120,19 +120,44 @@ def write_paragraphs(
         last = _clone_after(last, item, fl)
 
 
-def replace_token(paragraphs: list[etree._Element], token: str, value: str, fl: Flavor) -> None:
-    """replace_token: merge the runs the token spans into the first one, then replace in place."""
+def _trim_marker(value: str, before: str, after: str) -> str:
+    """Drop the value's non-numeric prefix/suffix the template already has beside the token."""
+    digits = [i for i, c in enumerate(value) if c.isdigit()]
+    if not digits:
+        return value
+    start, end = digits[0], digits[-1] + 1
+    if start and value[start - 1] == "-":  # the sign belongs to the number
+        start -= 1
+    prefix, suffix = value[:start].strip(), value[end:].strip()
+    if prefix and before.rstrip().endswith(prefix):
+        value = value[start:]
+        end -= start
+    rest = after.lstrip()
+    # whole word only: "M" is not trimmed before "Managed"
+    if suffix and rest.startswith(suffix) and not rest[len(suffix) : len(suffix) + 1].isalnum():
+        value = value[:end]
+    return value
+
+
+def replace_token(
+    paragraphs: list[etree._Element], token: str, value: str, fl: Flavor, typed: bool = False
+) -> None:
+    """replace_token: merge the runs the token spans into the first one, then replace in place.
+
+    `typed` values (number, currency, percent, date) lose a marker the template already has."""
     found = False
     for p in paragraphs:
         pos = 0
         while True:
             runs = list(p.iter(fl.q("r")))
             run_texts = [_run_text(r, fl) for r in runs]
-            start = "".join(run_texts).find(token, pos)
+            full = "".join(run_texts)
+            start = full.find(token, pos)
             if start < 0:
                 break
             found = True
             end = start + len(token)
+            put = _trim_marker(value, full[:start], full[end:]) if typed else value
             # the runs overlapping [start, end)
             offset, spanning = 0, []
             for r, text in zip(runs, run_texts, strict=True):
@@ -141,11 +166,11 @@ def replace_token(paragraphs: list[etree._Element], token: str, value: str, fl: 
                 offset += len(text)
             first, first_off, first_text = spanning[0]
             _, last_off, last_text = spanning[-1]
-            merged = first_text[: start - first_off] + value + last_text[end - last_off :]
+            merged = first_text[: start - first_off] + put + last_text[end - last_off :]
             for r, _, _ in spanning[1:]:
                 r.getparent().remove(r)
             _set_run(first, merged, fl)
-            pos = start + len(value)
+            pos = start + len(put)
     if not found:
         raise KeyError("token_not_found")
 

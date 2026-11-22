@@ -438,3 +438,38 @@ def test_several_replace_token_items_on_one_paragraph_compose():
     out, _ = write(_with_body(mutate), items)
     par = _doc(out).paragraphs[3]
     assert par.text == "Ada, CFO \u00b7 01 March 2026"
+
+
+@pytest.mark.parametrize(
+    "template, token, etype, value, expected",
+    [
+        ("Total $[Amount] due", "[Amount]", "currency", "$444,132.10", "Total $444,132.10 due"),
+        ("Rate: [Rate]%", "[Rate]", "percent", "12.5%", "Rate: 12.5%"),
+        ("[Headcount] people", "[Headcount]", "number", "1,250 people", "1,250 people"),
+        ("Cost: [Amount]", "[Amount]", "currency", "\u20ac1,250", "Cost: \u20ac1,250"),
+    ],
+)
+def test_typed_value_does_not_double_the_marker_the_template_has(
+    template, token, etype, value, expected
+):
+    def mutate(doc):
+        par = doc.paragraphs[3]
+        for r in list(par.runs):
+            r._r.getparent().remove(r._r)
+        par.add_run(template)
+
+    item = WriteItem(_field(CLIENT, "replace_token", etype, token=token), [value])
+    out, _ = write(_with_body(mutate), [item])
+    assert _doc(out).paragraphs[3].text == expected
+
+
+def test_text_field_next_to_similar_text_is_never_trimmed():
+    def mutate(doc):
+        par = doc.paragraphs[3]
+        for r in list(par.runs):
+            r._r.getparent().remove(r._r)
+        par.add_run("Name: [Who]%")
+
+    item = WriteItem(_field(CLIENT, "replace_token", "text", token="[Who]"), ["Ada 9%"])
+    out, _ = write(_with_body(mutate), [item])
+    assert _doc(out).paragraphs[3].text == "Name: Ada 9%%"

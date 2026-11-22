@@ -25,7 +25,7 @@ def ir_json(template_id, ids):
             "field_id": fid,
             "anchor_id": f"a{i}",
             "section_path": ["s"],
-            "label": "L",
+            "label": f"L{i}",  # fields sharing a label and type would map once
             "description": "D",
             "expected_type": "text",
             "required": True,
@@ -220,10 +220,84 @@ async def test_failure_hook_leaves_a_finished_run_untouched(sm, user_a, status):
     assert run.status == status and run.finished_at is None
 
 
+@pytest.mark.parametrize(
+    "token, labels",
+    [
+        ("[Opening Balance]", ("Opening balance", "Balance at start", "Cash on hand")),
+        ("{{supplier_name}}", ("Supplier", "Vendor", "Awarded to")),
+    ],
+)
+async def test_run_mapping_reuses_one_result_per_named_placeholder(
+    sm, user_a, monkeypatch, token, labels
+):
+    ids = ("f_a", "f_b", "f_c")
+    ctx, run_id, job_id, _ = await queue_run(sm, user_a, ids)
+    async with sm.begin() as s:
+        run = await repo.get_mapping_run(s, ctx, run_id)
+        ir = await repo.get_template_ir_by_id(s, ctx, run.template_ir_id)
+        fields = [
+            {
+                **f,
+                "label": labels[i],
+                "anchor_id": f"pptx:s{i + 1}:sp2",  # one copy per slide
+                "write_mode": "replace_token",
+                "constraints": {"token": token},
+            }
+            for i, f in enumerate(ir.ir["fields"])
+        ]
+        ir.ir = {**ir.ir, "fields": fields}
+    calls = []
+
+    async def fake_map(c, field, document_ids, retriever, llm):
+        calls.append(field.field_id)
+        return missing(field, document_ids)
+
+    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr("doc_intel.writers.render", lambda *a, **k: (b"PK\x03\x04fake", []))
+    await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
+
+    run, job = await state(sm, ctx, run_id, job_id)
+    assert calls == ["f_a"]  # one extraction for all three labels
+    assert job.status == "succeeded" and job.progress["done"] == 3
+    for fid in ("f_b", "f_c"):
+        assert run.results[fid] == {**run.results["f_a"], "field_id": fid}
+
+
+async def test_run_mapping_maps_each_slot_repeated_on_one_slide(sm, user_a, monkeypatch):
+    ids = ("r1", "r2", "r3")
+    ctx, run_id, _, _ = await queue_run(sm, user_a, ids)
+    async with sm.begin() as s:
+        run = await repo.get_mapping_run(s, ctx, run_id)
+        ir = await repo.get_template_ir_by_id(s, ctx, run.template_ir_id)
+        fields = [
+            {
+                **f,
+                "label": f"Risk card {i}",
+                "anchor_id": f"pptx:s8:sp{i + 2}",  # three cards on one slide
+                "write_mode": "replace_token",
+                "constraints": {"token": "[Risk]"},
+            }
+            for i, f in enumerate(ir.ir["fields"])
+        ]
+        ir.ir = {**ir.ir, "fields": fields}
+    calls = []
+
+    async def fake_map(c, field, document_ids, retriever, llm):
+        calls.append(field.field_id)
+        return missing(field, document_ids)
+
+    monkeypatch.setattr(handlers_mod, "map_field", fake_map)
+    monkeypatch.setattr("doc_intel.writers.render", lambda *a, **k: (b"PK\x03\x04fake", []))
+    await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
+
+    assert calls == ["r1", "r2", "r3"]  # each card is its own question
+
+
 async def test_run_mapping_reuses_one_result_per_repeated_token(sm, user_a, monkeypatch):
     ctx, run_id, job_id, _ = await queue_run(sm, user_a, ("f_a", "f_b", "f_c", "f_d"))
-    tokens = dict.fromkeys(("f_a", "f_b", "f_c", "f_d"), "[Reporting Period]")
-    # f_c: same token, other label (a generic blank); f_d: other expected_type. Neither is shared.
+    tokens = dict.fromkeys(("f_a", "f_b", "f_c", "f_d"), "____")
+    # f_c: same blank, other label; f_d: other expected_type. Neither is shared. f_b is the same
+    # blank with the same label and type as f_a (a generic blank repeating on one question).
     other = {"f_c": {"label": "Other"}, "f_d": {"expected_type": "date"}}
     async with sm.begin() as s:
         run = await repo.get_mapping_run(s, ctx, run_id)
@@ -231,11 +305,13 @@ async def test_run_mapping_reuses_one_result_per_repeated_token(sm, user_a, monk
         fields = [
             {
                 **f,
+                "label": "L",
+                "anchor_id": f"pptx:s{i + 1}:sp2",
                 "write_mode": "replace_token",
                 "constraints": {"token": tokens[f["field_id"]]},
                 **other.get(f["field_id"], {}),
             }
-            for f in ir.ir["fields"]
+            for i, f in enumerate(ir.ir["fields"])
         ]
         ir.ir = {**ir.ir, "fields": fields}
     calls, rendered = [], []

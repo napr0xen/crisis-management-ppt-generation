@@ -8,7 +8,14 @@ import pytest
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.llm.gateway import LLMError
-from doc_intel.mapping.engine import field_query, map_field, resolve, summarize
+from doc_intel.mapping.engine import (
+    field_query,
+    map_field,
+    resolve,
+    share_key,
+    shared_facts,
+    summarize,
+)
 from doc_intel.mapping.extractor import MAX_FIELD_HITS
 from doc_intel.mapping.schemas import LLMExtraction
 from doc_intel.templates.schemas import Constraints, IRField
@@ -397,3 +404,109 @@ class RaisingLLM:
 async def test_transport_llm_error_propagates():
     with pytest.raises(LLMError):
         await map_field(CTX, _field(), DOCS, FakeRetriever([H1]), RaisingLLM())
+
+
+def _shared(label, etype="text", token=None):
+    return IRField(
+        field_id="x",
+        anchor_id="a",
+        section_path=[],
+        label=label,
+        description="",
+        expected_type=etype,
+        required=True,
+        write_mode="replace_token" if token else "replace_text",
+        constraints=Constraints(token=token) if token else Constraints(),
+    )
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        # finance: slides label the same named placeholder differently
+        (_shared("Opening balance", "currency", "[Opening Balance]"),
+         _shared("Balance at start", "currency", "[Opening Balance]")),
+        # HR: delimiter style, case, "_" and "-" do not matter
+        (_shared("Staff", "number", "{{employee_count}}"),
+         _shared("Headcount", "number", "[Employee Count]")),
+        (_shared("A", "text", "<hire-date>"), _shared("B", "text", "{{Hire_Date}}")),
+        # tokenless fields share on label and type
+        (_shared("On-time delivery rate", "percent"), _shared("on-time  Delivery Rate", "percent")),
+        (_shared("Annual leave days", "number"), _shared("annual leave days", "number")),
+        # a blank with the same label is the same question
+        (_shared("Supplier", "text", "____"), _shared("supplier", "text", "____")),
+    ],
+)  # fmt: skip
+def test_share_key_equal(a, b):
+    assert share_key(a) == share_key(b)
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        # generic blanks: label decides (finance and procurement)
+        (_shared("Revenue", "currency", "____"), _shared("Costs", "currency", "____")),
+        (_shared("Supplier", "text", "XXX"), _shared("Buyer", "text", "XXX")),
+        (_shared("Start", "date", "TBD"), _shared("End", "date", "TBD")),
+        # type always decides
+        (_shared("Pay", "text", "[Period]"), _shared("Pay", "date", "[Period]")),
+        (_shared("Rate", "number"), _shared("Rate", "percent")),
+        # tokenless, different labels
+        (_shared("On-time delivery rate", "percent"), _shared("Defect rate", "percent")),
+        (_shared("Total payroll", "currency"), _shared("Total bonuses", "currency")),
+        # different named placeholders
+        (_shared("Same", "text", "[Opening Stock]"), _shared("Same", "text", "[Closing Stock]")),
+    ],
+)  # fmt: skip
+def test_share_key_different(a, b):
+    assert share_key(a) != share_key(b)
+
+
+def _slot(fid, anchor_id, token=None, label="L", etype="text", path=()):
+    return _shared(label, etype, token).model_copy(
+        update={"field_id": fid, "anchor_id": anchor_id, "section_path": list(path)}
+    )
+
+
+def test_shared_facts_links_copies_on_different_slides_and_sheets():
+    fields = [
+        _slot("a", "pptx:s1:sp2", "[Reporting Period]", "Period on cover"),
+        _slot("b", "pptx:s4:sp7", "[Reporting Period]", "Period on summary"),
+        _slot("c", "xlsx:Payroll!B2", "{{employee_count}}", "Staff"),
+        _slot("d", "xlsx:Overtime!B2", "[Employee Count]", "Headcount"),
+        _slot("e", "pptx:s2:sp3", "[Unique]"),
+    ]
+    keys = shared_facts(fields)
+    assert keys["a"] == keys["b"] and keys["c"] == keys["d"] and keys["a"] != keys["c"]
+    assert "e" not in keys  # alone: nothing to share
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # procurement risk cards: three [Risk] / [Action] slots on one slide
+        [_slot(f"r{i}", f"pptx:s8:sp{i}", "[Risk]", f"Risk {i}") for i in (2, 3, 4)]
+        + [_slot(f"a{i}", f"pptx:s8:sp{i + 5}", "[Action]", f"Action {i}") for i in (2, 3, 4)],
+        # HR: two rows of one sheet, and a copy on another sheet
+        [_slot("n1", "xlsx:Staff!B2", "[Name]"), _slot("n2", "xlsx:Staff!B3", "[Name]"),
+         _slot("n3", "xlsx:Leave!B2", "[Name]")],
+        # docx: two cards (tables) under one heading are one section
+        [_slot("d1", "docx:body:t0:r1c1", "[Description]", path=("Risks", "Table 0")),
+         _slot("d2", "docx:body:t1:r1c1", "[Description]", path=("Risks", "Table 1")),
+         _slot("d3", "docx:body:p9", "[Description]", path=("Appendix",))],
+        # tokenless slots with one label on one slide
+        [_slot("t1", "pptx:s3:sp2", label="Card value", etype="number"),
+         _slot("t2", "pptx:s3:sp3", label="Card value", etype="number")],
+    ],
+)  # fmt: skip
+def test_shared_facts_never_merges_slots_repeated_on_one_slide(fields):
+    assert shared_facts(fields) == {}
+
+
+def test_shared_facts_docx_sections_share_across_headings():
+    fields = [
+        _slot("o1", "docx:body:p2", "[Opening Balance]", "Opening", path=("Summary",)),
+        _slot("o2", "docx:body:t3:r1c2", "[Opening Balance]", "Start", path=("Detail", "Table 3")),
+    ]
+    keys = shared_facts(fields)
+    assert keys["o1"] == keys["o2"]

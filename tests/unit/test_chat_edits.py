@@ -19,7 +19,7 @@ def _field(fid: str, etype: str = "text", write_mode: str = "replace_text", toke
     return {
         "field_id": fid,
         "anchor_id": f"a_{fid}",
-        "section_path": ["Slide 1"],
+        "section_path": [f"Section {fid}"],  # one section per field: copies, not slots
         "label": label or fid.title(),
         "description": "d",
         "expected_type": etype,
@@ -215,6 +215,45 @@ def test_repeated_token_siblings_share_the_edit() -> None:
     assert out["s2"].value == "Ann" and out["s2"].field_id == "s2"
     assert out["s2"].provenance == "user"
     assert out["s3"].status == out["s4"].status == "missing"
+
+
+@pytest.mark.parametrize(
+    "token, labels, value, etype",
+    [
+        ("[Opening Balance]", ("Opening balance", "Balance at start"), "1,200", "currency"),
+        ("{{employee_count}}", ("Headcount", "Staff on payroll"), "340", "number"),
+    ],
+)
+def test_named_token_sibling_with_another_label_follows_the_edit(token, labels, value, etype):
+    ir = _ir(
+        _field("s1", etype, "replace_token", token=token, label=labels[0]),
+        _field("s2", etype, "replace_token", token=token, label=labels[1]),
+        _field("s3", etype, "replace_token", token="____", label="Other one"),
+        _field("s4", etype, "replace_token", token="____", label="Other two"),
+    )
+    results = {f.field_id: _result(f.field_id) for f in ir.fields}
+    out = apply_edits(ir, results, _ops(_set("s1", value)))
+    assert out["s2"].value == out["s1"].value is not None and out["s2"].field_id == "s2"
+    assert out["s3"].status == out["s4"].status == "missing"
+    with pytest.raises(ValidationFailed):
+        apply_edits(ir, results, _ops(_set("s1", value), _set("s2", value)))
+
+
+def test_slots_repeated_on_one_slide_do_not_follow_an_edit() -> None:
+    risk = [
+        {
+            **_field(f"r{i}", write_mode="replace_token", token="[Risk]"),
+            "anchor_id": f"pptx:s8:sp{i}",
+        }
+        for i in (1, 2, 3)
+    ]
+    ir = _ir(*risk)
+    results = {f.field_id: _result(f.field_id) for f in ir.fields}
+    out = apply_edits(ir, results, _ops(_set("r1", "Port closure")))
+    assert out["r1"].value == "Port closure"
+    assert out["r2"].status == out["r3"].status == "missing"
+    out = apply_edits(ir, results, _ops(_set("r1", "Port closure"), _set("r2", "Strike")))
+    assert (out["r1"].value, out["r2"].value) == ("Port closure", "Strike")
 
 
 def test_sibling_named_in_the_same_request_is_a_duplicate() -> None:

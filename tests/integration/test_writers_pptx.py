@@ -378,3 +378,33 @@ def test_missing_field_writes_its_marker_in_its_token_place():
         "pptx", deck, fields, results, missing_marker="<<{label}>>", conflict_marker="!"
     )
     assert _shape(out, 2, 3).text_frame.text == "Ada, <<L>> \u00b7 now"
+
+
+@pytest.mark.parametrize(
+    "template, token, etype, value, expected",
+    [
+        ("Total $[Amount] due", "[Amount]", "currency", "$444,132.10", "Total $444,132.10 due"),
+        ("Rate: [Rate]%", "[Rate]", "percent", "12.5%", "Rate: 12.5%"),
+        ("[Headcount] people", "[Headcount]", "number", "1,250 people", "1,250 people"),
+        ("[Total] million", "[Total]", "currency", "2.5 million", "2.5 million"),
+        ("Cost: [Amount]", "[Amount]", "currency", "\u20ac1,250", "Cost: \u20ac1,250"),
+        ("Due [Date]", "[Date]", "date", "4 March 2026", "Due 4 March 2026"),
+        # a word that only starts like the suffix is not the suffix
+        ("[Spend] Managed", "[Spend]", "currency", "AED 182.4M", "AED 182.4M Managed"),
+        ("[Staff] Key roles", "[Staff]", "number", "3.2K", "3.2K Key roles"),
+    ],
+)
+def test_typed_value_does_not_double_the_marker_the_template_has(
+    template, token, etype, value, expected
+):
+    deck = _multi_token_deck([(template, None)])
+    item = WriteItem(_field(BOX, "replace_token", etype, token=token), [value])
+    out, _ = write(deck, [item])
+    assert _shape(out, 2, 3).text_frame.text == expected
+
+
+def test_text_field_next_to_similar_text_is_never_trimmed():
+    deck = _multi_token_deck([("Name: [Who]%", None)])
+    item = WriteItem(_field(BOX, "replace_token", "text", token="[Who]"), ["Ada 9%"])
+    out, _ = write(deck, [item])
+    assert _shape(out, 2, 3).text_frame.text == "Name: Ada 9%%"

@@ -76,27 +76,38 @@ def verify_quote(hits: list[Hit], chunk_id: str, quote: str) -> Hit | None:
     return None
 
 
+_NUMBER_CI = re.compile(_NUMBER.pattern, re.IGNORECASE)  # source_text keeps the source's case
+
+
+def _number_spans(s: str, rx: re.Pattern[str]) -> list[tuple[Decimal, re.Match[str]]]:
+    spans = []
+    for m in rx.finditer(s):
+        n = _decimal(m[2]) * _SCALE.get((m[3] or "").casefold(), 1)
+        spans.append((-n if m[1] else n, m))
+    return spans
+
+
 def _numbers(s: str) -> set[Decimal]:
-    found = set()
-    for sign, num, scale in _NUMBER.findall(normalize(s)):
-        n = _decimal(num) * _SCALE.get(scale, 1)
-        found.add(-n if sign else n)
-    return found
+    return {n for n, _ in _number_spans(normalize(s), _NUMBER)}
 
 
-def _dates(s: str) -> set[date]:
-    found = set()
+def _date_spans(s: str) -> list[tuple[date, re.Match[str]]]:
+    spans = []
     for rx, order in ((_ISO, "ymd"), (_DMY, "dmy"), (_MDY, "mdy")):
-        for m in rx.findall(s):
-            parts = dict(zip(order, m, strict=True))
+        for m in rx.finditer(s):
+            parts = dict(zip(order, m.groups(), strict=True))
             month = (
                 _MONTHS.get(parts["m"].casefold()) if not parts["m"].isdigit() else int(parts["m"])
             )
             try:
-                found.add(date(int(parts["y"]), month, int(parts["d"])))
+                spans.append((date(int(parts["y"]), month, int(parts["d"])), m))
             except (ValueError, TypeError):  # "4 Marchy 2026", "31 febrero 2022": not dates
                 continue
-    return found
+    return spans
+
+
+def _dates(s: str) -> set[date]:
+    return {d for d, _ in _date_spans(s)}
 
 
 def _canonical(value: str | int | float, value_type: str) -> Decimal | date | None:
@@ -122,3 +133,58 @@ def value_in_quotes(value: str | int | float, value_type: str, quotes: list[str]
     c = _canonical(value, value_type)
     canonical = _dates if value_type == "date" else _numbers
     return c is not None and any(c in canonical(q) for q in quotes)
+
+
+# shortcut: any 3 uppercase ASCII letters beside a currency number read as its code ("85 THE"),
+# restrict to ISO 4217 codes if a source trips it.
+_CODE_BEFORE = re.compile(r"(?<![A-Za-z])[A-Z]{3} ?$")
+_CODE_AFTER = re.compile(r" ?[A-Z]{3}(?![A-Za-z])")
+# A percent sign, or 1-2 letters glued to the end of the number ("182.4M", "5bn", "3.2K"); a
+# letter followed by a digit ("2026Q3") is not a suffix.
+_SUFFIX = re.compile(r" ?%|[^\W\d_]{1,2}(?!\w)")
+
+
+def _is_symbol(ch: str) -> bool:
+    return unicodedata.category(ch) == "Sc"
+
+
+def _with_marker(t: str, start: int, end: int, value_type: str) -> tuple[int, int]:
+    """Widen a number span over a glued suffix (%, magnitude letters), then an adjacent currency
+    symbol or currency code."""
+    if suffix := _SUFFIX.match(t, end):
+        end = suffix.end()
+    if start >= 1 and _is_symbol(t[start - 1]):
+        return start - 1, end
+    if start >= 2 and t[start - 1] == " " and _is_symbol(t[start - 2]):
+        return start - 2, end
+    if end < len(t) and _is_symbol(t[end]):
+        return start, end + 1
+    if end + 1 < len(t) and t[end] == " " and _is_symbol(t[end + 1]):
+        return start, end + 2
+    if value_type == "currency":
+        if before := _CODE_BEFORE.search(t, 0, start):
+            return before.start(), end
+        if after := _CODE_AFTER.match(t, end):
+            return start, after.end()
+    return start, end
+
+
+def source_text(value: str | int | float, value_type: str, quotes: list[str]) -> str | None:
+    """The span of the first quote that states `value`, as the source wrote it (symbol, code,
+    percent sign, date format), found with the same patterns `value_in_quotes` uses."""
+    c = _canonical(value, value_type)
+    if c is None:
+        return None
+    for q in quotes:
+        t = unicodedata.normalize("NFKC", q).translate(_PUNCT)
+        if value_type == "date":
+            spans = _date_spans(t)
+        else:
+            spans = _number_spans(t, _NUMBER_CI)
+        for found, m in spans:
+            if found == c:
+                if value_type == "date":
+                    return m[0]
+                start, end = _with_marker(t, m.start(), m.end(), value_type)
+                return t[start:end]
+    return None

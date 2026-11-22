@@ -10,6 +10,7 @@ from doc_intel.mapping.verifier import (
     _numbers,
     canonical_value,
     normalize,
+    source_text,
     value_in_quotes,
     verify_quote,
 )
@@ -219,3 +220,61 @@ def test_spanish_and_english_dates(text, expected):
 
 def test_iso_date_matches_spanish_quote():
     assert value_in_quotes("2022-06-30", "date", ["Saldo al 30 junio 2022"])
+
+
+@pytest.mark.parametrize(
+    "value, value_type, quotes, expected",
+    [
+        # finance
+        (444132.1, "currency", ["Revenue was \u20ac444.132,10 in Q1"], "\u20ac444.132,10"),
+        (444132.1, "currency", ["Revenue was 444.132,10 \u20ac in Q1"], "444.132,10 \u20ac"),
+        (1234567.89, "currency", ["raised $1,234,567.89 overall"], "$1,234,567.89"),
+        (12, "currency", ["fee of $ 12 per unit"], "$ 12"),
+        (2500000, "currency", ["a budget of USD 2.5 Million"], "USD 2.5 Million"),
+        (-1200, "number", ["net change of -1,200 for the year"], "-1,200"),
+        # HR / operations / procurement
+        (1250, "number", ["we employ 1,250 employees"], "1,250"),
+        (97.5, "percent", ["on-time delivery 97.5% last month"], "97.5%"),
+        (97.5, "percent", ["on-time delivery 97.5 % last month"], "97.5 %"),
+        (97.5, "percent", ["on-time delivery 97.5 percent"], "97.5"),
+        (85.5, "currency", ["unit price 85.50 CHF per crate"], "85.50 CHF"),
+        (85.5, "number", ["unit price 85.50 CHF per crate"], "85.50"),  # code is currency only
+        # a magnitude/unit suffix glued to the number stays (finance and procurement)
+        (182.4, "currency", ["Total spend AED 182.4M in FY25"], "AED 182.4M"),
+        (21.5, "currency", ["savings of AED 21.5M against budget"], "AED 21.5M"),
+        (5, "currency", ["capex of $5bn approved"], "$5bn"),
+        (2.5, "currency", ["a contract of EUR 2.5mn signed"], "EUR 2.5mn"),
+        (3.2, "number", ["headcount grew to 3.2K staff"], "3.2K"),
+        (91, "number", ["supplier compliance 91% this year"], "91%"),  # % on any numeric type
+        (2026, "number", ["target 2026Q3 delivery"], "2026"),  # a letter before a digit is not
+        # dates
+        ("2026-03-04", "date", ["issued 4 March 2026."], "4 March 2026"),
+        ("2026-03-04", "date", ["issued March 4, 2026."], "March 4, 2026"),
+        ("2026-03-04", "date", ["issued on 2026-03-04"], "2026-03-04"),
+        ("2026-03-04", "date", ["emitido el 4 de marzo de 2026"], "4 de marzo de 2026"),
+    ],
+)
+def test_source_text_is_the_span_as_the_source_wrote_it(value, value_type, quotes, expected):
+    assert source_text(value, value_type, quotes) == expected
+    assert value_in_quotes(value, value_type, quotes)  # display and verification agree
+
+
+@pytest.mark.parametrize(
+    "value, value_type, quotes",
+    [
+        (1250, "number", ["we employ 1,300 employees"]),  # a different number
+        (1250, "number", []),
+        ("2026-03-05", "date", ["on 4 March 2026"]),
+        ("no number", "number", ["12 people"]),
+        (1250, "number", ["1,300 staff and 99 contractors"]),
+    ],
+)
+def test_source_text_none_when_absent(value, value_type, quotes):
+    assert source_text(value, value_type, quotes) is None
+
+
+def test_source_text_first_matching_quote_wins_and_skips_other_numbers():
+    quotes = ["staff 90 and 1,250 contractors", "also 1250 people"]
+    assert source_text(1250, "number", quotes) == "1,250"
+    assert source_text(1250, "number", ["nothing", "also 1250 people"]) == "1250"
+    assert source_text(5, "number", ["COVID-19 case 5"]) == "5"

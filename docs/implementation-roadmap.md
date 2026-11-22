@@ -32,7 +32,8 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 10 | Universal mapping fixes | **Complete** |
 | 11 | Conversational edits & run versioning | **Complete** |
 | 12 | Hardening, evaluation & audit | **Complete** |
-| next | Universal extraction & mapping accuracy | next priority, not yet planned ([below](#next-priority-universal-extraction--mapping-accuracy)) |
+| 13 | Universal accuracy: number formatting & cross-slide facts | **Complete** |
+| next | Universal extraction & mapping accuracy (remaining gaps) | next priority, not yet planned ([below](#next-priority-universal-extraction--mapping-accuracy)) |
 
 ---
 
@@ -274,6 +275,24 @@ Inserted after Phase 9 (cause: Phase 9's known gap. A finance deck mapped agains
 
 ---
 
+## Phase 13: Universal accuracy: number formatting & cross-slide facts
+
+The first two gaps of the [next priority](#next-priority-universal-extraction--mapping-accuracy) list (cause: the Phase 10-12 live finance deck showed raw floats such as `444132.1` and one fact with different values on different slides).
+
+- **Entry:** Phase 12 done (`main` at `0b91610`).
+- **Deliverables:**
+  - `mapping/verifier.py` `source_text`; `writers/markers.py`: typed values on text targets are written as the verified source span (separators, decimals, sign, magnitude word or glued suffix such as `M`/`bn`/`K`, currency symbol or code, `%`, date as written); xlsx keeps real numbers and serials;
+  - `writers/runs.py` `replace_token`: a typed value's marker already shown next to the token is not doubled;
+  - `mapping/engine.py` `share_key`: `(fact name, expected_type)`, a named placeholder's inner text or else the label; `shared_facts` shares a key only across slides/sheets/docx sections, never between slots repeated in one ([system-design.md § 7](system-design.md#7-mapping-engine-stage-3)); `map_run` and edits share by it.
+- **Exit:**
+  - Tests, each on two or more unrelated domains (finance and HR/procurement/operations): source spans for European/US numbers, currency symbols and codes, percent, negatives, magnitude words and dates; fallback for values without evidence; no doubled marker next to a token; a named placeholder with different labels costs one `map_field` call and gets one value; slots repeated on one slide, sheet or docx section are each mapped and edited on their own; generic blanks with different labels and a different `expected_type` are not shared; an edit reaches every sibling;
+  - eval hard gates still pass (0 fabricated citations, 100% citation verification), before/after recorded;
+  - `uv run ruff check .`, `uv run ruff format --check .`, `uv run alembic check`, `uv run pytest` green.
+- **Live-test fixes** (cause: the procurement deck rendered `AED 182.4` for `AED 182.4M` and `91` for `91%`, and three risk cards on one slide got one `[Risk]` value): glued suffixes kept in the source span; same-unit slots never shared.
+- **Status:** Complete (2026-11-22). Gate: `uv run ruff check .` all checks passed; `uv run ruff format --check .` 172 files already formatted; `uv run alembic check` no new upgrade operations; `uv run pytest` 1281 passed, 1 deselected (`perf`). Mapping eval before / after: 0 / 0 fabricated citations, 100% / 100% citation verification, seeded conflicts 100% / 100%, absent fields `missing` 100% / 100%, field accuracy 95.5% / 95.5% (the eval calls `map_field` per field, so it does not exercise sharing or display). `/ponytail-review`: one fix, a glued suffix is trimmed only before a whole word (`AED [Spend] Managed` kept `182.4M`); `/ecc:quality-gate` clean. Live re-test on the procurement deck: `AED 182.4M`, `AED 11.6M`, `91%`, `AED 21.5M` as in the source, and the risk cards on one slide each got their own value.
+
+---
+
 ## Next priority: universal extraction & mapping accuracy
 
 Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found in the Phase 10-12 live tests, where the filled finance deck still shows these gaps.
@@ -282,7 +301,7 @@ Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found
 1. **Completely universal.** No finance-, language- or template-specific rules, keywords, field names, labels or layouts. Every fix must generalize to any template (pptx/docx/xlsx) and any source document, and is tested on at least two unrelated domains.
 2. **Accuracy pushed to the maximum possible**, measured on the eval set ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)) before and after each change, without loosening the existing hard gates (0 fabricated citations, 100% citation verification, conflicts never auto-resolved).
 
-**Gaps:**
+**Gaps** (the first two are done in [Phase 13](#phase-13-universal-accuracy-number-formatting--cross-slide-facts)):
 - **Clean currency and number formatting.** Typed values are written as their canonical form (for example a bare float), not formatted the way the template or source shows them (thousands separators, decimals, currency symbol or code, percent sign). The written text must follow the template's own example or the source's format; xlsx cells keep real numbers.
 - **Consistent cross-slide values.** Only fields that share one `replace_token` key share a value. Fields with different tokens or anchors that ask for the same fact (the same label and type on several slides) can still get different values or statuses.
 - **Accurate row-grouped tables.** `fill_table_rows` rows must each come from one record in the source, with cells from the same row or entity, never mixed across records. Row order and count follow the source.

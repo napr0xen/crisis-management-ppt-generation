@@ -8,6 +8,7 @@ from pptx import Presentation
 from pptx.shapes.base import BaseShape
 
 from doc_intel.mapping.schemas import MappingWarning
+from doc_intel.mapping.verifier import TYPED_TYPES
 from doc_intel.templates.anchors_pptx import keyed_shapes
 from doc_intel.writers import WriteItem
 from doc_intel.writers.runs import (
@@ -63,7 +64,13 @@ def write(template: bytes, items: list[WriteItem]) -> tuple[bytes, list[MappingW
                 warnings.append(MappingWarning(field_id=field.field_id, code="table_overflow"))
         elif field.write_mode == "replace_token":
             token = field.constraints.token or ""
-            replace_token(paragraphs_of(container, A), token, "; ".join(texts(item.content)), A)
+            replace_token(
+                paragraphs_of(container, A),
+                token,
+                "; ".join(texts(item.content)),
+                A,
+                typed=field.expected_type in TYPED_TYPES,
+            )
         else:
             write_paragraphs(paragraphs_of(container, A), texts(item.content), A)
     out = BytesIO()

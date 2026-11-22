@@ -35,11 +35,46 @@ _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
 CONF_TYPED, CONF_TEXT, CONF_PARTIAL = 0.9, 0.8, 0.5
 
 
-def share_key(field: IRField) -> tuple[str, str, str] | None:
-    """Fields with an equal key are one repeated token: they share one answer and one edit. The
-    label is in the key because generic blanks ("____", "XXX") repeat with different meanings."""
+def share_key(field: IRField) -> tuple[str, str]:
+    """Fields with an equal key are one fact: they share one answer and one edit. A named
+    placeholder (`{{x}}`, `[x]`, `<x>`) is a variable, so the same name is the same fact and the
+    label is ignored (the IR labels each slide differently). A generic blank ("____", "XXX",
+    "TBD") or a tokenless field shares only on an equal label and type."""
     token = field.constraints.token if field.write_mode == "replace_token" else None
-    return (token, field.expected_type, field.label.casefold()) if token else None
+    named = token.strip("{}[]<> ") if token and token.startswith(("{{", "[", "<")) else ""
+    fact = normalize(named or field.label).replace("_", " ").replace("-", " ")
+    return " ".join(fact.split()), field.expected_type
+
+
+_SLIDE = re.compile(r"^pptx:s(\d+):")
+_DOCX_TABLE = re.compile(r"^docx:body:t\d+:")
+
+
+def _unit(field: IRField) -> object:
+    """The slide (pptx), sheet (xlsx) or heading section (docx) the field sits in."""
+    if m := _SLIDE.match(field.anchor_id):
+        return m[1]
+    if field.anchor_id.startswith("xlsx:"):
+        return field.anchor_id.rsplit("!", 1)[0]
+    # shortcut: docx sections come from the LLM-copied section_path, read the AnchorMap path if
+    # the model ever rewrites it.
+    path = field.section_path[:-1] if _DOCX_TABLE.match(field.anchor_id) else field.section_path
+    return tuple(path)  # a table cell's "Table N" is dropped: cards under one heading are slots
+
+
+def shared_facts(fields: list[IRField]) -> dict[str, tuple[str, str]]:
+    """field_id -> `share_key` for the fields that share one answer and one edit: copies of one
+    key on different slides, sheets or docx sections. A key seen twice in one of them is a
+    repeating slot (three risk cards with `[Risk]`), so none of its fields are shared."""
+    keys = {f.field_id: share_key(f) for f in fields}
+    units: dict[tuple[str, str], list[object]] = {}
+    for f in fields:
+        units.setdefault(keys[f.field_id], []).append(_unit(f))
+    return {
+        fid: key
+        for fid, key in keys.items()
+        if len(units[key]) > 1 and len(set(units[key])) == len(units[key])
+    }
 
 
 def field_query(field: IRField) -> str:

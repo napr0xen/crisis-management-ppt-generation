@@ -9,6 +9,7 @@ from docx.oxml.ns import qn
 from lxml import etree
 
 from doc_intel.mapping.schemas import MappingWarning
+from doc_intel.mapping.verifier import TYPED_TYPES
 from doc_intel.templates.schemas import IRField
 from doc_intel.writers import WriteItem
 from doc_intel.writers.runs import (
@@ -87,14 +88,16 @@ def _write_item(
             return [MappingWarning(field_id=field.field_id, code="table_overflow")]
         return []
     items, token = texts(item.content), field.constraints.token or ""
+    typed = field.expected_type in TYPED_TYPES
     if target.tag == qn("w:sdt"):  # type: ignore[attr-defined]
-        _write_sdt(target, field.write_mode, token, items)  # type: ignore[arg-type]
+        _write_sdt(target, field.write_mode, token, items, typed)  # type: ignore[arg-type]
     else:  # w:p or w:tc
         _write_paragraphs(
             paragraphs_of(target, W) if target.tag == qn("w:tc") else [target],  # type: ignore[attr-defined,arg-type]
             field.write_mode,
             token,
             items,
+            typed,
             protected,
         )
     return []
@@ -105,24 +108,25 @@ def _write_paragraphs(
     mode: str,
     token: str,
     items: list[str],
+    typed: bool,
     protected: frozenset[etree._Element] = frozenset(),
 ) -> None:
     if mode == "replace_token":
-        replace_token(paragraphs, token, "; ".join(items), W)
+        replace_token(paragraphs, token, "; ".join(items), W, typed)
     else:
         write_paragraphs(paragraphs, items, W, protected)
 
 
-def _write_sdt(sdt: etree._Element, mode: str, token: str, items: list[str]) -> None:
+def _write_sdt(sdt: etree._Element, mode: str, token: str, items: list[str], typed: bool) -> None:
     pr = sdt.find(qn("w:sdtPr"))
     placeholder = pr.find(qn("w:showingPlcHdr")) if pr is not None else None
     if placeholder is not None:
         pr.remove(placeholder)
     content = sdt.find(qn("w:sdtContent"))
     if content.find(qn("w:p")) is not None:  # block level: paragraph rules
-        _write_paragraphs(paragraphs_of(content, W), mode, token, items)
+        _write_paragraphs(paragraphs_of(content, W), mode, token, items, typed)
     elif mode == "replace_token":  # inline: the runs sit directly in sdtContent
-        replace_token([content], token, "; ".join(items), W)
+        replace_token([content], token, "; ".join(items), W, typed)
     else:
         set_paragraph(content, "; ".join(items), W)
     if placeholder is not None:  # the value must not render in the grey placeholder style
