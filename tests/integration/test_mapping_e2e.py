@@ -139,6 +139,8 @@ async def test_mapping_run_populates_misses_and_conflicts(
                 candidate("15,000", chunk_id(source, 2), "15,000 customers lost power"),
             ]
         ),
+        # the fixture's empty stakeholder table gets a fill_table_rows field from code
+        json.dumps({"rows": [], "not_found": True}),
     )
     await drain_one(migrated_db, vector_store, llm)
 
@@ -151,11 +153,11 @@ async def test_mapping_run_populates_misses_and_conflicts(
     assert body["summary"] == {
         "populated": 1,
         "partial": 0,
-        "missing": 1,
+        "missing": 2,
         "conflict": 1,
         "warnings": [],
     }
-    assert len(llm.calls) == 3
+    assert len(llm.calls) == 4
     assert seen == {fid: [f"Sib {fid}"] for fid in seen} and len(seen) == 3  # handler wiring
 
     summary = body["results"]["incident_summary"]

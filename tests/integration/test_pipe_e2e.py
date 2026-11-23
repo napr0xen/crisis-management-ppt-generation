@@ -50,6 +50,8 @@ class ScriptedLLM:
         if system == load_prompt("qa"):
             citation = {"marker": 1, "chunk_id": hit, "quote": QUOTE}
             return json.dumps({"answer_markdown": "A fire [1].", "citations": [citation]})
+        if system == load_prompt("table_rows"):  # the fixture's empty table (code-made field)
+            return json.dumps({"rows": [], "not_found": True})
         assert system == load_prompt("field_extract")
         self.extractions += 1
         if self.extractions == 1:
@@ -99,7 +101,8 @@ async def test_pipe_fills_template_then_answers_with_citations(migrated_db, vect
         descriptions = [s["description"] for s in statuses]
         # Job-stage statuses depend on poll timing; uploads are always reported.
         assert {"Uploading update.pptx", "Uploading sitrep.txt"} <= set(descriptions)
-        assert "**Template mapping finished:** 1 populated, 0 partial, 1 missing" in reply
+        # 2 missing: the spokesperson and the empty stakeholder table (a code-made field)
+        assert "**Template mapping finished:** 1 populated, 0 partial, 2 missing" in reply
         assert "- Spokesperson: not stated in the documents" in reply
         url = re.search(r"\[Download the filled template\]\((\S+)\)", reply).group(1)
         assert url.startswith(f"{PUBLIC}/v1/artifacts/")

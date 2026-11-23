@@ -76,6 +76,7 @@ async def test_round_trip(client, session, migrated_db, vector_store, user_a, pr
     llm = FakeLLM(
         extraction([candidate(value, chunk_id(source, 0), quote)]),
         extraction([], not_found=True),
+        json.dumps({"rows": [], "not_found": True}),  # pptx/docx: the empty table's code field
     )
     await drain_one(migrated_db, vector_store, llm)
 

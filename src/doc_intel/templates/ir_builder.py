@@ -15,10 +15,12 @@ import structlog
 from doc_intel.core.errors import IRInvalid
 from doc_intel.llm.gateway import RETRY_ECHO_CHARS, LLMClient, Messages, complete_json
 from doc_intel.llm.prompts import load_prompt
+from doc_intel.templates.anchors import has_letter
 from doc_intel.templates.schemas import (
     WRITE_MODE_KINDS,
     Anchor,
     AnchorMap,
+    Constraints,
     IRDraft,
     IRField,
     TemplateIR,
@@ -257,13 +259,21 @@ async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
     return draft
 
 
+# placeholder spellings of a month and a year (English, Spanish), and of a day
+_MONTH_YEAR = re.compile(r"(?i)^(?=.*\b(?:month|mon|mmm?|mes)\b)(?=.*\b(?:yyyy|yy|aaaa|aa)\b)")
+_DAY = re.compile(r"(?i)\b(?:dd?|day|d[ií]a)\b")
+
+
 def _with_anchor_data(f: IRField, a: Anchor) -> IRField:
     """context, card and a native chart's series columns come from the anchor, never the LLM; a
-    `#` token (`[# 1]`, `[# items]`) is a count, so it is a number whatever type the LLM chose."""
+    `#` token (`[# 1]`, `[# items]`) is a count, so it is a number, and a month-year token
+    (`[Month YYYY]`, `[MM/YYYY]`) is text, whatever type the LLM chose."""
     update: dict = {"context": a.context, "card": a.card}
     token = (f.constraints.token or "").strip("{[< ")
     if f.write_mode == "replace_token" and token.startswith("#"):
         update["expected_type"] = "number"
+    elif f.expected_type == "date" and _MONTH_YEAR.search(token) and not _DAY.search(token):
+        update["expected_type"] = "text"  # a day-less date is copied verbatim, never given a day
     if f.write_mode == "fill_chart" and a.chart:
         update["constraints"] = f.constraints.model_copy(
             update={"columns": list(a.chart.series) or None}
@@ -271,6 +281,47 @@ def _with_anchor_data(f: IRField, a: Anchor) -> IRField:
     elif f.write_mode == "insert_chart" and not f.constraints.columns:
         update["constraints"] = f.constraints.model_copy(update={"columns": [f.label]})
     return f.model_copy(update=update)
+
+
+def _empty_tables(amap: AnchorMap, fields: list[IRField], used: set[str]) -> list[IRField]:
+    """A `fill_table_rows` field for each native table no field touches whose header row names
+    every column and whose body is empty: such a table is a slot the IR model sometimes skips."""
+    # shortcut: a table meant to be filled by hand (a sign-off grid) also gets a field and a
+    # missing marker when the sources state no rows; add an IR-edit opt-out if users hit it.
+    touched = {_table_of(f.anchor_id) for f in fields}
+    tables: dict[str, dict[tuple[int, int], Anchor]] = {}
+    for a in amap.anchors:
+        if a.kind == "table_cell" and a.table and _CELL.search(a.anchor_id):
+            tables.setdefault(_table_of(a.anchor_id), {})[(a.table.row, a.table.col)] = a
+    added = []
+    for table, cells in tables.items():
+        headers = [" ".join(cells[rc].text.split()) for rc in sorted(cells) if rc[0] == 0]
+        body = [a for rc, a in cells.items() if rc[0] > 0]
+        first = cells.get((1, 0))
+        if table in touched or first is None or not headers or not all(map(has_letter, headers)):
+            continue
+        if any(a.text.strip() for a in body):
+            continue
+        n = 1
+        while f"table_rows_{n}" in used:
+            n += 1
+        used.add(f"table_rows_{n}")
+        added.append(
+            IRField(
+                field_id=f"table_rows_{n}",
+                anchor_id=first.anchor_id,
+                section_path=first.path,
+                label=" / ".join(headers)[:120],
+                description=f"One row per record, columns: {', '.join(headers)}."[:500],
+                expected_type="table",
+                required=False,
+                write_mode="fill_table_rows",
+                constraints=Constraints(
+                    columns=headers, max_items=len({rc[0] for rc in cells if rc[0] > 0})
+                ),
+            )
+        )
+    return added
 
 
 async def build_ir(
@@ -304,6 +355,7 @@ async def build_ir(
             fields.append(f)
             if f.write_mode == "fill_table_rows":
                 owned.add(_table_of(f.anchor_id))
+    fields += _empty_tables(amap, fields, used)
     errors = validate(IRDraft(fields=fields), amap) if fields else []
     if not fields or errors:
         log.warning("ir_invalid", errors=_loggable(errors), anchor_count=len(amap.anchors))

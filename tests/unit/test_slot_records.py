@@ -345,6 +345,27 @@ async def test_requoting_reads_only_cited_chunks_and_needs_two_cells_on_one_line
     assert results["c3_0"].status == "missing"
 
 
+DUPES = {
+    "kpi": ([("Value", "number"), ("Cycle days", "number")], "Median cycle is 4.6 days.", "4.6"),
+    "weather": ([("Reading", "percent"), ("Humidity", "percent")], "Humidity hit 81%.", "81%"),
+}
+
+
+@pytest.mark.parametrize("name", DUPES)
+async def test_a_tile_never_repeats_one_value_in_two_slots(name):
+    slots, sentence, value = DUPES[name]
+    other = "A second reading of 12 was logged later."
+    hit = _hit(f"{sentence}\n{other}")
+    fields = _tiles(slots, cards=2)
+    reply = _records_reply(
+        [(1, [value, value], [(hit, sentence)]), (2, ["12", ""], [(hit, other)])]
+    )
+    results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), FakeLLM(reply))
+    assert results["c1_0"].status == "populated"
+    assert (results["c1_1"].status, results["c1_1"].value) == ("missing", None)
+    assert results["c2_0"].status == "populated"
+
+
 async def test_an_empty_records_reply_is_logged_without_document_text():
     fields, hit, *_ = _setup("museum")
     with capture_logs() as logs:

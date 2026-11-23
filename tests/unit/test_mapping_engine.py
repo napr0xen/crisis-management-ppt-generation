@@ -621,23 +621,24 @@ def _reply_for(value, h, quote):
 
 
 @pytest.mark.parametrize(
-    "context, label, quote, value",
+    "context, label, quote, value, sibling_card",
     [
-        ("Radiology", "Median wait", "Emergency department waited 47 minutes.", "47"),
-        ("Maize", "Average yield", "Wheat plots yielded 6.8 tonnes per hectare.", "6.8"),
+        ("Radiology", "Median wait", "Emergency department waited 47 minutes.", "47", "Emergency"),
+        ("Maize", "Average yield", "Wheat plots yielded 6.8 tonnes per hectare.", "6.8", "Wheat"),
     ],
 )
 async def test_sibling_only_values_are_missing_and_matching_ones_are_populated(
-    context, label, quote, value
+    context, label, quote, value, sibling_card
 ):
     h = _hit(quote)
     field = _field("number").model_copy(update={"context": context, "label": label})
+    others = [sibling_card]  # the check runs for slots with sibling headings only
     sibling = FakeLLM(_reply_for(value, h, quote), _CHECK_NO)
-    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), sibling)
+    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), sibling, others)
     assert (r.status, r.missing_reason) == ("missing", "not_found_by_llm")
     assert len(sibling.calls) == 2
     match = FakeLLM(_reply_for(value, h, quote), _CHECK_YES)
-    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), match)
+    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), match, others)
     assert r.status == "populated" and r.evidence[0].chunk_id == h.chunk_id
 
 
@@ -645,7 +646,7 @@ async def test_context_check_failure_is_missing_llm_error():
     h = _hit("Emergency department waited 47 minutes.")
     field = _field("number").model_copy(update={"context": "Radiology"})
     llm = FakeLLM(_reply_for("47", h, "waited 47 minutes"), "bad", "worse")
-    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), llm)
+    r = await map_field(CTX, field, DOCS, FakeRetriever([h]), llm, ["Emergency"])
     assert (r.status, r.missing_reason) == ("missing", "llm_error")
 
 
@@ -668,6 +669,7 @@ async def test_two_values_under_the_same_heading_stay_a_conflict():
         DOCS,
         FakeRetriever([a, b]),
         FakeLLM(reply, _CHECK_YES),
+        ["Barley"],
     )
     assert r.status == "conflict"
 

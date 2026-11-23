@@ -61,6 +61,8 @@ class ScriptedLLM:
         if system == load_prompt("template_ir"):
             self.ir_calls += 1
             return draft_reply("pptx")
+        if system == load_prompt("table_rows"):  # the fixture's empty table (code-made field)
+            return json.dumps({"rows": [], "not_found": True})
         assert system == load_prompt("field_extract")
         self.extractions += 1
         hit = CHUNK_ID.search(user).group(1)

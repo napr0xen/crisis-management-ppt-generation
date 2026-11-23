@@ -45,6 +45,7 @@ from doc_intel.mapping.verifier import (
     TYPED_TYPES,
     canonical_value,
     normalize,
+    source_text,
     supported,
     value_in_quotes,
     verify_quote,
@@ -259,7 +260,11 @@ async def map_field(
         return _missing(field, "no_relevant_chunks", document_ids)
     try:
         extraction = await extract(llm, field, hits)
-        extraction = await check_candidates(llm, field, hits, extraction, other_headings)
+        if notes := _rule_notes(field, hits, extraction):  # one corrective retry, never a loop
+            extraction = await extract(llm, field, hits, retry=(extraction, notes))
+        # the heading check keeps sibling cards' values out (Phase 14), so it needs siblings
+        if other_headings:
+            extraction = await check_candidates(llm, field, hits, extraction, other_headings)
     except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
         return _missing(field, "llm_error", document_ids)
     result = resolve(field, hits, extraction, checked_documents=document_ids)
@@ -360,27 +365,107 @@ def _cell_value(cell: str, expected_type: str) -> tuple[Value, Any] | None:
     return _convert([cell] if expected_type in _LISTS else cell, expected_type)
 
 
+def _located(hits: list[Hit], chunk_id: str, quote: str) -> list[tuple[Hit, str]]:
+    """(hit, quote) for a quote, verbatim in its cited hit. When it is not there but the cited
+    chunk was retrieved, the quote, else each of its lines, may be found in that chunk or a
+    retrieved chunk right before or after it (a small model cites the heading chunk next to a
+    table, or glues a table's header onto a later row). An unretrieved chunk id finds nothing."""
+    if (hit := verify_quote(hits, chunk_id, quote)) is not None:
+        return [(hit, quote)]
+    cited = next((h for h in hits if str(h.chunk_id) == chunk_id.strip().lower()), None)
+    if cited is None:
+        return []
+    near = [cited] + [
+        h
+        for h in hits
+        if cited.chunk_index is not None
+        and h.document_id == cited.document_id
+        and h.chunk_index is not None
+        and abs(h.chunk_index - cited.chunk_index) == 1
+    ]
+    lines = [line.strip() for line in quote.splitlines()] if "\n" in quote else []
+    found = []
+    for part in [quote, *lines]:
+        if sum(map(str.isalnum, part)) < MIN_QUOTE_CHARS:
+            continue  # a separator row such as "| --- | --- |"
+        if hit := next((h for h in near if verify_quote([h], str(h.chunk_id), part)), None):
+            found.append((hit, part))
+            if part is quote:
+                break
+    return found
+
+
 def _evidence(hits: list[Hit], quotes: list[LLMQuote]) -> list[Evidence]:
-    """The quotes that verify against `hits`, with the hit's metadata."""
+    """The quotes that verify against `hits` (see `_located`), with the hit's metadata."""
     evidence: list[Evidence] = []
     seen: set[tuple[Any, str]] = set()
     for q in quotes:
         if not MIN_QUOTE_CHARS <= len(q.quote) <= MAX_QUOTE_CHARS:
             continue
-        hit = verify_quote(hits, q.chunk_id, q.quote)
-        if hit is not None and (hit.chunk_id, q.quote) not in seen:
-            seen.add((hit.chunk_id, q.quote))
-            evidence.append(
-                Evidence(
-                    document_id=hit.document_id,
-                    chunk_id=hit.chunk_id,
-                    filename=hit.filename,
-                    page_number=hit.page_number,
-                    section_heading=hit.section_heading,
-                    quote=q.quote,
+        for hit, quote in _located(hits, q.chunk_id, q.quote):
+            if (hit.chunk_id, quote) not in seen:
+                seen.add((hit.chunk_id, quote))
+                evidence.append(
+                    Evidence(
+                        document_id=hit.document_id,
+                        chunk_id=hit.chunk_id,
+                        filename=hit.filename,
+                        page_number=hit.page_number,
+                        section_heading=hit.section_heading,
+                        quote=quote,
+                    )
                 )
-            )
     return evidence
+
+
+_PLAIN_NUMBER = re.compile(r"[\d.,\s]+")
+_CELL_BREAK = " | "  # a markdown cell boundary: the value is several table cells
+
+
+def _is_count(field: IRField) -> bool:
+    token = field.constraints.token if field.write_mode == "replace_token" else None
+    return bool(token) and token.strip("{[< ").startswith("#")
+
+
+def _names(label: str, quotes: list[str]) -> bool:
+    """Every word of `label` is in the quotes: a word of 5+ letters by its first 5 (inflection,
+    a PDF line break inside it), a shorter one whole. Words under 4 letters ("to", "of") are
+    skipped unless the label has no longer one ("RFx")."""
+    have = set(re.findall(r"[^\W\d_]+", normalize(" ".join(quotes))))
+    words = re.findall(r"[^\W\d_]+", normalize(label))
+    words = [w for w in words if len(w) >= 4] or words
+    return bool(words) and all(
+        any(h.startswith(w[:5]) for h in have) if len(w) >= 5 else w in have for w in words
+    )
+
+
+def _rule_note(field: IRField, value: Any, quotes: list[str]) -> str | None:
+    """Why a verified candidate breaks the slot's own rules (said back to the LLM), else None. A
+    `#` count is a whole number with no unit, stated for the slot's own label (the last part of
+    its context): never a headline total or an amount. A text slot is one cell, never a row."""
+    if _is_count(field):
+        own = (field.context or field.label).rsplit(" / ", 1)[-1]
+        span = source_text(value, "number", quotes)
+        whole = isinstance(canonical_value(value, "number"), int)
+        if not whole or span is None or not _PLAIN_NUMBER.fullmatch(span):
+            return f"{str(value)[:40]!r} is not a whole count with no unit or magnitude."
+        if not _names(own, quotes):
+            return f"no quote states {str(value)[:40]!r} as the count for {own[:80]!r}."
+    if field.expected_type == "text" and _CELL_BREAK in str(value):
+        return "the value copies several table cells; give only the one cell this slot asks for."
+    return None
+
+
+def _rule_notes(field: IRField, hits: list[Hit], extraction: LLMExtraction[Any]) -> list[str]:
+    """One note per candidate when every candidate verifies but breaks a slot rule, else []."""
+    notes = []
+    for cand in extraction.candidates:
+        quotes = [e.quote for e in _evidence(hits, cand.quotes)]
+        note = _rule_note(field, cand.value, quotes) if quotes else None
+        if note is None:
+            return []
+        notes.append(note)
+    return notes
 
 
 def _candidates(
@@ -392,6 +477,8 @@ def _candidates(
         evidence = _evidence(hits, cand.quotes)
         converted = _convert(cand.value, field.expected_type)
         if not evidence or converted is None:
+            continue
+        if _rule_note(field, cand.value, [e.quote for e in evidence]):
             continue
         if field.expected_type in TYPED_TYPES and not value_in_quotes(
             cand.value, field.expected_type, [e.quote for e in evidence]
@@ -640,6 +727,9 @@ def _record_results(
                 anchor not in by and all(any(_same_span(spans[s], o) for o in others) for s in by)
             ):
                 loose |= value is None  # an unsupported cell; a shifted one is just dropped
+                results[field.field_id] = _missing(field, "evidence_failed_verification", docs)
+            elif any(normalize(str(v)) == normalize(str(value[0])) for v, _ in kept.values()):
+                # one source value never fills two slots of one tile (a value and its caption)
                 results[field.field_id] = _missing(field, "evidence_failed_verification", docs)
             else:
                 kept[j] = (value[0], by)

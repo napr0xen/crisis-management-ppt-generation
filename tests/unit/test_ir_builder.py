@@ -718,3 +718,80 @@ async def test_other_tokens_keep_the_llm_type(token):
 
 def test_ir_prompt_never_skips_an_empty_native_table():
     assert "header row and empty body cells is always a slot" in load_prompt("template_ir")
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["[Month YYYY 1]", "[Mon YYYY]", "[MM/YYYY]", "[YYYY-MM]", "{{month yyyy}}", "[Mes AAAA]"],
+)
+async def test_a_month_year_token_is_text_not_a_day_less_date(token):
+    amap = AnchorMap(format="pptx", anchors=[_anchor("a1", tokens=[token])])
+    field = _field("a", "a1", "replace_token", token=token).model_copy(
+        update={"expected_type": "date"}
+    )
+    ir = await build_ir(FakeLLM(_reply(field)), amap, TID)
+    assert [f.expected_type for f in ir.fields] == ["text"]
+
+
+@pytest.mark.parametrize("token", ["[DD Month YYYY]", "[Date]", "{{due_date}}", "[Día Mes AAAA]"])
+async def test_a_date_token_with_a_day_stays_a_date(token):
+    amap = AnchorMap(format="pptx", anchors=[_anchor("a1", tokens=[token])])
+    field = _field("a", "a1", "replace_token", token=token).model_copy(
+        update={"expected_type": "date"}
+    )
+    ir = await build_ir(FakeLLM(_reply(field)), amap, TID)
+    assert [f.expected_type for f in ir.fields] == ["date"]
+
+
+def _grid(table, headers, body_rows, body_text=""):
+    def cell(r, c, h, text):
+        return _anchor(f"{table}:r{r}c{c}", "table_cell", text=text).model_copy(
+            update={"table": TableRef(row=r, col=c, header=h)}
+        )
+
+    head = [cell(0, c, h, h) for c, h in enumerate(headers)]
+    body = [
+        cell(r, c, h, body_text) for r in range(1, body_rows + 1) for c, h in enumerate(headers)
+    ]
+    return head + body
+
+
+EMPTY_TABLES = {
+    "pptx": ("pptx", "pptx:s9:sp10", "pptx:s9:p1", ["Action", "Owner", "Due"], 4),
+    "docx": ("docx", "docx:body:t0", "docx:body:p1", ["Destination", "Date", "Students"], 2),
+}
+
+
+@pytest.mark.parametrize("name", EMPTY_TABLES)
+async def test_an_empty_table_the_llm_skipped_gets_a_fill_table_rows_field(name):
+    fmt, table, para, headers, n = EMPTY_TABLES[name]
+    other = _anchor(para, tokens=["[Summary]"])
+    amap = AnchorMap(format=fmt, anchors=[other, *_grid(table, headers, n)])
+    llm = FakeLLM(_reply(_field("summary", para, "replace_token", token="[Summary]")))
+    ir = await build_ir(llm, amap, TID)
+    (f,) = [f for f in ir.fields if f.write_mode == "fill_table_rows"]
+    assert (f.anchor_id, f.expected_type, f.required) == (f"{table}:r1c0", "table", False)
+    assert f.constraints.columns == headers and f.constraints.max_items == n
+    assert all(h in f.label for h in headers)
+    # a template of nothing but an empty table is fillable too
+    amap = AnchorMap(format=fmt, anchors=_grid(table, headers, n))
+    ir = await build_ir(FakeLLM(IRDraft.model_construct(fields=[]).model_dump_json()), amap, TID)
+    assert [f.write_mode for f in ir.fields] == ["fill_table_rows"]
+
+
+@pytest.mark.parametrize("name", EMPTY_TABLES)
+async def test_a_used_static_or_headerless_table_gets_no_extra_field(name):
+    fmt, table, para, headers, n = EMPTY_TABLES[name]
+    other = _anchor(para, tokens=["[Summary]"])
+    summary = _field("summary", para, "replace_token", token="[Summary]")
+    amap = AnchorMap(format=fmt, anchors=[other, *_grid(table, headers, n)])
+    cell = _field("c", f"{table}:r2c1", "fill_cell")
+    ir = await build_ir(FakeLLM(_reply(summary, cell)), amap, TID)
+    assert [f.write_mode for f in ir.fields] == ["replace_token", "fill_cell"]
+    for anchors in (
+        _grid(table, headers, n, body_text="Done"),
+        _grid(table, [*headers[:-1], ""], n),
+    ):
+        amap = AnchorMap(format=fmt, anchors=[other, *anchors])
+        ir = await build_ir(FakeLLM(_reply(summary)), amap, TID)
+        assert [f.field_id for f in ir.fields] == ["summary"]

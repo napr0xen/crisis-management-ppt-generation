@@ -78,14 +78,32 @@ def bounded_field(field: IRField) -> IRField:
     )
 
 
-async def extract(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMExtraction[Any]:
-    """One schema-constrained call; `hits` must be the hits later used for verification."""
+async def extract(
+    llm: LLMClient,
+    field: IRField,
+    hits: list[Hit],
+    retry: tuple[LLMExtraction[Any], list[str]] | None = None,
+) -> LLMExtraction[Any]:
+    """One schema-constrained call; `hits` must be the hits later used for verification. `retry`
+    is an earlier reply and why its values break the slot's rules, for one corrective call."""
     spec = bounded_field(field).model_dump_json(include=_SPEC_FIELDS, exclude_none=True)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("field_extract")},
         {"role": "user", "content": f"Field:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
+    if retry:
+        earlier, notes = retry
+        listing = "\n".join(f"- {n}" for n in dict.fromkeys(notes))
+        messages += [
+            {"role": "assistant", "content": earlier.model_dump_json()[:RETRY_ECHO_CHARS]},
+            {
+                "role": "user",
+                "content": f"Those values do not fit this slot:\n{listing}\nReply with the "
+                "corrected full JSON: the value the chunks state for exactly this slot, or "
+                "not_found.",
+            },
+        ]
     return await complete_json(llm, messages, EXTRACTION_MODELS[field.expected_type])
 
 

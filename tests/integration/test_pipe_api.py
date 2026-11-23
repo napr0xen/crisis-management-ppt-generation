@@ -515,6 +515,7 @@ async def test_map_template_end_to_end(
             draft_reply("pptx"),
             extraction([candidate("Substation fire", chunk_id(source_id, 0), QUOTE)]),
             extraction([], not_found=True),
+            json.dumps({"rows": [], "not_found": True}),  # the empty table's code-made field
         ]
         set_intent(
             monkeypatch,
