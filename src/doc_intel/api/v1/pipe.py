@@ -10,7 +10,7 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, Form, Header, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doc_intel.api.v1.artifacts import artifact_out
@@ -59,6 +59,15 @@ class PipeChatIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     messages: Annotated[list[ChatMessage], Field(min_length=1, max_length=50)]
     files: Annotated[list[PipeFile], Field(max_length=200)] = []
+    # a UI that already knows the template skips the router LLM (at most one of the two)
+    library_template_id: uuid.UUID | None = None
+    template_document_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _one_template(self) -> "PipeChatIn":
+        if self.library_template_id and self.template_document_id:
+            raise ValueError("give at most one of library_template_id and template_document_id")
+        return self
 
 
 class PipeFileOut(BaseModel):
@@ -255,6 +264,16 @@ async def _flow(
         if doc.status == "failed":
             deltas.append(f"I could not read {md(doc.filename)}, so I skipped it.")
 
+    if body.library_template_id or body.template_document_id:
+        if body.library_template_id:
+            async with sessionmaker.begin() as session:
+                lib = await repo.get_library_template(session, body.library_template_id)
+            flow = _map_library(request, ctx, lib, deltas, out)
+        else:
+            flow = _map_template(request, ctx, body.template_document_id, deltas, out)
+        async for frame in flow:
+            yield frame
+        return
     async with sessionmaker.begin() as session:
         documents = await repo.list_documents(session, ctx, 200)
         library = await repo.list_library_templates(session)

@@ -16,7 +16,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:body:p3",
@@ -34,7 +35,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:body:p4",
@@ -52,7 +54,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:body:t0:r0c0",
@@ -73,7 +76,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:body:t0:r0c1",
@@ -94,7 +98,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:body:t0:r0c2",
@@ -115,7 +120,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:body:t0:r1c0",
@@ -136,7 +142,8 @@
       "pos": null,
       "context": "Item",
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:body:t0:r1c2",
@@ -157,7 +164,8 @@
       "pos": null,
       "context": "Date",
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:sec1:header:p0",
@@ -175,7 +183,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:sec1:footer:p0",
@@ -191,7 +200,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "docx:sdt:owner",
@@ -204,7 +214,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     }
   ]
 }

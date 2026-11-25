@@ -57,6 +57,8 @@ def content(
     conflict_marker: str,
 ) -> Content:
     value, t = result.value, field.expected_type
+    if t in ("number", "currency", "percent") and isinstance(value, str):
+        t = "text"  # a table cell's word ("Preferred" under a number-typed Rating), verbatim
     if result.status == "missing":
         # replace, never str.format: the label comes from an LLM.
         items = [missing_marker.replace("{label}", field.label)]

@@ -15,12 +15,18 @@ from doc_intel.llm.gateway import (
 from doc_intel.llm.prompts import load_prompt
 from doc_intel.mapping.retriever import format_hit
 from doc_intel.mapping.schemas import (
+    Evidence,
     LLMCandidateCheck,
+    LLMCell,
     LLMExtraction,
     LLMRecords,
+    LLMRowChecks,
     LLMRows,
+    LLMSlotRoles,
+    LLMSlotValues,
     LLMSynthesis,
 )
+from doc_intel.mapping.verifier import normalize
 from doc_intel.templates.anchors import has_letter
 from doc_intel.templates.schemas import IRField
 
@@ -33,7 +39,15 @@ PROMPT_OVERHEAD_TOKENS = 3072
 MAX_CHART_POINTS = 24
 MAX_PRIMARY_HITS = 12  # ranked hits; the rest of the budget is neighbor chunks (retriever)
 
-_SPEC_FIELDS = {"label", "description", "section_path", "expected_type", "constraints", "context"}
+_SPEC_FIELDS = {
+    "label",
+    "description",
+    "section_path",
+    "expected_type",
+    "constraints",
+    "context",
+    "fit_chars",
+}
 _MAX_PATH_ELEMENTS, _MAX_PATH_ELEMENT_CHARS = 4, 120
 _MAX_LIST_ENTRIES, _MAX_ENTRY_CHARS = 30, 80
 EXTRACTION_MODELS: dict[str, type[LLMExtraction[Any]]] = {
@@ -139,7 +153,7 @@ async def synthesize(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMSynt
         return draft
 
 
-def _rows_spec(field: IRField) -> dict[str, Any]:
+def _rows_spec(field: IRField, other_headings: Sequence[str] = ()) -> dict[str, Any]:
     """The spec of a `fill_table_rows` field: its constraints name the columns."""
     first = bounded_field(field)
     columns: list[dict[str, Any]] = [{"label": c} for c in first.constraints.columns or []]
@@ -157,19 +171,35 @@ def _rows_spec(field: IRField) -> dict[str, Any]:
         "max_rows": max_rows,
         "section_path": first.section_path,
         "context": first.context,
+        "other_headings": list(other_headings) or None,
     }
     return {k: v for k, v in spec.items() if v is not None}
 
 
-async def extract_rows(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMRows:
+def _by_label(cells: list[LLMCell], labels: list[str]) -> list[LLMCell]:
+    """The cells in spec order when each spec label names exactly one cell, else as replied."""
+    names = [normalize(c.slot) for c in cells]
+    wanted = [normalize(label) for label in labels]
+    if sorted(names) != sorted(wanted) or len(set(wanted)) != len(wanted):
+        return cells
+    return [cells[names.index(w)] for w in wanted]
+
+
+async def extract_rows(
+    llm: LLMClient, field: IRField, hits: list[Hit], other_headings: Sequence[str] = ()
+) -> LLMRows:
     """One schema-constrained call for a `fill_table_rows` field; `hits` verify it later."""
-    spec = json.dumps(_rows_spec(field), ensure_ascii=False)
+    spec = json.dumps(_rows_spec(field, other_headings), ensure_ascii=False)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("table_rows")},
         {"role": "user", "content": f"Table:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
-    return await complete_json(llm, messages, LLMRows)
+    rows = await complete_json(llm, messages, LLMRows, think=True)
+    labels = [c["label"] for c in _rows_spec(field)["columns"]]
+    for row in rows.rows:
+        row.value = _by_label(row.value, labels)
+    return rows
 
 
 def _slot_spec(field: IRField) -> dict[str, Any]:
@@ -181,10 +211,12 @@ def _slot_spec(field: IRField) -> dict[str, Any]:
     token = field.constraints.token if field.write_mode == "replace_token" else None
     if token and (inner := token.strip("{}[]<> ")):
         spec["placeholder"] = inner
+    if field.fit_chars:
+        spec["fit_chars"] = field.fit_chars
     return spec
 
 
-def _records_spec(group: list[list[IRField]]) -> dict[str, Any]:
+def _records_spec(group: list[list[IRField]], other_headings: Sequence[str] = ()) -> dict[str, Any]:
     """One record per slot row. A record's context is the first of its fields' contexts with a
     letter; equal contexts (and lists, whose slots share one heading) are sent once on top."""
     rows = [list(map(bounded_field, row)) for row in group]
@@ -196,21 +228,58 @@ def _records_spec(group: list[list[IRField]]) -> dict[str, Any]:
         record: dict[str, Any] = {"n": n, "slots": [_slot_spec(f) for f in row]}
         records.append({**record, "context": context} if keyed and context else record)
     top = None if keyed else next((c for c in contexts if c), None)
-    spec = {"records": records, "section_path": rows[0][0].section_path, "context": top}
+    spec = {
+        "records": records,
+        "section_path": rows[0][0].section_path,
+        "context": top,
+        "other_headings": None if keyed else list(other_headings) or None,
+    }
     return {k: v for k, v in spec.items() if v is not None}
 
 
+def _batch_spec(fields: list[IRField]) -> dict[str, Any]:
+    slots = []
+    for n, field in enumerate(map(bounded_field, fields), start=1):
+        slot: dict[str, Any] = {"n": n, **_slot_spec(field)}
+        if field.context is not None:
+            slot["context"] = field.context
+        if constraints := field.constraints.model_dump(exclude_none=True):
+            slot["constraints"] = constraints
+        slots.append(slot)
+    return {"slots": slots, "section_path": bounded_field(fields[0]).section_path}
+
+
+async def extract_batch(llm: LLMClient, fields: list[IRField], hits: list[Hit]) -> LLMSlotValues:
+    """One schema-constrained call for the loose slots of one unit; `hits` verify it later."""
+    spec = json.dumps(_batch_spec(fields), ensure_ascii=False)
+    sources = "\n\n".join(format_hit(h) for h in hits)
+    messages = [
+        {"role": "system", "content": load_prompt("slot_values")},
+        {"role": "user", "content": f"Slots:\n{spec}\n\nChunks:\n\n{sources}"},
+    ]
+    return await complete_json(llm, messages, LLMSlotValues)
+
+
 async def extract_records(
-    llm: LLMClient, group: list[list[IRField]], hits: list[Hit]
+    llm: LLMClient,
+    group: list[list[IRField]],
+    hits: list[Hit],
+    other_headings: Sequence[str] = (),
 ) -> LLMRecords:
     """One schema-constrained call for a slot group (tiles, grids, lists); `hits` verify it."""
-    spec = json.dumps(_records_spec(group), ensure_ascii=False)
+    spec = json.dumps(_records_spec(group, other_headings), ensure_ascii=False)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("slot_records")},
         {"role": "user", "content": f"Records:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
-    return await complete_json(llm, messages, LLMRecords)
+    # several rows are several entities to tell apart: that is where reasoning pays
+    records = await complete_json(llm, messages, LLMRecords, think=len(group) >= 2)
+    for record in records.records:
+        if 1 <= record.n <= len(group):
+            labels = [bounded_field(f).label for f in group[record.n - 1]]
+            record.value = _by_label(record.value, labels)
+    return records
 
 
 _MAX_CHECKED, _MAX_QUOTES_PER_CANDIDATE, _MAX_QUOTE, _MAX_BEFORE = 10, 3, 1000, 500
@@ -264,3 +333,53 @@ async def check_candidates(
     if any(c.match for c in verdict.checks):
         return extraction
     return LLMExtraction(candidates=[], not_found=True, incomplete=extraction.incomplete)
+
+
+async def check_rows(
+    llm: LLMClient, context: str, other_headings: Sequence[str], rows: list[tuple[list[str], str]]
+) -> list[bool]:
+    """Per (cells, quote) row: False only when the check judges it `other` (it contradicts the
+    heading or belongs to a sibling heading); `unknown` keeps it. A reply that does not give one
+    verdict per row keeps every row."""
+    user = {
+        "context": context[: _MAX_ENTRY_CHARS * 2],
+        "other_headings": list(other_headings) or None,
+        "rows": [
+            {"n": i, "values": [c[:200] for c in cells], "quote": quote[:_MAX_QUOTE]}
+            for i, (cells, quote) in enumerate(rows, start=1)
+        ],
+    }
+    messages = [
+        {"role": "system", "content": load_prompt("row_check")},
+        {
+            "role": "user",
+            "content": json.dumps({k: v for k, v in user.items() if v}, ensure_ascii=False),
+        },
+    ]
+    verdict = await complete_json(llm, messages, LLMRowChecks)
+    if len(verdict.checks) != len(rows):
+        return [True] * len(rows)
+    return [c.belongs != "other" for c in verdict.checks]
+
+
+async def check_roles(
+    llm: LLMClient, fields: list[IRField], value: str, evidence: list[Evidence]
+) -> set[str]:
+    """The field_ids among `fields` (slots of one box that got the same value) whose role the
+    quotes actually state; a transport error or `LLMInvalidOutput` propagates."""
+    slots = []
+    for i, f in enumerate(map(bounded_field, fields), start=1):
+        slots.append({"n": i, "label": f.label, "description": f.description})
+    quotes: list[dict[str, str]] = []
+    for e in evidence:
+        item = {"quote": e.quote[:_MAX_QUOTE], "section": e.section_heading}
+        item = {k: v for k, v in item.items() if v is not None}
+        if item not in quotes and len(quotes) < _MAX_CHECKED:  # the role may be in any slot's quote
+            quotes.append(item)
+    user = {"value": value[:200], "slots": slots, "quotes": quotes}
+    messages = [
+        {"role": "system", "content": load_prompt("slot_roles")},
+        {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+    ]
+    verdict = await complete_json(llm, messages, LLMSlotRoles)
+    return {fields[n - 1].field_id for n in verdict.slots if 1 <= n <= len(fields)}

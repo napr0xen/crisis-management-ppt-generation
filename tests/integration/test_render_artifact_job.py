@@ -15,9 +15,9 @@ from doc_intel.db.session import make_engine
 from doc_intel.ingestion.upload import artifact_key
 from doc_intel.jobs.handlers import _ARTIFACT_NS, make_failure_hooks
 from doc_intel.jobs.worker import run_one
-from doc_intel.mapping import engine as engine_mod
 from doc_intel.mapping.schemas import MappingWarning
 from doc_intel.storage.local import LocalStorage
+from tests.fakes import stub_field_mapping
 from tests.integration.test_run_mapping_job import (
     handlers_for,
     missing,
@@ -111,7 +111,7 @@ async def test_run_mapping_renders_artifact_with_merged_warnings(sm, user_a, fak
     async def fake_map(c, field, document_ids, retriever, llm, other_headings=()):
         return missing(field, document_ids)
 
-    monkeypatch.setattr(engine_mod, "map_field", fake_map)
+    stub_field_mapping(monkeypatch, fake_map)
     await run_one(sm, handlers_for(sm), make_failure_hooks(sm))
 
     run, job = await state(sm, ctx, run_id, job_id)

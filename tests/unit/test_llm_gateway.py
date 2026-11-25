@@ -47,6 +47,8 @@ def _openai(
     num_ctx: int = 32768,
     think: bool = False,
     template_kwargs: bool = False,
+    hybrid: bool = False,
+    budget: int = 3,
 ) -> OpenAICompatClient:
     return OpenAICompatClient(
         http,
@@ -57,6 +59,8 @@ def _openai(
         120.0,
         think,
         template_kwargs,
+        hybrid,
+        budget,
     )
 
 
@@ -398,3 +402,104 @@ async def test_retry_feedback_for_unparsable_json_says_so():
     llm = FakeLLM("not json", '{"answer": "Paris"}')
     await complete_json(llm, MESSAGES, Out)
     assert "Invalid JSON" in llm.calls[1][0][-1]["content"]
+
+
+def _sse(*deltas: dict) -> bytes:
+    lines = [f"data: {json.dumps({'choices': [{'delta': d}]})}\n\n" for d in deltas]
+    return "".join([*lines, "data: [DONE]\n\n"]).encode()
+
+
+def _streaming(requests: list[httpx.Request], stream: bytes, second: str = "{}"):
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if json.loads(request.content).get("stream"):
+            return httpx.Response(200, content=stream)
+        return httpx.Response(200, json={"choices": [{"message": {"content": second}}]})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_think_flag_is_ignored_without_hybrid_and_by_ollama():
+    requests: list[httpx.Request] = []
+    http = _scripted(['{"answer": "x"}'], requests)
+    await _openai(http, template_kwargs=True).complete(MESSAGES, SCHEMA, think=True)
+    body = json.loads(requests[0].content)
+    assert "stream" not in body and body["chat_template_kwargs"] == {"enable_thinking": False}
+    requests.clear()
+    http = _mock(requests, {"message": {"content": "x"}})
+    await _ollama(http).complete(MESSAGES, think=True)
+    assert json.loads(requests[0].content)["think"] is False
+
+
+async def test_bounded_think_within_budget_streams_once_and_returns_the_answer():
+    requests: list[httpx.Request] = []
+    stream = _sse(
+        {"reasoning": "a"},
+        {"reasoning_content": "b"},
+        {"content": '{"answer":'},
+        {"content": '"x"}'},
+    )
+    http = _streaming(requests, stream)
+    client = _openai(http, template_kwargs=True, hybrid=True)
+    assert await client.complete(MESSAGES, SCHEMA, think=True) == '{"answer":"x"}'
+    [req] = requests
+    body = json.loads(req.content)
+    assert body["stream"] is True and body["thinking_budget"] == 3
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert body["max_tokens"] == 4096 + 3
+
+
+async def test_bounded_think_without_template_kwargs_sends_neither_field():
+    requests: list[httpx.Request] = []
+    http = _streaming(requests, _sse({"content": "ok"}))
+    await _openai(http, hybrid=True).complete(MESSAGES, think=True)
+    body = json.loads(requests[0].content)
+    assert body["stream"] is True
+    assert "chat_template_kwargs" not in body and "thinking_budget" not in body
+
+
+async def test_inline_think_in_content_counts_as_reasoning():
+    requests: list[httpx.Request] = []
+    stream = _sse(
+        {"content": "<think>"}, {"content": "a"}, {"content": "</think>"}, {"content": "hi"}
+    )
+    http = _streaming(requests, stream)
+    assert await _openai(http, hybrid=True).complete(MESSAGES, think=True) == "hi"
+    assert len(requests) == 1
+
+
+async def test_bounded_think_overrun_makes_exactly_one_non_thinking_second_pass():
+    requests: list[httpx.Request] = []
+    stream = _sse(*({"reasoning": f"r{i} "} for i in range(50)))
+    http = _streaming(requests, stream, second='{"answer": "x"}')
+    client = _openai(http, template_kwargs=True, hybrid=True)
+    assert await client.complete(MESSAGES, SCHEMA, think=True) == '{"answer": "x"}'
+    assert len(requests) == 2
+    second = json.loads(requests[1].content)
+    assert "stream" not in second and "thinking_budget" not in second
+    assert second["chat_template_kwargs"] == {"enable_thinking": False}
+    assert second["max_tokens"] == 4096
+    last = second["messages"][-1]["content"]
+    assert "Your reasoning so far (cut at the thinking budget):\nr0 r1 r2 r3 " in last
+    assert "Now reply with only the answer." in last
+
+
+async def test_bounded_think_transport_error_is_an_llm_error():
+    http = _mock([], {}, status=500)
+    with pytest.raises(LLMError, match="HTTPStatusError") as exc:
+        await _openai(http, hybrid=True).complete(MESSAGES, think=True)
+    assert "secret" not in str(exc.value)
+
+
+def test_make_llm_client_passes_hybrid_settings():
+    s = Settings(
+        llm_provider="openai_compat", llm_hybrid_thinking=True, llm_thinking_budget_tokens=7
+    )
+    client = make_llm_client(s, httpx.AsyncClient())
+    assert client._hybrid is True and client._budget == 7
+
+
+async def test_complete_json_passes_think_on_every_attempt():
+    llm = FakeLLM("nope", '{"answer": "x"}')
+    await complete_json(llm, MESSAGES, Out, think=True)
+    assert llm.thinks == [True, True]

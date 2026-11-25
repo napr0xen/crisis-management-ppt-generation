@@ -31,6 +31,10 @@ def _tokenizer(model: str) -> Tokenizer:
     return Tokenizer.from_pretrained(model)
 
 
+def count_tokens(text: str, model: str) -> int:
+    return len(_tokenizer(model).encode(text).ids)
+
+
 def parse_and_chunk(
     data: bytes,
     ext: str,
@@ -46,12 +50,11 @@ def parse_and_chunk(
     except Exception as exc:
         # The parser's message may quote file content; only the code travels on.
         raise ParseError() from exc
-    tokenizer = _tokenizer(tokenizer_model)
     chunks = chunk(
         parsed,
         document_id=document_id,
         filename=filename,
         max_tokens=max_tokens,
-        count_tokens=lambda text: len(tokenizer.encode(text).ids),
+        count_tokens=lambda text: count_tokens(text, tokenizer_model),
     )
     return parsed, chunks

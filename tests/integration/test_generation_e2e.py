@@ -17,7 +17,7 @@ from doc_intel.vector.qdrant_store import chunk_id
 from tests.conftest import headers
 from tests.fakes import FakeEmbedder, FakeLLM
 from tests.integration.test_extract_template_job import queue_job
-from tests.integration.test_mapping_e2e import candidate, drain_one, extraction
+from tests.integration.test_mapping_e2e import batch, candidate, drain_one, extraction
 from tests.integration.test_mapping_runs_api import seed_document
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue", "one_ir_batch")]
@@ -73,9 +73,12 @@ async def test_round_trip(client, session, migrated_db, vector_store, user_a, pr
 
     value = CASES[fmt][3]
     quote = CUSTOMERS_QUOTE if fmt == "xlsx" else QUOTE
+    found = [candidate(value, chunk_id(source, 0), quote)]
+    # found and lost share a unit (one batch call) except in pptx, where the lone `found` is a
+    # batch of one on the opening slide and `lost` is mapped alone on slide 2
+    slots = [batch(found), extraction([], not_found=True)] if fmt == "pptx" else [batch(found, [])]
     llm = FakeLLM(
-        extraction([candidate(value, chunk_id(source, 0), quote)]),
-        extraction([], not_found=True),
+        *slots,
         json.dumps({"rows": [], "not_found": True}),  # pptx/docx: the empty table's code field
     )
     await drain_one(migrated_db, vector_store, llm)

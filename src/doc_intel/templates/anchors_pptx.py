@@ -39,6 +39,35 @@ def keyed_shapes(shapes: Iterable[BaseShape]) -> Iterator[tuple[str, BaseShape]]
         yield f"sp{shape.shape_id}" if k == 1 else f"sp{shape.shape_id}_{k}", shape
 
 
+# average glyph width and line height as fractions of the font size; writers/pptx_writer._fit
+# shrinks text with the same numbers
+GLYPH_EM = 0.55
+LINE_EM = 1.2
+DEFAULT_PT = 18.0
+EMU_PT = 12700
+
+
+def _fit_chars(shape: BaseShape, own: str, tokens: list[str]) -> int | None:
+    """About how many characters fit one token of a text box: its capacity minus the static text,
+    shared between its distinct tokens; None without geometry or room."""
+    if not shape.width or not shape.height:
+        return None
+    frame = shape.text_frame
+    width = (shape.width - frame.margin_left - frame.margin_right) / EMU_PT
+    height = (shape.height - frame.margin_top - frame.margin_bottom) / EMU_PT
+    # shortcut: inherited sizes (lstStyle/master) are not read, assumes 18pt like the writer; read
+    # them if templates rely on inheritance.
+    size = max(
+        (r.font.size.pt for p in frame.paragraphs for r in p.runs if r.font.size),
+        default=DEFAULT_PT,
+    )
+    capacity = int((width / (GLYPH_EM * size)) * (height / (LINE_EM * size)))
+    for token in tokens:
+        own = own.replace(token, " ")
+    left = (capacity - len(" ".join(own.split()))) // max(1, len(set(tokens)))
+    return left if left >= 1 else None
+
+
 def _layout_text(slide: Slide, shape: BaseShape) -> str:
     for ph in slide.slide_layout.placeholders:
         if ph.placeholder_format.idx == shape.placeholder_format.idx and ph.has_text_frame:
@@ -261,10 +290,13 @@ def extract(data: bytes) -> list[Anchor]:
                         pos=pos,
                         context=ctx,
                         card=cards.get(key),
+                        fit_chars=_fit_chars(shape, own, tokens) if tokens or not own else None,
                     )
                 )
             elif shape.has_table:
                 rows = shape.table.rows
+                found = _context(shape, headings, prs.slide_width, prs.slide_height)
+                heading = found if has_letter(found) else None
                 headers = [c.text.strip() or None for c in rows[0].cells]
                 for r, row in enumerate(rows):
                     texts = [cell.text for cell in row.cells]
@@ -273,6 +305,9 @@ def extract(data: bytes) -> list[Anchor]:
                             continue
                         text = cell.text
                         tokens = find_tokens(text)
+                        own = cell_context(texts, c, headers[c]) if r else None
+                        # the heading keeps side-by-side tables with equal headers apart
+                        ctx = " / ".join(p for p in (heading, own) if p) or None
                         anchors.append(
                             Anchor(
                                 anchor_id=f"{base}:r{r}c{c}",
@@ -281,9 +316,11 @@ def extract(data: bytes) -> list[Anchor]:
                                 text=text,
                                 tokens=tokens,
                                 is_placeholder=bool(tokens) or not text,
+                                # shortcut: no fit_chars for table cells (column widths and row
+                                # growth differ), estimate from the column width if cells overflow.
                                 table=TableRef(row=r, col=c, header=headers[c]),
                                 pos=pos,
-                                context=cell_context(texts, c, headers[c]) if r else None,
+                                context=ctx,
                                 card=cards.get(key),
                             )
                         )

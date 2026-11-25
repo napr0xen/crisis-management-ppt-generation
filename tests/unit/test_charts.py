@@ -21,6 +21,7 @@ from doc_intel.writers.markers import content
 from doc_intel.writers.pptx_writer import chart_type_for
 from tests.fakes import FakeLLM
 from tests.unit.test_mapping_engine import CTX, DOCS, FakeRetriever, _hit
+from tests.unit.test_row_groups import _cells
 
 # ---- scanner ----------------------------------------------------------------------------------
 
@@ -183,7 +184,7 @@ def _rows(hit, rows):
     return LLMRows.model_validate(
         {
             "rows": [
-                {"value": c, "quotes": [{"chunk_id": str(hit.chunk_id), "quote": q}]}
+                {"value": _cells(c), "quotes": [{"chunk_id": str(hit.chunk_id), "quote": q}]}
                 for c, q in rows
             ],
             "not_found": False,
@@ -372,7 +373,7 @@ async def test_map_group_routes_a_chart_through_the_row_call_with_a_chart_spec()
         {
             "rows": [
                 {
-                    "value": [m, v],
+                    "value": _cells([m, v]),
                     "quotes": [{"chunk_id": str(hit.chunk_id), "quote": q}],
                 }
                 for m, v, q in [

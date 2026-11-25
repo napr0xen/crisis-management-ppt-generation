@@ -14,7 +14,7 @@ Project: local-first, domain-agnostic **Document Intelligence & Template Mapping
 | `docs/implementation-roadmap.md` | phases 0–12, entry/exit gates, status |
 | `docs/development-guidelines.md` | layout, typing, async, errors, logging, `.env` vars, git |
 | `docs/testing-strategy.md` | test layers, security gates, eval metrics, fidelity checks |
-| `docs/DECISIONS.md` | ADR-001…ADR-013 |
+| `docs/DECISIONS.md` | ADR-001…ADR-014 |
 
 Never invent a table, column, endpoint, env var, or path name: use the docs. If code and docs disagree, fix whichever is wrong **in the same commit**.
 
@@ -26,6 +26,7 @@ All code lives in `src/doc_intel/`:
 
 Elsewhere:
 - Pipe: `integrations/openwebui/doc_intel_pipe.py`;
+- custom web UI: `frontend/` (React + TypeScript + Vite + Tailwind, `npm run build`);
 - migrations: `migrations/`;
 - tests: `tests/{unit,integration,security,eval,fixtures}/`.
 

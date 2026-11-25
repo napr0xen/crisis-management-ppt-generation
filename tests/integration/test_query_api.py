@@ -140,9 +140,9 @@ async def test_no_db_connection_is_held_while_the_llm_answers(
     checked_out = []
     complete = llm.complete
 
-    async def spy(messages, json_schema=None):
+    async def spy(messages, json_schema=None, think=False):
         checked_out.append(pool.checkedout())
-        return await complete(messages, json_schema)
+        return await complete(messages, json_schema, think)
 
     llm.complete = spy
     assert ask(client, user_a, project).json()["found"] is True

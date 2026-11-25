@@ -36,6 +36,8 @@ Why each choice was made: [DECISIONS.md](DECISIONS.md). Names: [data-model.md](d
                                                      └─────────────────────────────────┘
 ```
 
+A custom React UI (`frontend/`) talks to the same HTTP API as the Pipe: it is served at `/` by the API when `frontend/dist` is built (one port), or by the Vite dev server on `http://localhost:5173`, which the API allows through CORS. Open WebUI with the Pipe remains supported.
+
 ## 2. Ingestion flow
 
 ```

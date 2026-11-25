@@ -30,6 +30,9 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     seed.add_argument("--description", default="", help="short text shown next to the name")
     seed.add_argument("--category", default=None, help="optional grouping label")
     sub.add_parser("list-templates", help="list the library templates")
+    sub.add_parser(
+        "reset-library", help="delete every library template (files in TEMPLATES_DIR stay)"
+    )
     for command, text in (
         ("show-template", "show one template"),
         ("remove-template", "delete one"),
@@ -81,6 +84,14 @@ async def run(args, sessionmaker, storage: StorageBackend, llm: LLMClient) -> in
         elif args.command == "show-template":
             async with sessionmaker() as session:
                 _show(await repo.get_library_template(session, _template_id(args.id)))
+        elif args.command == "reset-library":
+            async with sessionmaker.begin() as session:
+                rows = await repo.list_library_templates(session)
+                for row in rows:
+                    await session.delete(row)
+            for row in rows:
+                await asyncio.to_thread(storage.delete, row.storage_key)
+            print(f"Removed {len(rows)} library templates")
         else:
             async with sessionmaker.begin() as session:
                 lib = await repo.delete_library_template(session, _template_id(args.id))

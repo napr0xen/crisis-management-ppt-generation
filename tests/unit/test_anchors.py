@@ -10,7 +10,7 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls, qn
 from openpyxl import Workbook
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 from structlog.testing import capture_logs
 
 from doc_intel.core.errors import ValidationFailed
@@ -273,3 +273,40 @@ def test_xlsx_neighbours_stay_inside_the_grid(label_cell, off_grid, on_grid):
     ids = {a.anchor_id for a in build_anchor_map("xlsx", _bytes(wb)).anchors}
     assert f"xlsx:S!{off_grid}" not in ids
     assert f"xlsx:S!{on_grid}" in ids
+
+
+def _fit_deck(text, width_in=4.0, height_in=1.0, size=20, geometry=True):
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(width_in), Inches(height_in))
+    box.text_frame.text = text
+    if size:
+        box.text_frame.paragraphs[0].runs[0].font.size = Pt(size)
+    if not geometry:
+        for tag in ("a:off", "a:ext"):
+            el = box._element.spPr.xfrm.find(qn(tag))
+            box._element.spPr.xfrm.remove(el)
+    return _bytes(prs)
+
+
+def _fit_of(data):
+    (anchor,) = build_anchor_map("pptx", data).anchors
+    return anchor.fit_chars
+
+
+def test_fit_chars_estimates_one_token_of_a_box():
+    # (4in - 0.2in insets) / (0.55 * 20pt) = 24.8 chars a line; (1in - 0.1in) / (1.2 * 20pt) = 2.7
+    assert _fit_of(_fit_deck("[Metric]")) == 67
+    # explicit sizes missing: 18 pt
+    assert _fit_of(_fit_deck("[Metric]", size=0)) == 82
+
+
+def test_fit_chars_subtracts_static_text_and_splits_between_tokens():
+    assert _fit_of(_fit_deck("[A] [B]")) == 33
+    assert _fit_of(_fit_deck("Owner: [A]")) == 67 - len("Owner:")
+
+
+def test_fit_chars_is_none_without_geometry_tokens_or_room():
+    assert _fit_of(_fit_deck("[Metric]", geometry=False)) is None
+    assert _fit_of(_fit_deck("finished text")) is None
+    assert _fit_of(_fit_deck("[Metric]", width_in=0.3, height_in=0.2)) is None

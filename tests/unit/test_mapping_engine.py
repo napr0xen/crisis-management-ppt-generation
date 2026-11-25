@@ -12,6 +12,8 @@ from doc_intel.llm.gateway import LLMError
 from doc_intel.mapping.engine import (
     field_query,
     map_field,
+    map_fields,
+    map_group,
     resolve,
     share_key,
     shared_facts,
@@ -19,9 +21,11 @@ from doc_intel.mapping.engine import (
     summarize,
 )
 from doc_intel.mapping.extractor import MAX_PRIMARY_HITS, hit_budget
+from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import LLMExtraction
 from doc_intel.templates.schemas import Constraints, IRField
-from tests.fakes import FakeLLM
+from doc_intel.vector.qdrant_store import chunk_id
+from tests.fakes import FakeEmbedder, FakeLLM
 
 CTX = TenantContext("user_1", uuid.uuid4())
 DOCS = [uuid.uuid4(), uuid.uuid4()]
@@ -64,6 +68,7 @@ class FakeRetriever:
     def __init__(self, hits=(), error=None):
         self.hits, self.error, self.calls = list(hits), error, []
         self.top_ns, self.budgets, self.neighbors = [], [], []
+        self.opening_hits, self.opening_calls = [], []
 
     async def search(self, ctx, query, document_ids=None, k=20, top_n=8):
         self.calls.append((ctx, query, document_ids))
@@ -75,6 +80,10 @@ class FakeRetriever:
     async def with_neighbors(self, ctx, hits, budget):
         self.budgets.append(budget)
         return [*hits, *self.neighbors][:budget]
+
+    async def opening(self, ctx, document_ids, n=2):
+        self.opening_calls.append(list(document_ids))
+        return list(self.opening_hits)
 
 
 def _field(expected_type="text", fid="f", **constraints):
@@ -135,6 +144,57 @@ async def test_no_hits_is_missing_without_an_llm_call():
     assert retriever.calls == [(CTX, field_query(_field()), DOCS)]
 
 
+EMPTY = '{"candidates": [], "not_found": true, "incomplete": false}'
+
+
+class _LeadRetriever(FakeRetriever):
+    """Answers the heading query with `lead`, any other query with the usual hits."""
+
+    def __init__(self, hits, lead):
+        super().__init__(hits)
+        self.lead = lead
+
+    async def search(self, ctx, query, document_ids=None, k=20, top_n=8):
+        found = await super().search(ctx, query, document_ids, k, top_n)
+        return self.lead[:top_n] if query == "Spring" else found
+
+
+async def test_a_field_with_a_heading_also_searches_the_heading_and_shows_its_hit():
+    lead = _hit("Spring: the section opens with its lead-in paragraph.")
+    field = _field().model_copy(update={"context": "Spring"})
+    retriever, llm = _LeadRetriever([H1], [lead]), FakeLLM(EMPTY)
+    await map_field(CTX, field, DOCS, retriever, llm)
+    assert [c[1] for c in retriever.calls][1] == "Spring" and retriever.top_ns[1] == 1
+    user = llm.calls[0][0][1]["content"]
+    assert lead.text in user and H1.text in user
+
+
+async def test_a_heading_hit_already_found_is_not_shown_twice():
+    field = _field().model_copy(update={"context": "Spring"})
+    retriever, llm = _LeadRetriever([H1], [H1]), FakeLLM(EMPTY)
+    await map_field(CTX, field, DOCS, retriever, llm)
+    assert llm.calls[0][0][1]["content"].count(H1.text) == 1
+
+
+async def test_a_field_without_a_heading_searches_once():
+    retriever = FakeRetriever([H1])
+    await map_field(CTX, _field(), DOCS, retriever, FakeLLM(EMPTY))
+    assert len(retriever.calls) == 1
+
+
+async def test_a_group_sharing_one_heading_also_searches_it():
+    rows = [
+        [_field(fid=f"{r}{c}").model_copy(update={"context": "Spring"}) for c in "ab"] for r in "xy"
+    ]
+    retriever = _LeadRetriever([H1], [H2])
+    await map_group(CTX, rows, DOCS, retriever, FakeLLM('{"records": [], "not_found": true}'))
+    assert [c[1] for c in retriever.calls][1] == "Spring"
+    mixed = [[f.model_copy(update={"context": f"C{f.field_id}"}) for f in row] for row in rows]
+    retriever = _LeadRetriever([H1], [H2])
+    await map_group(CTX, mixed, DOCS, retriever, FakeLLM('{"records": [], "not_found": true}'))
+    assert len(retriever.calls) == 1
+
+
 async def test_map_field_end_to_end_populates():
     reply = json.dumps(
         {
@@ -180,15 +240,60 @@ async def test_hits_beyond_budget_are_neither_shown_nor_accepted(window):
     r = await map_field(CTX, _field("number"), DOCS, retriever, llm)
     assert str(extra.chunk_id) not in llm.calls[0][0][1]["content"]
     assert (r.status, r.missing_reason) == ("missing", "evidence_failed_verification")
-    assert retriever.top_ns == [6] and retriever.budgets == [6]
+    # RETRIEVAL_CONTEXT_TOKENS (4500) // 512 = 8 leaves the 6-chunk budget, half primaries
+    assert retriever.top_ns == [3] and retriever.budgets == [6]
 
 
-async def test_32k_window_asks_for_twelve_primary_hits_within_a_26_chunk_budget(window):
+async def test_32k_window_budget_is_capped_by_the_retrieval_context_tokens(window):
     window(32768)
     retriever = FakeRetriever([_hit("text one")])
     await map_field(CTX, _field(), DOCS, retriever, FakeLLM(NOT_FOUND))
-    assert (retriever.top_ns, retriever.budgets) == ([min(26, MAX_PRIMARY_HITS)], [26])
+    assert hit_budget(32768, 512) == 26
+    assert (retriever.top_ns, retriever.budgets) == ([4], [8])
     assert MAX_PRIMARY_HITS == 12
+
+
+class _DocStore:
+    """One document's chunks: `hybrid_search` returns `ranked` indexes, `retrieve` any chunk."""
+
+    def __init__(self, doc, n, ranked):
+        self.by_index = {
+            i: Hit(
+                chunk_id=chunk_id(doc, i),
+                document_id=doc,
+                filename="ops.pdf",
+                page_number=None,
+                section_heading=None,
+                element_type="text",
+                text=f"chunk{i} word{i} only{i}",
+                score=0.5,
+                chunk_index=i,
+            )
+            for i in range(n)
+        }
+        self.ranked = ranked
+
+    async def hybrid_search(self, ctx, query, *, document_ids=None, element_type=None, limit=20):
+        return [self.by_index[i] for i in self.ranked][:limit]
+
+    async def retrieve(self, ctx, ids):
+        return [h for h in self.by_index.values() if h.chunk_id in ids]
+
+
+async def test_top_hit_late_in_the_document_survives_the_token_budget(window, monkeypatch):
+    """Regression: the budget trimmed the reading-order list, so earlier lower-ranked chunks
+    pushed the best hit (chunk 40) out of the prompt."""
+    from doc_intel.mapping import retriever as retriever_mod
+
+    window(32768)
+    monkeypatch.setattr(retriever_mod, "count_tokens", lambda text, model: 600)  # 7 fit 4500
+    doc = uuid.uuid4()
+    store = _DocStore(doc, 50, ranked=[40, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    llm = FakeLLM(NOT_FOUND)
+    await map_field(CTX, _field(), [doc], Retriever(FakeEmbedder(), store), llm)
+    prompt = llm.calls[0][0][1]["content"]
+    assert str(chunk_id(doc, 40)) in prompt
+    assert sum(str(h.chunk_id) in prompt for h in store.by_index.values()) == 7
 
 
 async def test_neighbor_chunks_are_shown_and_their_quotes_verify(window):
@@ -466,7 +571,7 @@ def test_a_candidate_repeating_a_quote_keeps_one_evidence():
 
 
 class RaisingLLM:
-    async def complete(self, messages, json_schema=None):
+    async def complete(self, messages, json_schema=None, think=False):
         raise LLMError("down")
 
 
@@ -730,3 +835,106 @@ async def test_no_check_call_when_the_extraction_found_nothing():
     llm = FakeLLM(NOT_FOUND)
     r = await map_field(CTX, _field(), DOCS, FakeRetriever([_hit("text one")]), llm)
     assert r.missing_reason == "not_found_by_llm" and len(llm.calls) == 1
+
+
+# ---- slot roles: one value in several slots of one text box ------------------------------------
+
+BOX_HIT = _hit("Prepared by Acme Corp for the quarterly review.", section="Cover")
+BOX_REPLY = json.dumps(
+    {
+        "candidates": [_cand("Acme Corp", (BOX_HIT, "Acme Corp for the quarterly"))],
+        "not_found": False,
+        "incomplete": False,
+    }
+)
+
+
+def _box_batch(count):
+    """A batch reply giving the same value to the first `count` slots of one box."""
+    entries = [
+        {"n": n, "candidates": json.loads(BOX_REPLY)["candidates"], "not_found": False}
+        | {"incomplete": False}
+        for n in range(1, count + 1)
+    ]
+    return json.dumps({"slots": entries})
+
+
+ROLES_BOTH = '{"about": "Prepared by", "slots": [1, 2]}'
+ROLES_HOLDER = '{"about": "Prepared by", "slots": [1]}'
+
+
+def _slot_field(fid, label, anchor="pptx:s1:sp2", expected_type="text", slide=1):
+    return IRField(
+        field_id=fid,
+        anchor_id=anchor.replace("s1", f"s{slide}"),
+        section_path=[f"Slide {slide}"],
+        label=label,
+        description=label,
+        expected_type=expected_type,
+        required=True,
+        write_mode="replace_token",
+        constraints=Constraints(token=f"[{label}]"),
+        context="ACCOUNT SUMMARY",
+    )
+
+
+async def _box(fields, *replies):
+    llm = FakeLLM(*replies)
+    out = await map_fields(CTX, fields, DOCS, FakeRetriever([BOX_HIT]), llm)
+    return out, llm
+
+
+HOLDER, BANK = _slot_field("holder", "Account Holder"), _slot_field("bank", "Bank Name")
+
+
+async def test_slot_roles_demote_the_slot_the_quote_does_not_state():
+    out, llm = await _box([HOLDER, BANK], _box_batch(2), ROLES_HOLDER)
+    assert out["holder"].status == "populated"
+    assert (out["bank"].status, out["bank"].missing_reason) == (
+        "missing",
+        "evidence_failed_verification",
+    )
+    assert out["bank"].checked_documents == DOCS
+    assert len(llm.calls) == 2  # one batch, one role check
+
+
+async def test_slot_roles_keep_every_slot_the_llm_confirms():
+    out, _ = await _box([HOLDER, BANK], _box_batch(2), ROLES_BOTH)
+    assert {r.status for r in out.values()} == {"populated"}
+
+
+async def test_slot_roles_invalid_twice_marks_the_group_llm_error():
+    out, _ = await _box([HOLDER, BANK], _box_batch(2), "nope", "nope")
+    assert {(r.status, r.missing_reason) for r in out.values()} == {("missing", "llm_error")}
+
+
+async def test_slot_roles_transport_error_propagates():
+    class Down(FakeLLM):
+        async def complete(self, messages, json_schema=None, think=False):
+            if len(self.calls) == 1:
+                raise LLMError("down")
+            return await super().complete(messages, json_schema)
+
+    with pytest.raises(LLMError):
+        await map_fields(CTX, [HOLDER, BANK], DOCS, FakeRetriever([BOX_HIT]), Down(_box_batch(2)))
+
+
+async def test_slot_roles_not_asked_for_other_anchors_same_label_or_typed_fields():
+    other = _slot_field("bank", "Bank Name", anchor="pptx:s1:sp9")
+    same_label = _slot_field("holder2", "Account Holder")
+    number = HOLDER.model_copy(update={"expected_type": "number"})
+    number2 = BANK.model_copy(update={"expected_type": "number"})
+    for fields in ([HOLDER, other], [HOLDER, same_label], [number, number2]):
+        _, llm = await _box(fields, _box_batch(len(fields)))
+        assert len(llm.calls) == 1  # the batch only: no role check
+
+
+async def test_slot_roles_demotion_reaches_a_shared_copy_on_another_slide():
+    copy = _slot_field("bank_copy", "Bank Name", slide=2)
+    out, llm = await _box([HOLDER, BANK, copy], _box_batch(2), ROLES_HOLDER)
+    assert len(llm.calls) == 2
+    assert out["holder"].status == "populated"
+    assert {out[f].missing_reason for f in ("bank", "bank_copy")} == {
+        "evidence_failed_verification"
+    }
+    assert out["bank_copy"].field_id == "bank_copy"

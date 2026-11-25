@@ -63,6 +63,8 @@ class Anchor(_Strict):
     card: str | None = None
     # pptx only: a native category chart (kind "chart")
     chart: ChartRef | None = None
+    # pptx only: about how many characters fit one token of this text box (box size and font)
+    fit_chars: int | None = Field(None, ge=1)
 
 
 class AnchorMap(_Strict):
@@ -97,6 +99,8 @@ class IRField(_Strict):
     # copied from the anchor by code in build_ir; hidden from the LLM schema
     context: SkipJsonSchema[str | None] = None
     card: SkipJsonSchema[str | None] = None
+    # a soft length hint for the extraction prompt, never a constraint or a warning
+    fit_chars: SkipJsonSchema[int | None] = None
 
 
 class IRDraft(_Strict):

@@ -13,7 +13,7 @@ Stores and ownership: see [ADR-008](DECISIONS.md#adr-008--persistence-boundaries
 - **Tenant rule.** Every table except `projects` has `user_id` and `project_id` plus the composite FK `(project_id, user_id) REFERENCES projects(id, user_id) ON DELETE CASCADE`. Every repository query filters `WHERE user_id = :user_id AND project_id = :project_id`, with two named exceptions:
   1. the signed download looks up `artifacts.id`, then checks `user_id` through the HMAC;
   2. the job queue (`jobs/worker.py`): claiming the next job and startup recovery span all tenants, and touch only queue state. Everything after the claim uses the job's `user_id`/`project_id`.
-  3. `library_templates` is a global, read-only catalog with no tenant keys. Only the CLI writes it; chat reads it to list templates and to copy one into the caller's project (`adopt`). It is never joined to tenant rows, and nothing in a tenant row references it.
+  3. `library_templates` is a global, read-only catalog with no tenant keys. The CLI, `/v1/library` and the `TEMPLATES_DIR` sync write it (ADR-014, ADR-017); chat reads it to list templates and to copy one into the caller's project (`adopt`). It is never joined to tenant rows, and nothing in a tenant row references it.
 - Migrations: Alembic in `migrations/` (from Phase 1).
 - **Non-tenant FKs and deletes.**
   - `templates.document_id` → `documents` and `template_irs.template_id` → `templates` are `ON DELETE CASCADE`.
@@ -120,22 +120,23 @@ The row is written when `extract_template` succeeds. Before that, the job is the
 
 ### `library_templates`
 
-Reusable templates shared by every user (Phase 9). Registered with the CLI (`seed-template`), which builds the `AnchorMap` and `TemplateIR` once, so chat runs skip `extract_template`.
+Reusable templates shared by every user (Phase 9). Registered with the CLI (`seed-template`), `POST /v1/library/templates` (ADR-014) or by the `TEMPLATES_DIR` folder sync (ADR-017, [system-design.md § 5.1](system-design.md#51-templates-folder-sync)), which build the `AnchorMap` and `TemplateIR` once, so chat runs skip `extract_template`.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | also the `template_id` inside `ir` |
 | `name` | text NOT NULL UNIQUE | shown in the chat picker (1..100 chars) |
 | `description` | text NOT NULL DEFAULT `''` | shown in the chat picker (up to 500 chars) |
-| `category` | text NULL | free label (up to 50 chars), CLI only |
+| `category` | text NULL | free label (up to 50 chars), set at registration |
 | `format` | text NOT NULL | `pptx` \| `docx` \| `xlsx` |
-| `filename` | text NOT NULL | original filename; becomes the copied document's `filename` |
+| `filename` | text NOT NULL | original filename (for synced and uploaded templates: the file's name in `TEMPLATES_DIR`, which matches the row to its file); becomes the copied document's `filename` |
 | `sha256` | char(64) NOT NULL UNIQUE | |
 | `size_bytes` | bigint NOT NULL | |
 | `storage_key` | text NOT NULL | `library/{id}/original.{ext}` |
 | `anchor_map` | jsonb NOT NULL | `AnchorMap` |
 | `anchor_count` | int NOT NULL | |
 | `ir` | jsonb NOT NULL | `TemplateIR` (version 1) |
+| `ir_builder_version` | int NOT NULL DEFAULT 0 | `IR_BUILDER_VERSION` when the IR was built; the sync re-extracts rows with an older value (existing rows are 0) |
 | `created_at` | timestamptz | |
 
 **Copy-on-use.** When a chat picks a library template, `adopt` copies it into the caller's project in one transaction:
@@ -233,7 +234,7 @@ data/
 │   │   ├── uploads/{document_id}/original.{ext}   # immutable, write-once
 │   │   ├── parsed/{document_id}.json              # parser output, derived, overwritable on retry
 │   │   └── artifacts/{artifact_id}.{ext}          # immutable rendered output
-│   └── library/{library_template_id}/original.{ext}  # library templates, written by the CLI
+│   └── library/{library_template_id}/original.{ext}  # library templates, written by the CLI, `/v1/library` and the sync
 ```
 
 PostgreSQL, Qdrant, and Open WebUI data live in Docker **named volumes** (`pgdata`, `qdrant_data`, `openwebui_data` in `docker-compose.yml`), not under `./data/`. Bind mounts on macOS hit Postgres permission/fsync issues. `docker compose down -v` deletes them.

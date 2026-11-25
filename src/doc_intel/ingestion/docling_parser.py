@@ -1,12 +1,13 @@
 """PDF / DOCX / PPTX parsing through Docling (layout, TableFormer, RapidOCR) — ADR-003."""
 
+from collections import defaultdict
 from functools import cache
 from io import BytesIO
 
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling_core.types.doc import SectionHeaderItem, TableItem, TextItem, TitleItem
+from docling_core.types.doc import ListItem, SectionHeaderItem, TableItem, TextItem, TitleItem
 
 from doc_intel.ingestion.schemas import ParsedDocument, ParsedElement
 
@@ -28,6 +29,26 @@ MAX_PAGES = 1000
 
 def _clean(text: str) -> str:
     return " ".join(text.split())
+
+
+def drop_repeated(elements: list[ParsedElement]) -> list[ParsedElement]:
+    """Drop running headers/footers (text on >= 3 pages and on at least half of all pages),
+    keeping the first copy: a vendor or project name repeated on every slide stays findable."""
+    pages: dict[str, set[int]] = defaultdict(set)
+    for e in elements:
+        if e.element_type == "text" and e.page_number is not None:
+            pages[e.text].add(e.page_number)
+    total = len({e.page_number for e in elements if e.page_number is not None})
+    repeated = {t for t, p in pages.items() if len(p) >= 3 and len(p) * 2 >= total}
+    seen: set[str] = set()
+    kept = []
+    for e in elements:
+        if e.element_type == "text" and e.text in repeated:
+            if e.text in seen:
+                continue
+            seen.add(e.text)
+        kept.append(e)
+    return kept
 
 
 def _parse(data: bytes, ext: str) -> ParsedDocument:
@@ -60,12 +81,16 @@ def _parse(data: bytes, ext: str) -> ParsedDocument:
                     )
                 )
         elif isinstance(item, TextItem) and (text := _clean(item.text)):
+            if isinstance(item, ListItem):
+                text = f"- {text}"  # keeps the list structure in the chunk
             elements.append(
                 ParsedElement(
                     element_type="text", text=text, page_number=page, section_heading=heading
                 )
             )
-    return ParsedDocument(elements=elements, page_count=doc.num_pages() if ext != "docx" else None)
+    return ParsedDocument(
+        elements=drop_repeated(elements), page_count=doc.num_pages() if ext != "docx" else None
+    )
 
 
 def parse_pdf(data: bytes) -> ParsedDocument:

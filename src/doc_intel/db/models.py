@@ -240,8 +240,9 @@ class Artifact(Base):
 class LibraryTemplate(Base):
     """Global read-only catalog of template files with a prebuilt AnchorMap and IR.
 
-    Tenancy exception: no user_id/project_id. Written only by the operator CLI; users get a
-    per-project copy through `templates.library.adopt`.
+    Tenancy exception: no user_id/project_id. Written by the operator (CLI,
+    `/v1/library` ADR-014, or the `templates/` sync ADR-017); users get a per-project copy
+    through `templates.library.adopt`.
     """
 
     __tablename__ = "library_templates"
@@ -259,4 +260,6 @@ class LibraryTemplate(Base):
     anchor_map: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     anchor_count: Mapped[int] = mapped_column(Integer, nullable=False)
     ir: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # IR_BUILDER_VERSION at extraction; the templates/ sync re-extracts older rows (ADR-017)
+    ir_builder_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = _ts()

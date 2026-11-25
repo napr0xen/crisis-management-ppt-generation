@@ -44,6 +44,17 @@ curl 127.0.0.1:8000/v1/health # {"status":"ok","postgres":"ok","qdrant":"ok",...
 uv run pytest                 # integration tests use a throwaway doc_intel_test database
 ```
 
+## Custom web UI (`frontend/`)
+
+A React UI that talks to the same API: chat sessions, a template library page (drag-and-drop upload, scan status, delete), multi-file attachments with a template picker, live progress, a download card, and clickable conflict cards that re-render the PPTX.
+
+```bash
+cd frontend && npm install && npm run build   # the API then serves the UI at http://127.0.0.1:8000
+npm run dev                                   # or develop on http://localhost:5173 (CORS allowed)
+```
+
+On first open, enter the API token (`PIPE_SHARED_SECRET`) and a user id under **Settings**; both are kept in the browser's localStorage. Open WebUI and the Pipe keep working alongside it.
+
 ## Open WebUI Pipe setup
 
 The Pipe is the only bridge between Open WebUI and the backend. Its code is [integrations/openwebui/doc_intel_pipe.py](integrations/openwebui/doc_intel_pipe.py).
@@ -63,6 +74,7 @@ The Pipe is the only bridge between Open WebUI and the backend. Its code is [int
    uv run python -m doc_intel.cli show-template <id>
    uv run python -m doc_intel.cli remove-template <id>
    ```
+   Or drop the file into `templates/` (`TEMPLATES_DIR`): it is synced into the picker at startup and on `POST /v1/templates/sync`, named after the file; uploads in the web UI are saved there too. `reset-library` empties the library (the folder stays).
    `--name` and `--description` are what users see in the chat picker. A template attached to the chat always takes precedence over the library.
 7. Edits: after a filled document, correct it in the same chat, for example "set the owner to Ann", "use the first value for customers affected" or "clear the date". Each edit renders a new version (`…_v2.pptx`) with its own download link; earlier versions stay downloadable. A typed value must be written in your message: the model never fills one in for you.
 
@@ -80,6 +92,6 @@ Conventions: [docs/development-guidelines.md](docs/development-guidelines.md).
 | [implementation-roadmap.md](docs/implementation-roadmap.md) | phases 0–12 with entry/exit gates |
 | [development-guidelines.md](docs/development-guidelines.md) | layout, typing, async, errors, logging, config, git |
 | [testing-strategy.md](docs/testing-strategy.md) | unit, integration, isolation, RAG eval, template fidelity |
-| [DECISIONS.md](docs/DECISIONS.md) | ADR-001 … ADR-012 |
+| [DECISIONS.md](docs/DECISIONS.md) | ADR-001 … ADR-014 |
 
 Contributor and agent rules: [CLAUDE.md](CLAUDE.md).

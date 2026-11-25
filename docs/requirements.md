@@ -25,7 +25,7 @@ Names: [data-model.md](data-model.md), [api-specification.md](api-specification.
 | FR-15 | Artifacts download via signed, user-scoped, expiring URLs (default 15 min). |
 | FR-16 | Users can delete a document; its vectors and stored files are removed. |
 | FR-17 | The LLM provider is swappable via `.env` (`ollama` default, `openai_compat` = a local OpenAI-compatible server such as `mlx_lm.server`, LM Studio or vLLM) with no code change. `anthropic` is planned, not built (ADR-005). |
-| FR-18 | Operators register reusable PPTX/DOCX/XLSX library templates with the CLI; registration extracts the IR once. With no suitable template in the chat, asking for a presentation, document or spreadsheet offers the library as a numbered list (name, format, description). The user picks by number or name, or the only template of the requested format runs directly. Library templates are read-only; the copy, runs and artifacts belong to the user's project (ADR-012). |
+| FR-18 | Operators register reusable PPTX/DOCX/XLSX library templates with the CLI or over HTTP (`/v1/library`, ADR-014); registration extracts the IR once. With no suitable template in the chat, asking for a presentation, document or spreadsheet offers the library as a numbered list (name, format, description). The user picks by number or name, or the only template of the requested format runs directly. Chat users only read library templates; the copy, runs and artifacts belong to the user's project (ADR-012). |
 
 ## 2. Supported formats
 

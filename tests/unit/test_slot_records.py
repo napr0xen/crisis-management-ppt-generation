@@ -139,12 +139,13 @@ async def test_a_tile_group_is_one_retrieval_and_one_records_call(name):
 
 
 @BOTH_TILES
-async def test_the_tile_query_joins_the_first_labels_once_with_the_path(name):
+async def test_the_tile_query_joins_every_label_once_with_the_path(name):
     fields, hit, sentences, rows = _setup(name)
     retriever = FakeRetriever([hit])
     await map_fields(CTX, fields, DOCS, retriever, FakeLLM(_reply(hit, sentences, rows)))
-    assert retriever.calls[0][1] == f"{fields[0].label} (Slide 3 > Log)"
-    # distinct first labels are all in the query, and a shared context prefixes it
+    labels = " ".join(s[0] for s in TILES[name][0])
+    assert retriever.calls[0][1] == f"{labels} (Slide 3 > Log)"
+    # a trailing slot number is dropped, repeats collapse, and a shared context prefixes it
     odd = [
         _slot("a", "[Value 1]", card="1.1", label="Value 1", context="Spend"),
         _slot("b", "[Note]", card="1.1", label="Note", context="Spend"),
@@ -153,7 +154,32 @@ async def test_the_tile_query_joins_the_first_labels_once_with_the_path(name):
     ]
     retriever = FakeRetriever([hit])
     await map_fields(CTX, odd, DOCS, retriever, FakeLLM("bad", "worse"))
-    assert retriever.calls[0][1] == "Spend: Value 1 Value 5 (Slide 3 > Log)"
+    assert retriever.calls[0][1] == "Spend: Value Note (Slide 3 > Log)"
+
+
+async def test_generic_first_slots_do_not_hide_the_descriptive_labels_from_the_query():
+    metrics = ["Open requests", "Late deliveries", "Budget used", "Staff on leave"]
+    fields = [
+        _slot(f"c{m}_{j}", f"[{label}]", label=label, card=f"1.{m}", etype="text")
+        for m in range(1, 5)
+        for j, label in enumerate((f"Value {m}", metrics[m - 1]))
+    ]
+    hit = _hit("x")
+    retriever = FakeRetriever([hit])
+    await map_fields(CTX, fields, DOCS, retriever, FakeLLM("bad", "worse"))
+    query = retriever.calls[0][1]
+    assert all(name in query for name in metrics)
+    assert query.count("Value") == 1 and "Value 2" not in query
+
+
+def test_a_year_at_the_end_of_a_label_stays_in_the_group_query():
+    from doc_intel.mapping.engine import _group_query
+
+    group = [
+        [_slot("a", "[Revenue 2026]", card="1.1", label="Revenue 2026")],
+        [_slot("b", "[FY2025]", card="1.2", label="FY2025")],
+    ]
+    assert _group_query(group).startswith("Revenue 2026 FY2025 (")
 
 
 # ---- keyed records ----------------------------------------------------------------------------
@@ -165,63 +191,75 @@ HEADS = {
 
 
 @BOTH_TILES
-def test_cards_with_distinct_static_headings_are_never_one_records_group(name):
+def test_cards_with_distinct_static_headings_are_one_single_row_group_each(name):
     slots = TILES[name][0]
     keyed = _tiles(slots, contexts=HEADS[name])
-    assert row_groups(keyed) == []
+    width = len(slots)
+    each = [[[f"c{m}_{j}" for j in range(width)]] for m in (1, 2, 3)]
+    assert _ids(row_groups(keyed)) == each
     # numbered tokens in keyed cards ([Level 1] .. [Level 3]) do not regroup as a slot grid
     numbered = [
         f.model_copy(update={"constraints": Constraints(token=f"[{f.label} {f.card[-1]}]")})
         for f in keyed
     ]
-    assert row_groups(numbered) == []
+    assert _ids(row_groups(numbered)) == each
+    # a keyed card with one field is no row: its field stays loose
+    one = [f for f in keyed if f.field_id not in {"c3_1", "c3_2"}]
+    assert _ids(row_groups(one)) == each[:2]
     # one shared heading, or a card without one, keeps the tile group
     assert len(row_groups(_tiles(slots, contexts=["Spring"] * 3))) == 1
     assert len(row_groups(_tiles(slots, contexts=[*HEADS[name][:2], None]))) == 1
 
 
-class _PerField:
-    """Answers field_extract calls from {(context, label): (value, sentence)}, approves checks."""
-
-    def __init__(self, hit, answers):
-        self.hit, self.answers, self.calls = hit, answers, []
-
-    async def complete(self, messages, json_schema=None):
-        self.calls.append((list(messages), json_schema))
-        if messages[0]["content"] == load_prompt("candidate_check"):
-            return '{"checks": [{"about": "x", "match": true}]}'
-        assert messages[0]["content"] == load_prompt("field_extract")
-        spec = json.loads(messages[1]["content"].removeprefix("Field:\n").split("\n\n")[0])
-        value, quote = self.answers[(spec["context"], spec["label"])]
-        cand = {"value": value, "quotes": [{"chunk_id": str(self.hit.chunk_id), "quote": quote}]}
-        return json.dumps({"candidates": [cand], "not_found": False, "incomplete": False})
+def _check_this():
+    return json.dumps({"checks": [{"about": "r", "belongs": "this"}]})
 
 
 @BOTH_TILES
-async def test_keyed_cards_map_per_card_under_their_heading_never_in_a_records_call(name):
-    fields, hit, sentences, rows = _setup(name, contexts=HEADS[name])
+async def test_keyed_cards_map_one_records_call_per_card_under_their_heading(name):
+    heads = ["Card A", "Card B", "Card C"]  # a name slot may not just echo its heading
+    fields, hit, sentences, rows = _setup(name, contexts=heads)
     width = len(rows[0])
-    answers = {
-        (f.context, f.label): (rows[i // width][i % width], sentences[i // width])
-        for i, f in enumerate(fields)
-    }
-    llm = _PerField(hit, answers)
+    replies = []
+    for sentence, cells in zip(sentences, rows, strict=True):
+        replies += [_records_reply([(1, cells, [(hit, sentence)])]), _check_this()]
+    llm = FakeLLM(*replies)
     results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), llm)
-    assert not any(m[0]["content"] == load_prompt("slot_records") for m, _ in llm.calls)
+    prompts = [m[0]["content"] for m, _ in llm.calls]
+    assert prompts.count(load_prompt("slot_records")) == 3
+    assert prompts.count(load_prompt("row_check")) == 3
+    assert load_prompt("field_extract") not in prompts
     for i, f in enumerate(fields):
         r = results[f.field_id]
         assert r.status == "populated", f.field_id
         assert [e.quote for e in r.evidence] == [sentences[i // width]]
     fid, value = TILES[name][3]
     assert results[fid].value == value
-    # every card's heading reaches its own candidate check, with the sibling headings
+    # every card's heading reaches its row check, with the sibling headings
     checks = [
         json.loads(m[1]["content"])
         for m, _ in llm.calls
-        if m[0]["content"] == load_prompt("candidate_check")
+        if m[0]["content"] == load_prompt("row_check")
     ]
-    assert {c["context"] for c in checks} == set(HEADS[name])
+    assert {c["context"] for c in checks} == set(heads)
     assert all(c["context"] not in c["other_headings"] for c in checks)
+
+
+async def test_a_keyed_card_row_states_all_three_slots_in_one_call():
+    slots = [("Level", "text"), ("Detail", "text"), ("Action", "text")]
+    sentence = "Severity high: a vendor failed twice, so audit the vendor."
+    cells = ["high", "a vendor failed twice", "audit the vendor"]
+    fields = _tiles(slots, cards=2, contexts=["Supply", "Staffing"])
+    hit = _hit(sentence)
+    llm = FakeLLM(
+        _records_reply([(1, cells, [(hit, sentence)])]),
+        _check_this(),
+        _records_reply([], not_found=True),
+    )
+    results = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), llm)
+    assert [results[f"c1_{j}"].value for j in range(3)] == cells
+    assert [results[f"c2_{j}"].status for j in range(3)] == ["missing"] * 3
+    assert len(llm.calls) == 3
 
 
 async def test_a_numbered_grid_with_one_heading_per_row_still_sends_keyed_records():
@@ -435,7 +473,7 @@ async def test_not_found_invalid_output_and_transport_errors(name):
     assert {x.missing_reason for x in r.values()} == {"llm_error"}
 
     class Boom:
-        async def complete(self, messages, json_schema=None):
+        async def complete(self, messages, json_schema=None, think=False):
             raise LLMError("down")
 
     with pytest.raises(LLMError):

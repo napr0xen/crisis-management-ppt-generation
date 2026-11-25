@@ -23,7 +23,7 @@ from tests.fakes import FakeEmbedder
 from tests.fixtures import templates
 from tests.integration.test_generation_e2e import CHUNK, QUOTE, draft_reply
 from tests.integration.test_library import FILES
-from tests.integration.test_mapping_e2e import candidate, extraction
+from tests.integration.test_mapping_e2e import batch, candidate, extraction, slot_count
 from tests.integration.test_pipe_api import (
     api_file,
     events,
@@ -49,7 +49,7 @@ class ScriptedLLM:
         self.extractions = 0
         self.ir_calls = 0
 
-    async def complete(self, messages, json_schema=None) -> str:
+    async def complete(self, messages, json_schema=None, think=False) -> str:
         system, user = messages[0]["content"], messages[-1]["content"]
         if system == load_prompt("router"):
             reply = dict(self.route)
@@ -63,12 +63,17 @@ class ScriptedLLM:
             return draft_reply("pptx")
         if system == load_prompt("table_rows"):  # the fixture's empty table (code-made field)
             return json.dumps({"rows": [], "not_found": True})
-        assert system == load_prompt("field_extract")
-        self.extractions += 1
         hit = CHUNK_ID.search(user).group(1)
-        if self.extractions % 2:
-            return extraction([candidate("Substation fire", hit, QUOTE)])
-        return extraction([], not_found=True)
+        if system == load_prompt("slot_values"):  # a unit's loose fields in one call
+            return batch(*[self._answer(hit) for _ in range(slot_count(user))])
+        assert system == load_prompt("field_extract")
+        found = self._answer(hit)
+        return extraction(found, not_found=not found)
+
+    def _answer(self, hit: str) -> list[dict]:
+        """Every odd extracted slot is found, every even one is not."""
+        self.extractions += 1
+        return [candidate("Substation fire", hit, QUOTE)] if self.extractions % 2 else []
 
 
 def unique(fmt: str, title: str) -> bytes:
@@ -98,7 +103,7 @@ class _IRLLM:
     def __init__(self, reply: str) -> None:
         self.reply = reply
 
-    async def complete(self, messages, json_schema=None) -> str:
+    async def complete(self, messages, json_schema=None, think=False) -> str:
         return self.reply
 
 

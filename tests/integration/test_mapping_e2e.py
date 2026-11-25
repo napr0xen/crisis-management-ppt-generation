@@ -65,6 +65,19 @@ def extraction(candidates, not_found=False) -> str:
     return json.dumps({"candidates": candidates, "not_found": not_found, "incomplete": False})
 
 
+def batch(*per_slot) -> str:
+    slots = [
+        {"n": n, "candidates": c, "not_found": not c, "incomplete": False}
+        for n, c in enumerate(per_slot, start=1)
+    ]
+    return json.dumps({"slots": slots})
+
+
+def slot_count(user_message: str) -> int:
+    """How many slots a `slot_values` user message asks for."""
+    return len(json.loads(user_message.split("Slots:\n", 1)[1].split("\n\nChunks:", 1)[0])["slots"])
+
+
 async def drain_one(migrated_db, vector_store, llm) -> None:
     engine = make_engine(migrated_db)
     sm = async_sessionmaker(engine, expire_on_commit=False)
@@ -89,13 +102,18 @@ async def test_mapping_run_populates_misses_and_conflicts(
     client, session, migrated_db, vector_store, user_a, project, monkeypatch
 ):
     seen: dict[str, list[str]] = {}
-    real_map_field = engine_mod.map_field
+    real_map_batch, real_map_field = engine_mod.map_batch, engine_mod.map_field
 
-    async def spy(ctx, field, docs, retriever, llm, other_headings=()):
+    async def spy_field(ctx, field, docs, retriever, llm, other_headings=()):
         seen[field.field_id] = list(other_headings)
         return await real_map_field(ctx, field, docs, retriever, llm, other_headings)
 
-    monkeypatch.setattr(engine_mod, "map_field", spy)
+    async def spy(ctx, fields, docs, retriever, llm, siblings, opening=False):
+        seen.update({f.field_id: list(siblings[f.field_id]) for f in fields})
+        return await real_map_batch(ctx, fields, docs, retriever, llm, siblings, opening)
+
+    monkeypatch.setattr(engine_mod, "map_batch", spy)
+    monkeypatch.setattr(engine_mod, "map_field", spy_field)
     monkeypatch.setattr(
         engine_mod,
         "sibling_headings",
@@ -131,8 +149,8 @@ async def test_mapping_run_populates_misses_and_conflicts(
     run_id = posted.json()["mapping_run_id"]
 
     llm = FakeLLM(
-        extraction([candidate("Substation fire", chunk_id(source, 0), SUMMARY_QUOTE)]),
-        extraction([], not_found=True),
+        # slide 1 holds two loose fields: one batch call; slide 2's lone field is mapped alone
+        batch([candidate("Substation fire", chunk_id(source, 0), SUMMARY_QUOTE)], []),
         extraction(
             [
                 candidate("12,000", chunk_id(source, 1), "12,000 customers lost power"),
@@ -157,7 +175,7 @@ async def test_mapping_run_populates_misses_and_conflicts(
         "conflict": 1,
         "warnings": [],
     }
-    assert len(llm.calls) == 4
+    assert len(llm.calls) == 3
     assert seen == {fid: [f"Sib {fid}"] for fid in seen} and len(seen) == 3  # handler wiring
 
     summary = body["results"]["incident_summary"]

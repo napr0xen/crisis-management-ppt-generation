@@ -18,7 +18,7 @@ from doc_intel.llm.prompts import load_prompt
 from tests.conftest import PIPE_SECRET
 from tests.fixtures import templates
 from tests.integration.test_generation_e2e import CHUNK, QUOTE, draft_reply
-from tests.integration.test_mapping_e2e import candidate, extraction
+from tests.integration.test_mapping_e2e import batch, candidate, extraction, slot_count
 from tests.integration.test_pipe_api import fast_poll, live_app  # noqa: F401 (fixture)
 
 pytestmark = [
@@ -39,7 +39,7 @@ class ScriptedLLM:
         self.intent = "map_template"
         self.extractions = 0
 
-    async def complete(self, messages, json_schema=None) -> str:
+    async def complete(self, messages, json_schema=None, think=False) -> str:
         system, user = messages[0]["content"], messages[-1]["content"]
         if system == load_prompt("router"):
             tpl = next(ln.split(" | ")[0] for ln in user.splitlines() if "update.pptx" in ln)
@@ -52,11 +52,16 @@ class ScriptedLLM:
             return json.dumps({"answer_markdown": "A fire [1].", "citations": [citation]})
         if system == load_prompt("table_rows"):  # the fixture's empty table (code-made field)
             return json.dumps({"rows": [], "not_found": True})
+        if system == load_prompt("slot_values"):  # a unit's loose fields in one call
+            return batch(*[self._answer(hit) for _ in range(slot_count(user))])
         assert system == load_prompt("field_extract")
+        found = self._answer(hit)
+        return extraction(found, not_found=not found)
+
+    def _answer(self, hit: str) -> list[dict]:
+        """The first extracted slot is found, every later one is not."""
         self.extractions += 1
-        if self.extractions == 1:
-            return extraction([candidate("Substation fire", hit, QUOTE)])
-        return extraction([], not_found=True)
+        return [candidate("Substation fire", hit, QUOTE)] if self.extractions == 1 else []
 
 
 def make_pipe(app, user):

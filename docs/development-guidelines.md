@@ -82,6 +82,7 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `QDRANT_API_KEY` | empty (no auth) | also read by Docker Compose as Qdrant's `QDRANT__SERVICE__API_KEY`; set it so only the backend can read vectors (Open WebUI shares the Docker network). Changing it recreates the Qdrant container on the next `docker compose up -d`; data stays in the volume |
 | `QDRANT_COLLECTION` | `doc_chunks` | tests set `doc_chunks_test` |
 | `STORAGE_ROOT` | `./data/storage` | `LocalStorage` root |
+| `TEMPLATES_DIR` | `templates` | library source of truth (ADR-017): its `.pptx`/`.docx`/`.xlsx` files are synced into the library at startup and on `POST /v1/templates/sync`; UI uploads are saved here. A missing folder disables the sync (nothing is pruned). Tests point it at a path that does not exist |
 | `PIPE_SHARED_SECRET` | — (required, ≥ 32 chars) | bearer secret shared with the Pipe |
 | `SIGNING_SECRET` | — (required, ≥ 32 chars) | HMAC key for download URLs |
 | `SIGNED_URL_TTL_S` | `900` | |
@@ -94,10 +95,13 @@ Rules for code under `src/doc_intel/`. Module responsibilities: [system-design.m
 | `LLM_TIMEOUT_SECONDS` | `120` | per LLM request; covers a cold model load |
 | `LLM_ENABLE_THINKING` | `false` | Ollama `think`; `openai_compat`: `chat_template_kwargs.enable_thinking` (sent only with `LLM_CHAT_TEMPLATE_KWARGS=true`), reply cap `max_tokens`. Off by default: at temperature 0, `qwen3:14b` reasoning looped on one eval field (22k tokens, 20 min, no answer). With it on, `num_predict` is the window minus `prompt_tokens(LLM_NUM_CTX) = max(6144, LLM_NUM_CTX // 2)` (at least 4096; off: 4096). Reasoning comes back apart from the reply, and a leading `<think>` block is stripped either way |
 | `LLM_CHAT_TEMPLATE_KWARGS` | `false` | `openai_compat` only: send `chat_template_kwargs: {"enable_thinking": LLM_ENABLE_THINKING}`. Set `true` for `mlx_lm.server`, LM Studio or vLLM serving Qwen3 (it reasons by default otherwise); leave `false` for servers that reject unknown fields |
+| `LLM_HYBRID_THINKING` | `false` | `openai_compat` only (ignored by Ollama and when `LLM_ENABLE_THINKING=true`): the reasoning-heavy calls (`extract_rows`, and `extract_records` for a group of two or more rows) stream with thinking on, capped at `LLM_THINKING_BUDGET_TOKENS` reasoning tokens; every other call runs with thinking off. Past the budget the stream is closed and one non-streaming second pass runs with thinking off, the partial reasoning appended to the last user turn. The second pass never thinks again, so it cannot loop |
+| `LLM_THINKING_BUDGET_TOKENS` | `160` | Reasoning tokens a hybrid call may spend (one stream event counts as one token); also added to `max_tokens` of the streamed call and sent as `thinking_budget` with `LLM_CHAT_TEMPLATE_KWARGS=true` (`mlx_lm` 0.32.2 ignores it, other servers may honour it). Minimum 1 |
 | `EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama |
 | `EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | any Ollama embedding model; changing it needs a re-ingest |
 | `EMBEDDING_DIMENSIONS` | `1024` | sent to Ollama (Matryoshka); must match the Qdrant collection |
 | `CHUNK_TOKENIZER` | `Qwen/Qwen3-Embedding-0.6B` | Hugging Face tokenizer that sizes chunks |
+| `RETRIEVAL_CONTEXT_TOKENS` | `4500` | Token budget (`CHUNK_TOKENIZER`, chunk headers included) of the chunks handed to the LLM per Q&A or mapping call, after near-duplicates are dropped. Minimum 512; the first chunk is always kept |
 | `RERANKER_DEVICE` | `mps` | `mps` \| `cpu` |
 | `RERANKER_ENABLED` | `false` | |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | |

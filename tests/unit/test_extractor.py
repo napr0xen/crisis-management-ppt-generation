@@ -14,10 +14,12 @@ from doc_intel.mapping.extractor import (
     PROMPT_OVERHEAD_TOKENS,
     bounded_field,
     check_candidates,
+    check_roles,
     extract,
+    extract_batch,
     hit_budget,
 )
-from doc_intel.mapping.schemas import LLMCandidateCheck, LLMExtraction
+from doc_intel.mapping.schemas import Evidence, LLMCandidateCheck, LLMExtraction
 from doc_intel.templates.schemas import Constraints, IRField
 from tests.fakes import FakeLLM
 
@@ -165,7 +167,7 @@ async def test_pathological_field_spec_is_bounded():
     assert (len(c.unit), len(c.date_format), len(c.token)) == (80, 80, 80)
     llm = FakeLLM(EMPTY)
     await extract(llm, field, [_hit("w" * 2000) for _ in range(hit_budget(8192, 512))])
-    assert sum(len(m["content"]) for m in llm.calls[0][0]) <= 22_000
+    assert sum(len(m["content"]) for m in llm.calls[0][0]) <= 22_500
 
 
 async def test_llm_error_propagates():
@@ -313,3 +315,171 @@ async def test_check_candidates_llm_error_propagates():
             [h],
             _ext(("1", (h, "12,000 customers"))),
         )
+
+
+# ---- check_roles ---------------------------------------------------------------------------------
+
+
+def _evidence(quote, section="Cover"):
+    return Evidence(
+        document_id=uuid.uuid4(),
+        chunk_id=uuid.uuid4(),
+        filename="a.pdf",
+        page_number=1,
+        section_heading=section,
+        quote=quote,
+    )
+
+
+async def test_check_roles_drops_out_of_range_numbers_and_sends_section_not_before():
+    fields = [_field(field_id="holder", label="Holder"), _field(field_id="bank", label="Bank")]
+    ev = [_evidence("Prepared by Acme Corp"), _evidence("Prepared by Acme Corp")]
+    llm = FakeLLM('{"about": "x", "slots": [0, 2, 3, -1]}')
+    assert await check_roles(llm, fields, "Acme Corp", ev) == {"bank"}
+    user = _user(llm)
+    assert user["quotes"] == [{"quote": "Prepared by Acme Corp", "section": "Cover"}]
+    assert [s["n"] for s in user["slots"]] == [1, 2] and user["value"] == "Acme Corp"
+    assert "before" not in json.dumps(user)
+
+
+async def test_check_roles_omits_a_missing_section():
+    llm = FakeLLM('{"about": "unknown", "slots": []}')
+    assert await check_roles(llm, [_field()], "v", [_evidence("Prepared by Acme", None)]) == set()
+    assert _user(llm)["quotes"] == [{"quote": "Prepared by Acme"}]
+
+
+async def test_only_the_reasoning_heavy_calls_ask_for_thinking():
+    from doc_intel.mapping.extractor import extract_records, extract_rows, synthesize
+
+    fld = _field()
+    llm = FakeLLM('{"rows": [], "not_found": true}')
+    await extract_rows(llm, fld, [_hit()])
+    llm_r = FakeLLM('{"records": [], "not_found": true}')
+    await extract_records(llm_r, [[fld]], [_hit()])
+    llm_m = FakeLLM('{"records": [], "not_found": true}')
+    await extract_records(llm_m, [[fld], [fld]], [_hit()])
+    llm_b = FakeLLM('{"slots": []}')
+    await extract_batch(llm_b, [fld], [_hit()])
+    llm_s = FakeLLM(
+        '{"items": [{"value": "a", "quotes": []}, {"value": "b", "quotes": []}],'
+        ' "not_found": false}',
+        '{"items": [], "not_found": true}',
+    )
+    await synthesize(llm_s, _field("bullet_list", constraints=Constraints(max_items=1)), [_hit()])
+    llm_c = FakeLLM('{"about": "x", "slots": []}')
+    await check_roles(llm_c, [fld], "v", [_evidence("Prepared by Acme")])
+    llm_e = FakeLLM(EMPTY)
+    await extract(llm_e, fld, [_hit()])
+    assert llm.thinks == [True] and llm_r.thinks == [False] and llm_m.thinks == [True]
+    assert llm_s.thinks == [False, False] and llm_c.thinks == [False]
+    assert llm_e.thinks == [False] and llm_b.thinks == [False]
+
+
+# ---- every value is bound to its slot / column label ---------------------------------------------
+
+
+def _cells_reply(key, cells):
+    value = [{"slot": s, "value": v} for s, v in cells]
+    return json.dumps({key: [{"n": 1, "value": value, "quotes": []}], "not_found": False})
+
+
+def _slots():
+    return [_field(field_id=f"f{i}", label=label) for i, label in enumerate(("Name", "Count"))]
+
+
+async def test_record_cells_are_realigned_to_spec_order_by_label():
+    from doc_intel.mapping.extractor import extract_records
+
+    reply = _cells_reply("records", [(" COUNT ", "14"), ("name", "North depot")])
+    out = await extract_records(FakeLLM(reply), [_slots()], [_hit()])
+    assert out.records[0].cells() == ["North depot", "14"]
+
+
+@pytest.mark.parametrize(
+    "slots",
+    [[("Count", "14"), ("Other", "x")], [("Name", "14"), ("Name", "x")]],
+    ids=["unknown", "dup"],
+)
+async def test_record_cells_with_an_unknown_or_repeated_label_keep_reply_order(slots):
+    from doc_intel.mapping.extractor import extract_records
+
+    out = await extract_records(FakeLLM(_cells_reply("records", slots)), [_slots()], [_hit()])
+    assert out.records[0].cells() == [v for _, v in slots]
+
+
+async def test_row_cells_are_realigned_to_column_order_by_label():
+    from doc_intel.mapping.extractor import extract_rows
+
+    table = _field(
+        "table", write_mode="fill_table_rows", constraints=Constraints(columns=["A", "B"])
+    )
+    reply = _cells_reply("rows", [("B", "2"), ("A", "1")]).replace('"n": 1, ', "")
+    out = await extract_rows(FakeLLM(reply), table, [_hit()])
+    assert out.rows[0].cells() == ["1", "2"]
+
+
+def test_the_reply_schemas_bind_each_value_to_a_slot_key():
+    from doc_intel.mapping.schemas import LLMRecords, LLMRows
+
+    for model in (LLMRecords, LLMRows):
+        assert '"slot"' in json.dumps(model.model_json_schema())
+
+
+# ---- batched slot values and the soft fit_chars hint -----------------------------------
+
+
+def _batch_spec(llm):
+    user = llm.calls[0][0][1]["content"]
+    return json.loads(user.split("Slots:\n", 1)[1].split("\n\nChunks:", 1)[0])
+
+
+async def test_extract_batch_numbers_the_slots_and_keeps_fit_chars_out_of_constraints():
+    token = _field(
+        label="Owner",
+        context="Alpha card",
+        write_mode="replace_token",
+        constraints=Constraints(token="[Owner]", max_chars=90),
+        fit_chars=40,
+    )
+    plain = _field(label="Region")
+    llm = FakeLLM('{"slots": []}')
+    out = await extract_batch(llm, [token, plain], [_hit()])
+    spec = _batch_spec(llm)
+    assert out.slots == [] and spec["section_path"] == ["Slide 1", "Impact"]
+    first, second = spec["slots"]
+    assert first["n"] == 1 and first["context"] == "Alpha card" and first["placeholder"] == "Owner"
+    assert first["fit_chars"] == 40 and first["constraints"] == {
+        "max_chars": 90,
+        "token": "[Owner]",
+    }
+    assert second["n"] == 2 and "fit_chars" not in second and "constraints" not in second
+    assert llm.calls[0][0][0]["content"] == load_prompt("slot_values")
+
+
+async def test_extract_batch_bounds_template_strings():
+    long = _field(label="x" * 120, context="y" * 500)
+    llm = FakeLLM('{"slots": []}')
+    await extract_batch(llm, [long], [_hit()])
+    slot = _batch_spec(llm)["slots"][0]
+    assert len(slot["context"]) <= 120
+
+
+async def test_the_single_field_and_records_specs_carry_fit_chars():
+    fld = _field(fit_chars=55)
+    llm = FakeLLM(EMPTY)
+    await extract(llm, fld, [_hit()])
+    assert (
+        json.loads(llm.calls[0][0][1]["content"].split("\n\n", 1)[0].split("Field:\n")[1])[
+            "fit_chars"
+        ]
+        == 55
+    )
+    from doc_intel.mapping.extractor import _slot_spec
+
+    assert _slot_spec(fld)["fit_chars"] == 55 and "fit_chars" not in _slot_spec(_field())
+
+
+@pytest.mark.parametrize("name", ["slot_values", "field_extract", "slot_records"])
+def test_the_prompts_describe_the_fit_chars_hint(name):
+    text = load_prompt(name)
+    assert "fit_chars" in text and "never cut, join or paraphrase a quote" in text

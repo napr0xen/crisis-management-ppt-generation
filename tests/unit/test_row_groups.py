@@ -8,7 +8,7 @@ from doc_intel.llm.gateway import LLMError
 from doc_intel.mapping.engine import map_field, map_fields, row_groups
 from doc_intel.mapping.schemas import LLMRecords
 from doc_intel.templates.schemas import Constraints, IRField
-from tests.fakes import FakeLLM
+from tests.fakes import FakeLLM, slot_values_reply
 from tests.unit.test_mapping_engine import CTX, DOCS, FakeRetriever, _hit
 
 
@@ -236,12 +236,21 @@ SCENARIOS = {
 }
 
 
+def _cells(cells):
+    """Plain strings get a slot name no spec uses (reply order is kept); (slot, value) pairs are
+    sent as given."""
+    return [
+        {"slot": c[0], "value": c[1]} if isinstance(c, tuple) else {"slot": f"?{i}", "value": c}
+        for i, c in enumerate(cells)
+    ]
+
+
 def _rows_reply(rows, not_found=False):
     return json.dumps(
         {
             "rows": [
                 {
-                    "value": cells,
+                    "value": _cells(cells),
                     "quotes": [{"chunk_id": str(h.chunk_id), "quote": q} for h, q in qs],
                 }
                 for cells, qs in rows
@@ -258,7 +267,7 @@ def _records_reply(records, not_found=False):
             "records": [
                 {
                     "n": n,
-                    "value": cells,
+                    "value": _cells(cells),
                     "quotes": [{"chunk_id": str(h.chunk_id), "quote": q} for h, q in qs],
                 }
                 for n, cells, qs in records
@@ -445,7 +454,7 @@ async def test_not_found_no_hits_and_invalid_output_miss_every_field():
 
 async def test_transport_error_propagates():
     class Boom:
-        async def complete(self, messages, json_schema=None):
+        async def complete(self, messages, json_schema=None, think=False):
             raise LLMError("down")
 
     fields, hit, _, _ = _setup("slots")
@@ -553,7 +562,7 @@ async def test_grids_are_not_shared_but_loose_facts_still_are_and_progress_is_in
     ]
     rows = [(r[:2], [(hit, s)]) for r, s in zip(LOG_ROWS, LOG, strict=True)]
     llm = FakeLLM(
-        _one("Northfield station", hit, title),
+        slot_values_reply(("Northfield station", hit, title)),  # a lone slot of the opening unit
         _seq(rows[:2]),
         _seq(rows[1:]),
     )

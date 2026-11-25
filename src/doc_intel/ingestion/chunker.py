@@ -102,3 +102,13 @@ def chunk(
         )
         for i, (e, t) in enumerate(pieces)
     ]
+
+
+def embed_text(chunk: ChunkPayload) -> str:
+    """The text that is embedded: filename and section give a bare chunk its context."""
+    where = (
+        chunk.filename
+        if chunk.section_heading is None
+        else (f"{chunk.filename} > {chunk.section_heading}")
+    )
+    return f"{where}\n{chunk.text}"

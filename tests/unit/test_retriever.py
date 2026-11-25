@@ -155,3 +155,59 @@ async def test_with_neighbors_keeps_hits_without_chunk_index_after_the_indexed_o
     hits = [legacy, _hit_at(a, 2)]
     got = await Retriever(FakeEmbedder(), store).with_neighbors(CTX, hits, 5)
     assert got[-1] == legacy and [h.chunk_index for h in got[:-1]] == [1, 2, 3]
+
+
+def _text_hit(text: str) -> Hit:
+    return _hits(1)[0].model_copy(update={"text": text})
+
+
+def test_curate_drops_near_duplicates_keeping_the_first():
+    from doc_intel.mapping.retriever import curate
+
+    a = _text_hit("the quick brown fox jumps over the lazy dog today again")
+    dup = _text_hit("The quick brown fox jumps over the lazy dog today again!")
+    other = _text_hit("completely different words about power outages")
+    assert curate([a, dup, other], 10_000, lambda t: 1) == ([a, other], 2)
+
+
+def test_curate_stops_at_the_token_budget_but_keeps_the_first():
+    from doc_intel.mapping.retriever import curate
+
+    hits = [_text_hit(f"distinct text number {i} alpha{i}") for i in range(5)]
+    assert curate(hits, 2 * 10, lambda t: 10) == (hits[:2], 20)
+    assert curate(hits, 1, lambda t: 10) == (hits[:1], 10)
+    assert curate([], 100, len) == ([], 0)
+
+
+def test_select_context_logs_only_ids_scores_and_counts(monkeypatch):
+    import structlog
+
+    from doc_intel.mapping import retriever as mod
+
+    monkeypatch.setattr(mod, "count_tokens", lambda text, model: 5)
+    hits = [_text_hit("secret quote alpha"), _text_hit("secret quote beta gamma")]
+    with structlog.testing.capture_logs() as logs:
+        kept = mod.select_context(hits)
+    assert kept == hits
+    [event] = logs
+    assert event["event"] == "retrieval" and event["context_tokens"] == 10 and event["hits"] == 2
+    assert event["chunk_ids"] == [str(h.chunk_id) for h in hits]
+    assert "secret" not in str(event)
+
+
+async def test_opening_returns_the_first_chunks_of_each_document_in_document_order():
+    d1, d2, d3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    store = NeighborStore({d1: 5, d2: 1})
+    got = await Retriever(FakeEmbedder(), store).opening(CTX, [d2, d1, d3])
+    assert [(h.document_id, h.chunk_index) for h in got] == [(d2, 0), (d1, 0), (d1, 1)]
+    ctx, ids = store.retrieved[0]
+    assert ctx == CTX and ids == [chunk_id(d, i) for d in (d2, d1, d3) for i in (0, 1)]
+    assert await Retriever(FakeEmbedder(), NeighborStore({})).opening(CTX, []) == []
+
+
+def test_select_context_cuts_by_an_explicit_token_budget_and_keeps_the_first():
+    from doc_intel.mapping.retriever import select_context
+
+    hits = _hits(5)
+    assert select_context(hits, 1) == hits[:1]
+    assert select_context(hits, 100_000) == hits

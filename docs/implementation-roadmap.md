@@ -38,6 +38,7 @@ Common gate for every phase ≥ 1: `uv run ruff check . && uv run ruff format --
 | 16 | Grounded synthesis for summary & finding fields | **Complete** (live-tested; `main` at `1a3b6b4`) |
 | 17 | MLX provider, token scanner fix, tile-card & numbered-list grouping | **Complete** (on branch, awaiting live test) |
 | 18 | Native PPTX chart population & generation | **Complete** (on branch, awaiting live test) |
+| 19 | Extraction edge cases, conflict API & custom web UI | **In progress** (branch `phase-19-custom-web-ui`) |
 | next | Universal extraction & mapping accuracy | all four gaps addressed in Phases 13-16; Phases 17-18 follow the Phase 14-16 live test |
 
 ---
@@ -444,6 +445,24 @@ Not yet a phase: plan it (entry/exit gates, deliverables) before any code. Found
 **Two strict requirements, for every item below:**
 1. **Completely universal.** No finance-, language- or template-specific rules, keywords, field names, labels or layouts. Every fix must generalize to any template (pptx/docx/xlsx) and any source document, and is tested on at least two unrelated domains.
 2. **Accuracy pushed to the maximum possible**, measured on the eval set ([testing-strategy.md § 5](testing-strategy.md#5-rag--mapping-evaluation-testseval-marker-llm)) before and after each change, without loosening the existing hard gates (0 fabricated citations, 100% citation verification, conflicts never auto-resolved).
+
+
+## Phase 19: Extraction edge cases, conflict API & custom web UI
+
+Cause (live test of Phases 14-18 on a cash-report deck): bracket tokens in a reconciliation table's cells stayed literal in the output; two side-by-side tables (largest receipts / largest payments) had no heading context of their own, so one could take the other's rows; a credit row appeared in a debits table; a keyed card slot (`Risk:` under `Price inflation`) came back as its own heading. Open WebUI shows conflicts as text only, so a user cannot pick a candidate with its source in one click.
+
+- **Entry:** Phase 18 merged (`main` at `63a821c`).
+- **Plan:**
+  1. Token cells (`ir_builder`, `runs.fill_rows`): a native table whose every body row is a static label in column 0 plus token cells is a label/value grid, never `fill_table_rows`; every token in a table cell that no field covers gets a code-made `replace_token` field; `fill_rows` clears tokens left in body cells it did not write (marker or fewer rows).
+  2. Sibling tables (`anchors_pptx`): table cells carry the nearest heading (`_context`) before the row/column label, so each side-by-side table has its own context, query and prompt.
+  3. Direction (`table_rows.md`, `slot_records.md`, extractor specs): row prompts get the sibling headings on the slide and exclude rows that contradict the table's heading or direction; rows the candidate check places under a sibling heading are dropped.
+  4. Heading echo (`engine._rule_note`): a text value whose words are all words of its own context is rejected, with one corrective retry; still echoing, it is `missing`.
+  5. API: `GET .../mapping-runs/{run_id}/conflicts`, `POST .../mapping-runs/{run_id}/resolve-conflicts` (edit ops under the hood, waits for the render, returns the artifact and the remaining conflicts); `GET/POST/DELETE /v1/library/templates` and `GET /v1/library/scans/{scan_id}` (ADR-014 supersedes the CLI-only part of ADR-012); `pipe/chat` takes an optional `library_template_id` or `template_document_id` that skips routing; CORS for `http://localhost:5173`; `frontend/dist` served at `/` when built.
+  6. `frontend/` (React, TypeScript, Vite, Tailwind): chat sessions sidebar with a `+` menu (new chat, Templates), Templates page (drag-and-drop upload, scan status, counts, delete with confirmation), chat workspace (multi-file attachments, template selector, live progress, download card, inline conflict cards with candidates and a custom value, "Apply & Re-render PPTX").
+- **Exit:** tests on two or more unrelated domains for each of fixes 1-4 (no domain or template hardcoding); API tests incl. tenant isolation (`404`) on the new run-scoped routes; `uv run ruff check .`, `uv run ruff format --check .`, `uv run alembic check`, `uv run pytest -m "not slow"`, `npm run build` in `frontend/` green; `/ponytail-review`, `/ecc:quality-gate`.
+  7. Live-test fixes (procurement and finance decks on `mlx_lm.server`): `_repair` swaps a bracket-less `replace_token` token for the anchor's own token when exactly one matches (procurement failed `ir_invalid` at slide 6); the pptx writer shrinks text that overflows its box with `normAutofit fontScale`; text slots of one box that got the same value get one comparative role check (`slot_roles.md`), and a role the source never states becomes `missing` (finance "Bank / institution" got the account holder's name). See [system-design.md](system-design.md) § 5, § 7 and § 8.
+  8. Live-test fixes (procurement deck, run `e9f05471`, 85 populated / 27 partial / 7 missing, 12.5 min): a `fill_cell` cell typed as a number that states a word with no digit is verified as verbatim text (5 supplier ratings were missing and made 25 correct cells partial); a card's text slot that only restates its tile's number is `missing`, and `slot_records.md` asks for the measure's name (4 KPI captions repeated their values); picture tokens (`[Company Logo 1]`, `[Image 2]`) are dropped from the IR, `IR_BUILDER_VERSION` 2; a `#` count quoted as a table row reads its label from that table's header row in the same chunk (6 counts were each remapped alone, 6 retrievals and 12 calls). `LLM_HYBRID_THINKING=false` measured lossless on 70 fields.
+- **Status:** In progress.
 
 **Gaps** (the first two are done in [Phase 13](#phase-13-universal-accuracy-number-formatting--cross-slide-facts); card context and the 32k budget in [Phase 14](#phase-14-spatial--card-context--32k-retrieval-budget); row-grouped tables in [Phase 15](#phase-15-row-grouped-table-extraction); grounded synthesis in [Phase 16](#phase-16-grounded-synthesis-for-summary--finding-fields)):
 - **Clean currency and number formatting.** Typed values are written as their canonical form (for example a bare float), not formatted the way the template or source shows them (thousands separators, decimals, currency symbol or code, percent sign). The written text must follow the template's own example or the source's format; xlsx cells keep real numbers.

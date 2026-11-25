@@ -16,7 +16,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Summary!D1",
@@ -34,7 +35,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Summary!B2",
@@ -51,7 +53,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Summary!B3",
@@ -68,7 +71,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Summary!A5",
@@ -84,7 +88,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Summary!B6",
@@ -101,7 +106,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Summary!A7",
@@ -117,7 +123,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!B1",
@@ -133,7 +140,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     },
     {
       "anchor_id": "xlsx:Q1!Data!A2",
@@ -149,7 +157,8 @@
       "pos": null,
       "context": null,
       "card": null,
-      "chart": null
+      "chart": null,
+      "fit_chars": null
     }
   ]
 }

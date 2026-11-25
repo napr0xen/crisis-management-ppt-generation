@@ -9,7 +9,7 @@ from doc_intel.core.errors import UpstreamUnavailable
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.llm.gateway import LLMClient, complete_json
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.mapping.retriever import Retriever, format_hit
+from doc_intel.mapping.retriever import Retriever, format_hit, select_context
 from doc_intel.mapping.verifier import verify_quote
 
 NOT_FOUND = "I could not find this in the uploaded documents."
@@ -57,8 +57,7 @@ async def answer(
         raise UpstreamUnavailable() from exc
     if not hits:
         return not_found
-    # shortcut: no token budget, the context is bounded by TOP_N hits x CHUNK_MAX_TOKENS within
-    # LLM_NUM_CTX; add one if either grows.
+    hits = select_context(hits)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("qa")},

@@ -1,5 +1,7 @@
 """Dense embeddings from Ollama's `qwen3-embedding` + local BM25 sparse vectors (ADR-011)."""
 
+from collections import OrderedDict
+
 import httpx
 
 from doc_intel.embeddings import sparse
@@ -12,6 +14,7 @@ NUM_CTX = 1024
 QUERY_INSTRUCTION = (
     "Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: "
 )
+QUERY_CACHE_SIZE = 512  # repeated queries (one per field, retries) skip the model call
 TIMEOUT_S = 120.0  # the first call also loads the model
 
 
@@ -29,6 +32,7 @@ class OllamaQwen3Embedder:
         self._url = f"{base_url.rstrip('/')}/api/embed"
         self._model = model
         self._dimensions = dimensions  # Matryoshka truncation, so a larger model keeps 1024
+        self._queries: OrderedDict[tuple[str, int, str], Embedding] = OrderedDict()
 
     async def embed_documents(self, texts: list[str]) -> list[Embedding]:
         dense = await self._dense(texts)
@@ -38,9 +42,16 @@ class OllamaQwen3Embedder:
         ]
 
     async def embed_query(self, text: str) -> Embedding:
+        key = (self._model, self._dimensions, text)
+        if key in self._queries:
+            self._queries.move_to_end(key)
+            return self._queries[key]
         [dense] = await self._dense([QUERY_INSTRUCTION + text])
         # Lexical matching uses only the user's words, never the instruction.
-        return Embedding(dense=dense, sparse=sparse.encode_query(text))
+        self._queries[key] = Embedding(dense=dense, sparse=sparse.encode_query(text))
+        if len(self._queries) > QUERY_CACHE_SIZE:
+            self._queries.popitem(last=False)
+        return self._queries[key]
 
     async def _dense(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []

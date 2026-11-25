@@ -29,7 +29,7 @@ from tests.conftest import headers
 from tests.fakes import FakeEmbedder, FakeLLM
 from tests.fixtures import templates
 from tests.integration.test_generation_e2e import CHUNK, QUOTE, draft_reply
-from tests.integration.test_mapping_e2e import candidate, extraction
+from tests.integration.test_mapping_e2e import batch, candidate, extraction
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("empty_queue")]
 
@@ -513,8 +513,8 @@ async def test_map_template_end_to_end(
         )
         llm.replies += [
             draft_reply("pptx"),
-            extraction([candidate("Substation fire", chunk_id(source_id, 0), QUOTE)]),
-            extraction([], not_found=True),
+            batch([candidate("Substation fire", chunk_id(source_id, 0), QUOTE)]),  # opening slide
+            extraction([], not_found=True),  # `lost`, alone on slide 2
             json.dumps({"rows": [], "not_found": True}),  # the empty table's code-made field
         ]
         set_intent(

@@ -161,3 +161,12 @@ def test_xlsx_typed_values_ignore_the_source_span():
     )
     d = _result("partial", "2024-03-05", quote="issued 5 March 2024")
     assert _c(_field("date", "fill_cell"), d, "xlsx") == 45356
+
+
+@pytest.mark.parametrize("etype", ["number", "currency", "percent"])
+@pytest.mark.parametrize("fmt", ["pptx", "docx", "xlsx"])
+def test_a_word_a_number_typed_cell_holds_is_written_as_the_source_wrote_it(etype, fmt):
+    # a table cell the IR typed as a number but the source states as a word ("Preferred")
+    field = _field(etype, "fill_cell", unit="pts")
+    result = _result(value="Preferred", quote="| Azure Peak | 97% | Preferred |")
+    assert content(field, result, fmt, MISSING, CONFLICT) == ["Preferred"]

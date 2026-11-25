@@ -1,5 +1,6 @@
 """PPTX surgical writer (system-design § 8): ids resolve exactly as in `templates/anchors_pptx`."""
 
+import math
 import re
 from io import BytesIO
 
@@ -13,7 +14,7 @@ from pptx.shapes.base import BaseShape
 from doc_intel.mapping.schemas import MappingWarning
 from doc_intel.mapping.verifier import MONTHS, TYPED_TYPES, is_date
 from doc_intel.templates.anchors import find_tokens
-from doc_intel.templates.anchors_pptx import keyed_shapes
+from doc_intel.templates.anchors_pptx import DEFAULT_PT, EMU_PT, GLYPH_EM, LINE_EM, keyed_shapes
 from doc_intel.writers import WriteItem
 from doc_intel.writers.runs import (
     A,
@@ -141,11 +142,56 @@ def _kind_ok(shape: BaseShape, mode: str, cell: bool) -> bool:
     return shape.has_chart if mode == "fill_chart" else shape.has_text_frame
 
 
+_AUTOFIT = ("spAutoFit", "noAutofit", "normAutofit")
+
+
+def _fit(shape: BaseShape) -> None:
+    """Shrink-on-overflow when the written text would not fit its box (a one-line value never
+    shrinks: tight one-line boxes are shorter than a line plus insets)."""
+    if not shape.width or not shape.height:  # inherited placeholder geometry
+        return
+    frame = shape.text_frame
+    width = (shape.width - frame.margin_left - frame.margin_right) / EMU_PT
+    height = (shape.height - frame.margin_top - frame.margin_bottom) / EMU_PT
+    paras = []
+    for p in frame.paragraphs:
+        # shortcut: inherited sizes (lstStyle/master) are not read, assumes 18pt; read them if
+        # templates rely on inheritance.
+        size = max((r.font.size.pt for r in p.runs if r.font.size), default=DEFAULT_PT)
+        paras.append((len(p.text), size))
+
+    def fits(scale: float) -> bool:
+        # shortcut: average glyph width (GLYPH_EM), not real font metrics; use font metrics if
+        # the shrink is visibly off.
+        lines = [
+            max(1, math.ceil(n * GLYPH_EM * size * scale / max(width, 1))) for n, size in paras
+        ]
+        needed = sum(k * LINE_EM * size * scale for k, (_, size) in zip(lines, paras, strict=True))
+        return sum(lines) == 1 or needed <= height
+
+    if fits(1.0):
+        return
+    pct = next((c for c in range(95, 24, -5) if fits(c / 100)), 25)
+    body = frame._txBody.bodyPr
+    tags = {A.q(n) for n in _AUTOFIT}
+    for child in [c for c in body if c.tag in tags]:
+        body.remove(child)
+    warp = body.find(A.q("prstTxWarp"))
+    body.insert(0 if warp is None else list(body).index(warp) + 1, _norm_autofit(pct))
+
+
+def _norm_autofit(pct: int) -> etree._Element:
+    el = etree.Element(A.q("normAutofit"))
+    el.set("fontScale", str(pct * 1000))
+    return el
+
+
 def write(template: bytes, items: list[WriteItem]) -> tuple[bytes, list[MappingWarning]]:
     prs = Presentation(BytesIO(template))
     warnings: list[MappingWarning] = []
     # Resolve every target before the first write so no write can shift a later lookup.
     targets = [_resolve(prs, item.field.anchor_id, item.field.write_mode) for item in items]
+    texted: dict[etree._Element, BaseShape] = {}  # non-table shapes that received text
     for item, (shape, m) in zip(items, targets, strict=True):
         field = item.field
         if field.write_mode == "fill_chart":
@@ -156,6 +202,8 @@ def write(template: bytes, items: list[WriteItem]) -> tuple[bytes, list[MappingW
             continue
         if m[3] is None:
             container = shape.text_frame._txBody
+            if field.write_mode != "fill_table_rows":
+                texted[shape._element] = shape
         else:
             container = shape.table.cell(int(m[3]), int(m[4]))._tc.txBody
         if field.write_mode == "fill_table_rows":
@@ -177,6 +225,8 @@ def write(template: bytes, items: list[WriteItem]) -> tuple[bytes, list[MappingW
             )
         else:
             write_paragraphs(paragraphs_of(container, A), texts(item.content), A)
+    for shape in texted.values():
+        _fit(shape)
     out = BytesIO()
     prs.save(out)
     return out.getvalue(), warnings

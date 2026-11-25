@@ -28,6 +28,8 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
+IR_BUILDER_VERSION = 2  # bump when build_ir output changes, so library templates are re-extracted
+
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
 _QUOTED = re.compile(r"'([^']*)'")
@@ -118,8 +120,8 @@ def validate(draft: IRDraft, amap: AnchorMap) -> list[str]:
             )
         elif f.write_mode == "replace_token" and f.constraints.token not in anchor.tokens:
             errors.append(
-                f"field '{f.field_id}': replace_token needs constraints.token to be one "
-                f"of the anchor's tokens (anchor '{anchor.anchor_id}' has {len(anchor.tokens)})."
+                f"field '{f.field_id}': replace_token needs constraints.token to be one of the "
+                f"tokens of anchor '{anchor.anchor_id}' ({len(anchor.tokens)} tokens)."
             )
         elif f.write_mode == "fill_table_rows" and not (
             anchor.table and (anchor.table.row, anchor.table.col) == (1, 0)
@@ -208,17 +210,88 @@ def _batches(amap: AnchorMap) -> list[tuple[str | None, list[Anchor]]]:
     return out
 
 
+def _cells_of(amap: AnchorMap) -> dict[str, dict[tuple[int, int], Anchor]]:
+    tables: dict[str, dict[tuple[int, int], Anchor]] = {}
+    for a in amap.anchors:
+        if a.kind == "table_cell" and a.table and _CELL.search(a.anchor_id):
+            tables.setdefault(_table_of(a.anchor_id), {})[(a.table.row, a.table.col)] = a
+    return tables
+
+
+def _label_grids(amap: AnchorMap) -> set[str]:
+    """Native tables whose every body row is a static label in column 0 plus a token cell: a
+    label/value grid, each value its own `replace_token`, never one `fill_table_rows`."""
+    grids = set()
+    for table, cells in _cells_of(amap).items():
+        rows: dict[int, list[Anchor]] = {}
+        for (r, _), a in sorted(cells.items()):
+            if r:
+                rows.setdefault(r, []).append(a)
+        if (
+            rows
+            and all(
+                row[0].table.col == 0  # type: ignore[union-attr]
+                and not row[0].tokens
+                and has_letter(row[0].text)
+                and any(a.tokens for a in row[1:])
+                for row in rows.values()
+            )
+        ):
+            grids.add(table)
+    return grids
+
+
+def _token_key(token: str) -> str:
+    return " ".join(token.strip("[]{}<> \t\r\n").split()).casefold()
+
+
+# A picture slot ("[Company Logo 1]", "[Logo]", "[Image 2]", "{{photo}}") is filled by hand with
+# an image, never with text; "[Image caption]" is text.
+_PICTURE = re.compile(
+    r"^(?:[^\W\d_]+ )?(?:logo|image|picture|photo|icon)(?: (?:\d+|placeholder))?$"
+)
+
+
+def _is_picture(token: str | None) -> bool:
+    return token is not None and bool(_PICTURE.match(_token_key(token)))
+
+
+def _snap_token(f: IRField, a: Anchor | None) -> IRField:
+    """The model often drops the brackets of a token; adopt the anchor's real token when exactly
+    one matches, else leave it for validate() to report."""
+    token = f.constraints.token
+    if not (a and f.write_mode == "replace_token" and a.tokens and token is not None):
+        return f
+    if token in a.tokens:
+        return f
+    hits = [t for t in a.tokens if _token_key(t) == _token_key(token)]
+    if len(hits) != 1:
+        return f
+    return f.model_copy(update={"constraints": f.constraints.model_copy(update={"token": hits[0]})})
+
+
 def _repair(draft: BatchDraft, amap: AnchorMap) -> BatchDraft:
-    """Drop model slips that are safe to drop: removing a field never fabricates one."""
+    """Fix or drop model slips that are safe: removing a field never fabricates one."""
     anchors = {a.anchor_id: a for a in amap.anchors}
+    grids = _label_grids(amap)
     kept: list[IRField] = []
     seen: set[tuple[str, str, str | None]] = set()
-    for f in draft.fields:
-        a = anchors.get(f.anchor_id)
+    changed = False
+    for original in draft.fields:
+        a = anchors.get(original.anchor_id)
+        f = _snap_token(original, a)
+        changed |= f is not original
         if a and f.write_mode == "fill_table_rows" and a.kind != "table_cell":
+            continue
+        if f.write_mode == "fill_table_rows" and _table_of(f.anchor_id) in grids:
             continue
         if a and f.write_mode == "replace_token" and not a.tokens and not a.is_placeholder:
             continue
+        if f.write_mode == "replace_token" and _is_picture(f.constraints.token):
+            continue
+        if a and a.kind == "table_cell" and a.table and a.table.row == 0 and a.text.strip():
+            if not a.tokens:  # a header label, never a field; an empty row-0 cell stays fillable
+                continue
         key = (f.anchor_id, f.write_mode, f.constraints.token)
         if a and key in seen:
             continue
@@ -228,8 +301,11 @@ def _repair(draft: BatchDraft, amap: AnchorMap) -> BatchDraft:
         log.info(
             "ir_repaired", dropped=len(draft.fields) - len(kept), anchor_count=len(amap.anchors)
         )
-        return draft.model_copy(update={"fields": kept})
-    return draft
+    return (
+        draft.model_copy(update={"fields": kept})
+        if changed or len(kept) < len(draft.fields)
+        else draft
+    )
 
 
 async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
@@ -265,10 +341,10 @@ _DAY = re.compile(r"(?i)\b(?:dd?|day|d[ií]a)\b")
 
 
 def _with_anchor_data(f: IRField, a: Anchor) -> IRField:
-    """context, card and a native chart's series columns come from the anchor, never the LLM; a
-    `#` token (`[# 1]`, `[# items]`) is a count, so it is a number, and a month-year token
-    (`[Month YYYY]`, `[MM/YYYY]`) is text, whatever type the LLM chose."""
-    update: dict = {"context": a.context, "card": a.card}
+    """context, card, fit_chars and a native chart's series columns come from the anchor, never
+    the LLM; a `#` token (`[# 1]`, `[# items]`) is a count, so it is a number, and a month-year
+    token (`[Month YYYY]`, `[MM/YYYY]`) is text, whatever type the LLM chose."""
+    update: dict = {"context": a.context, "card": a.card, "fit_chars": a.fit_chars}
     token = (f.constraints.token or "").strip("{[< ")
     if f.write_mode == "replace_token" and token.startswith("#"):
         update["expected_type"] = "number"
@@ -283,18 +359,44 @@ def _with_anchor_data(f: IRField, a: Anchor) -> IRField:
     return f.model_copy(update=update)
 
 
+_TRAILING_ORDINAL = re.compile(r"[\s_#-]*(?<!\d)\d{1,3}$")  # a year ("FY2025") is no ordinal
+
+
+def _caption_types(fields: list[IRField], by_id: dict[str, Anchor]) -> list[IRField]:
+    """In a card, a numeric token with no ordinal beside a numbered token (`[Revenue]` under
+    `[Value 1]`) is the tile's caption, the measure's name: text, not a number the source lacks."""
+    unit_of = {}
+    for f in fields:
+        a = by_id[f.anchor_id]
+        if f.write_mode == "replace_token" and a.card and f.constraints.token:
+            slide = _SLIDE.match(a.anchor_id)
+            unit_of[f.field_id] = (slide[1] if slide else "", a.card)
+    numbered = {
+        unit_of[f.field_id]
+        for f in fields
+        if f.field_id in unit_of
+        and _TRAILING_ORDINAL.search((f.constraints.token or "").strip("{}[]<> "))
+    }
+    return [
+        f.model_copy(update={"expected_type": "text"})
+        if f.field_id in unit_of
+        and unit_of[f.field_id] in numbered
+        and f.expected_type in ("number", "currency", "percent")
+        and not (f.constraints.token or "").strip("{[< ").startswith("#")
+        and not _TRAILING_ORDINAL.search((f.constraints.token or "").strip("{}[]<> "))
+        else f
+        for f in fields
+    ]
+
+
 def _empty_tables(amap: AnchorMap, fields: list[IRField], used: set[str]) -> list[IRField]:
     """A `fill_table_rows` field for each native table no field touches whose header row names
     every column and whose body is empty: such a table is a slot the IR model sometimes skips."""
     # shortcut: a table meant to be filled by hand (a sign-off grid) also gets a field and a
     # missing marker when the sources state no rows; add an IR-edit opt-out if users hit it.
     touched = {_table_of(f.anchor_id) for f in fields}
-    tables: dict[str, dict[tuple[int, int], Anchor]] = {}
-    for a in amap.anchors:
-        if a.kind == "table_cell" and a.table and _CELL.search(a.anchor_id):
-            tables.setdefault(_table_of(a.anchor_id), {})[(a.table.row, a.table.col)] = a
     added = []
-    for table, cells in tables.items():
+    for table, cells in _cells_of(amap).items():
         headers = [" ".join(cells[rc].text.split()) for rc in sorted(cells) if rc[0] == 0]
         body = [a for rc, a in cells.items() if rc[0] > 0]
         first = cells.get((1, 0))
@@ -321,6 +423,48 @@ def _empty_tables(amap: AnchorMap, fields: list[IRField], used: set[str]) -> lis
                 ),
             )
         )
+    return added
+
+
+_NOT_ID = re.compile(r"[^a-z0-9]+")
+
+
+def _token_cells(amap: AnchorMap, fields: list[IRField], used: set[str]) -> list[IRField]:
+    """A `replace_token` field for each token of a native table cell that no field covers, so no
+    bracket token stays literal in the output (the IR model sometimes skips such cells)."""
+    owned = {_table_of(f.anchor_id) for f in fields if f.write_mode == "fill_table_rows"}
+    covered = {
+        (f.anchor_id, f.constraints.token) for f in fields if f.write_mode == "replace_token"
+    }
+    other = {f.anchor_id for f in fields if f.write_mode != "replace_token"}
+    added = []
+    for a in amap.anchors:
+        if a.kind != "table_cell" or a.anchor_id in other or _table_of(a.anchor_id) in owned:
+            continue
+        for token in a.tokens:
+            if (a.anchor_id, token) in covered or _is_picture(token):
+                continue
+            inner = token.strip("{}[]<> _") or "value"
+            base = _NOT_ID.sub("_", inner.casefold()).strip("_")
+            base = (base if base[:1].isalpha() else f"cell_{base}".strip("_"))[:56] or "cell"
+            n, field_id = 1, base
+            while field_id in used:
+                n += 1
+                field_id = f"{base}_{n}"
+            used.add(field_id)
+            added.append(
+                IRField(
+                    field_id=field_id,
+                    anchor_id=a.anchor_id,
+                    section_path=a.path,
+                    label=(a.context if has_letter(a.context) else inner)[:120],
+                    description=f"The value for {inner}."[:500],
+                    expected_type="text",
+                    required=False,
+                    write_mode="replace_token",
+                    constraints=Constraints(token=token),
+                )
+            )
     return added
 
 
@@ -356,11 +500,12 @@ async def build_ir(
             if f.write_mode == "fill_table_rows":
                 owned.add(_table_of(f.anchor_id))
     fields += _empty_tables(amap, fields, used)
+    fields += _token_cells(amap, fields, used)
     errors = validate(IRDraft(fields=fields), amap) if fields else []
     if not fields or errors:
         log.warning("ir_invalid", errors=_loggable(errors), anchor_count=len(amap.anchors))
         raise IRInvalid()
     # context and card are code-set, never the LLM's
     by_id = {a.anchor_id: a for a in amap.anchors}
-    fields = [_with_anchor_data(f, by_id[f.anchor_id]) for f in fields]
+    fields = [_with_anchor_data(f, by_id[f.anchor_id]) for f in _caption_types(fields, by_id)]
     return TemplateIR(fields=fields, template_id=template_id, version=1, format=amap.format)

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from lxml import etree
 
+from doc_intel.templates.anchors import find_tokens
 from doc_intel.writers import Content
 
 _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
@@ -175,6 +176,14 @@ def replace_token(
         raise KeyError("token_not_found")
 
 
+def _clear_tokens(cell: etree._Element, fl: Flavor) -> None:
+    """Remove every placeholder token left in a cell the content did not write; text stays."""
+    ps = paragraphs_of(cell, fl)
+    full = "\n".join("".join(_run_text(r, fl) for r in p.iter(fl.q("r"))) for p in ps)
+    for token in sorted(find_tokens(full), key=len, reverse=True):
+        replace_token(ps, token, "", fl)
+
+
 def fill_rows(
     cells_of: Callable[[int], list[etree._Element]],
     n_rows: int,
@@ -182,16 +191,23 @@ def fill_rows(
     fl: Flavor,
 ) -> bool:
     """fill_table_rows from row 1 down into unique cells; True when values did not fit."""
-    if content and isinstance(content[0], str):  # a MISSING/CONFLICT marker
+    marker = bool(content) and isinstance(content[0], str)
+    if marker:  # a MISSING/CONFLICT marker
         write_paragraphs(paragraphs_of(cells_of(1)[0], fl), texts(content), fl)
-        return False
     overflow = False
-    for i, row in enumerate(content):
+    written = {(1, 0)} if marker else set()
+    for i, row in [] if marker else enumerate(content):
         r = i + 1
         if r >= n_rows:
-            return True
+            overflow = True
+            break
         cells = cells_of(r)
         overflow = overflow or len(row) > len(cells)
-        for cell, value in zip(cells, row, strict=False):  # type: ignore[arg-type]
+        for c, (cell, value) in enumerate(zip(cells, row, strict=False)):  # type: ignore[arg-type]
             write_paragraphs(paragraphs_of(cell, fl), [value], fl)
+            written.add((r, c))
+    for r in range(1, n_rows):
+        for c, cell in enumerate(cells_of(r)):
+            if (r, c) not in written:
+                _clear_tokens(cell, fl)
     return overflow

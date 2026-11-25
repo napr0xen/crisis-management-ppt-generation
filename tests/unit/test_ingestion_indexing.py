@@ -15,6 +15,7 @@ from doc_intel.db import repo
 from doc_intel.db.models import Job
 from doc_intel.db.session import make_engine
 from doc_intel.embeddings.schemas import Embedding, SparseVector
+from doc_intel.ingestion.chunker import embed_text
 from doc_intel.ingestion.schemas import ChunkPayload, ParsedDocument
 from doc_intel.ingestion.upload import parsed_key
 from doc_intel.jobs import handlers as handlers_mod
@@ -151,7 +152,7 @@ async def test_chunks_are_embedded_and_indexed(sm, ctx, upload, monkeypatch):
     assert upsert_ctx == ctx
     assert len(chunks) == len(embeddings) == doc.chunk_count
     assert {c.document_id for c in chunks} == {document_id}
-    assert embedder.calls == [[c.text for c in chunks]]
+    assert embedder.calls == [[embed_text(c) for c in chunks]]
 
     n = doc.chunk_count
     assert stages == [

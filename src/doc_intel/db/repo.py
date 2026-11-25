@@ -538,7 +538,7 @@ async def latest_job_for_document(
 
 
 # Library catalog: global and read-only for users (data-model.md tenancy exception). Unscoped by
-# design; the only callers are the operator CLI and `templates.library.adopt`.
+# design; the only callers are the operator CLI, `api/v1/library.py` and `templates.library.adopt`.
 
 
 async def list_library_templates(session: AsyncSession) -> list[LibraryTemplate]:

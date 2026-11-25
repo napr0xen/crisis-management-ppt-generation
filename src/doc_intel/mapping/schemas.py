@@ -53,25 +53,56 @@ class LLMExtraction[V](_Strict):
     incomplete: bool
 
 
-class LLMRows(_Strict):
+class LLMCell(_Strict):
+    """One value bound to the label of the slot or column it fills (positional lists shift)."""
+
+    slot: str
+    value: str
+
+
+class LLMRow(_Strict):
     """One row per source record; `value` holds its cells in column order."""
 
-    rows: list[LLMCandidate[list[str]]]
+    value: list[LLMCell]
+    quotes: list[LLMQuote]
+
+    def cells(self) -> list[str]:
+        return [c.value for c in self.value]
+
+
+class LLMRows(_Strict):
+    rows: list[LLMRow]
     not_found: bool
 
 
 class LLMRecord(_Strict):
-    """One record of a slot group: `n` is the record's number in the spec, `value` has one string
+    """One record of a slot group: `n` is the record's number in the spec, `value` has one cell
     per slot in slot order."""
 
     n: int
-    value: list[str]
+    value: list[LLMCell]
     quotes: list[LLMQuote]
+
+    def cells(self) -> list[str]:
+        return [c.value for c in self.value]
 
 
 class LLMRecords(_Strict):
     records: list[LLMRecord]
     not_found: bool
+
+
+class LLMSlotValue(_Strict):
+    """The candidates for slot `n` of a batch call (extractor.extract_batch); like LLMExtraction."""
+
+    n: int
+    candidates: list[LLMCandidate[str | list[str]]]
+    not_found: bool
+    incomplete: bool
+
+
+class LLMSlotValues(_Strict):
+    slots: list[LLMSlotValue]
 
 
 class LLMSynthesis(_Strict):
@@ -90,6 +121,24 @@ class LLMCandidateCheck(_Strict):
     """One entry per numbered quote of the candidate check (extractor.check_candidates)."""
 
     checks: list[LLMCheck]
+
+
+class LLMRowCheck(_Strict):
+    about: str  # reasoning aid only: never logged, stored or read by code
+    belongs: Literal["this", "other", "unknown"]
+
+
+class LLMRowChecks(_Strict):
+    """One entry per numbered row of the row check (extractor.check_rows)."""
+
+    checks: list[LLMRowCheck]
+
+
+class LLMSlotRoles(_Strict):
+    """Which numbered slots of one template box a value belongs to (extractor.check_roles)."""
+
+    about: str  # reasoning aid only: never logged, stored or read by code
+    slots: list[int]
 
 
 class Evidence(_Strict):

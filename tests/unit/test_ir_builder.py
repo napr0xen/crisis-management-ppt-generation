@@ -13,6 +13,7 @@ from doc_intel.templates.ir_builder import (
     BatchDraft,
     _batches,
     _compact,
+    _loggable,
     _repair,
     build_ir,
     validate,
@@ -280,7 +281,7 @@ class EchoLLM:
         self.name = name
         self.first_cells = first_cells
 
-    async def complete(self, messages, json_schema=None):
+    async def complete(self, messages, json_schema=None, think=False):
         self.calls.append((list(messages), json_schema))
         ids = [
             a["anchor_id"]
@@ -795,3 +796,179 @@ async def test_a_used_static_or_headerless_table_gets_no_extra_field(name):
         amap = AnchorMap(format=fmt, anchors=[other, *anchors])
         ir = await build_ir(FakeLLM(_reply(summary)), amap, TID)
         assert [f.field_id for f in ir.fields] == ["summary"]
+
+
+def _token_amap(*tokens):
+    return AnchorMap(format="pptx", anchors=[_anchor("pptx:s6:sp3", tokens=tokens)])
+
+
+def _repaired_token(amap, token):
+    f = _field("f", "pptx:s6:sp3", "replace_token", token=token)
+    out = _repair(BatchDraft(fields=[f]), amap)
+    return out, validate(out, amap)
+
+
+@pytest.mark.parametrize(
+    ("real", "given"),
+    [
+        ("[Strategic supplier scorecard - period]", "Strategic supplier scorecard - period"),
+        ("[Account Holder]", "  account   HOLDER "),
+        ("{{name}}", "name"),
+        ("<name>", "name"),
+        ("[Name]", "{{ name }}"),
+    ],
+)
+def test_repair_snaps_a_bracketless_token_to_the_real_one(real, given):
+    amap = _token_amap(real, "[Other]")
+    out, errors = _repaired_token(amap, given)
+    assert out.fields[0].constraints.token == real
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("tokens", "given"),
+    [(["[Name]", "{{name}}"], "name"), (["[Name]", "[Date]"], "nothing")],
+)
+def test_repair_leaves_an_ambiguous_or_unknown_token(tokens, given):
+    amap = _token_amap(*tokens)
+    out, errors = _repaired_token(amap, given)
+    assert out.fields[0].constraints.token == given
+    assert errors
+
+
+def test_repair_keeps_a_token_that_is_already_real():
+    amap = _token_amap("[Name]")
+    draft = BatchDraft(fields=[_field("f", "pptx:s6:sp3", "replace_token", token="[Name]")])
+    assert _repair(draft, amap) is draft
+
+
+def test_token_error_has_no_apostrophe_so_ids_survive_log_masking():
+    amap = _token_amap("[Name]")
+    f = _field("holder_name", "pptx:s6:sp3", "replace_token", token="nope")
+    (err,) = validate(IRDraft(fields=[f]), amap)
+    (logged,) = _loggable([err])
+    assert "'pptx:s6:sp3'" in logged and "'holder_name'" in logged and "'?'" not in logged
+
+
+def _card(anchor_id, token, card="1.1"):
+    return _anchor(anchor_id, "shape_text", tokens=[token]).model_copy(update={"card": card})
+
+
+def _typed(anchor_id, token, expected_type, fid):
+    return _field(fid, anchor_id, "replace_token", token=token).model_copy(
+        update={"expected_type": expected_type}
+    )
+
+
+async def _types(anchors, *fields, replies=None):
+    amap = AnchorMap(format="pptx", anchors=anchors)
+    ir = await build_ir(FakeLLM(*(replies or [_reply(*fields)])), amap, TID)
+    return {f.field_id: f.expected_type for f in ir.fields}
+
+
+async def test_a_caption_token_beside_a_numbered_value_is_retyped_to_text():
+    anchors = [
+        _card("pptx:s2:sp1", "[Value 1]"),
+        _card("pptx:s2:sp2", "[Total spend]"),
+        _card("pptx:s2:sp3", "[# items]"),
+        _card("pptx:s2:sp4", "[FY2025]"),
+    ]
+    types = await _types(
+        anchors,
+        _typed("pptx:s2:sp1", "[Value 1]", "number", "v"),
+        _typed("pptx:s2:sp2", "[Total spend]", "currency", "cap"),
+        _typed("pptx:s2:sp3", "[# items]", "currency", "n"),
+        _typed("pptx:s2:sp4", "[FY2025]", "percent", "year"),
+    )
+    # a year is no ordinal, so "[FY2025]" is a caption too; a count token stays a number
+    assert types == {"v": "number", "cap": "text", "n": "number", "year": "text"}
+
+
+async def test_a_card_without_a_numbered_token_keeps_its_types():
+    anchors = [_card("pptx:s2:sp1", "[Revenue]"), _card("pptx:s2:sp2", "[Growth]")]
+    types = await _types(
+        anchors,
+        _typed("pptx:s2:sp1", "[Revenue]", "currency", "rev"),
+        _typed("pptx:s2:sp2", "[Growth]", "percent", "growth"),
+    )
+    assert types == {"rev": "currency", "growth": "percent"}
+
+
+async def test_a_numbered_token_in_another_card_or_slide_does_not_retype():
+    anchors = [
+        _card("pptx:s2:sp1", "[Revenue]", "1.1"),
+        _card("pptx:s2:sp2", "[Value 1]", "1.2"),
+        _card("pptx:s3:sp1", "[Value 1]", "1.1"),
+    ]
+    rev = _typed("pptx:s2:sp1", "[Revenue]", "currency", "rev")
+    a = _typed("pptx:s2:sp2", "[Value 1]", "number", "a")
+    b = _typed("pptx:s3:sp1", "[Value 1]", "number", "b")
+    types = await _types(anchors, replies=[_reply(rev, a), _reply(b)])
+    assert types["rev"] == "currency"
+
+
+def test_repair_drops_a_tokenless_header_cell_but_keeps_a_token_header():
+    plain = _anchor("t:r0c0", "table_cell", table=TableRef(row=0, col=0, header="H"))
+    token = _anchor(
+        "t:r0c1", "table_cell", tokens=["[Period]"], table=TableRef(row=0, col=1, header="H")
+    )
+    amap = AnchorMap(format="pptx", anchors=[plain, token])
+    draft = BatchDraft(
+        fields=[
+            _field("h", "t:r0c0", "fill_cell"),
+            _field("p", "t:r0c1", "replace_token", token="[Period]"),
+        ]
+    )
+    assert [f.field_id for f in _repair(draft, amap).fields] == ["p"]
+
+
+def test_repair_keeps_an_empty_first_row_cell_of_a_headerless_table():
+    empty = _anchor("t:r0c1", "table_cell", table=TableRef(row=0, col=1, header=None), text="")
+    draft = BatchDraft(fields=[_field("v", "t:r0c1", "fill_cell")])
+    amap = AnchorMap(format="pptx", anchors=[empty])
+    assert [f.field_id for f in _repair(draft, amap).fields] == ["v"]
+
+
+async def test_fit_chars_is_a_hint_on_the_field_and_never_a_constraint_or_prompt_text():
+    a = _anchor("pptx:s1:sp1", "shape_text", tokens=["[T]"]).model_copy(update={"fit_chars": 41})
+    llm = FakeLLM(_reply(_field("t", "pptx:s1:sp1", "replace_token", token="[T]")))
+    ir = await build_ir(llm, AnchorMap(format="pptx", anchors=[a]), TID)
+    (f,) = ir.fields
+    assert f.fit_chars == 41 and f.constraints.max_chars is None
+    assert "fit_chars" not in llm.calls[0][0][1]["content"]
+    assert "fit_chars" not in IRField.model_json_schema()["properties"]
+
+
+def test_prompt_names_the_tile_caption_rule():
+    assert "caption" in load_prompt("template_ir")
+
+
+@pytest.mark.parametrize(
+    ("token", "dropped"),
+    [
+        ("[Company Logo 1]", True),
+        ("[Logo]", True),
+        ("[Client logo placeholder]", True),
+        ("[Image 2]", True),
+        ("{{photo}}", True),
+        ("[Image caption]", False),
+        ("[Logo usage notes]", False),
+        ("[Presenter Name]", False),
+    ],
+)
+def test_repair_drops_a_logo_or_image_placeholder_from_text_mapping(token, dropped):
+    amap = _token_amap(token, "[Title]")
+    draft = BatchDraft(
+        fields=[
+            _field("img", "pptx:s6:sp3", "replace_token", token=token),
+            _field("t", "pptx:s6:sp3", "replace_token", token="[Title]"),
+        ]
+    )
+    kept = [f.field_id for f in _repair(draft, amap).fields]
+    assert kept == (["t"] if dropped else ["img", "t"])
+
+
+def test_ir_builder_version_is_bumped_for_the_logo_rule():
+    from doc_intel.templates.ir_builder import IR_BUILDER_VERSION
+
+    assert IR_BUILDER_VERSION >= 2

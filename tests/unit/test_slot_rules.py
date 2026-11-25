@@ -11,7 +11,7 @@ import pytest
 from doc_intel.llm.prompts import load_prompt
 from doc_intel.mapping.engine import map_field, map_fields
 from doc_intel.templates.schemas import Constraints, IRField
-from tests.fakes import FakeLLM
+from tests.fakes import FakeLLM, slot_values_reply
 from tests.unit.test_mapping_engine import CTX, DOCS, FakeRetriever, _hit
 from tests.unit.test_row_groups import _rows_reply, _table_field
 
@@ -175,16 +175,16 @@ async def test_a_slot_without_sibling_headings_is_not_heading_checked(name):
 async def test_map_fields_checks_only_slots_that_have_sibling_headings(name):
     context, label, quote, value = LONE[name]
     h = _hit(quote)
-    llm = FakeLLM(_ext((value, [(h, quote)])))
+    llm = FakeLLM(slot_values_reply((value, h, quote)))
     await map_fields(CTX, [_field(label, context=context)], DOCS, FakeRetriever([h]), llm)
-    assert [m[0]["content"] for m, _ in llm.calls] == [load_prompt("field_extract")]
+    assert [m[0]["content"] for m, _ in llm.calls] == [load_prompt("slot_values")]
     pair = [
         _field(label, context=context, fid="a"),
         _field(label, context="Another heading", fid="b").model_copy(
             update={"anchor_id": "pptx:s1:sp9"}
         ),
     ]
-    llm = FakeLLM(_ext((value, [(h, quote)])), YES, _ext((value, [(h, quote)])), YES)
+    llm = FakeLLM(slot_values_reply((value, h, quote), (value, h, quote)), YES, YES)
     await map_fields(CTX, pair, DOCS, FakeRetriever([h]), llm)
     prompts = [m[0]["content"] for m, _ in llm.calls]
     assert prompts.count(load_prompt("candidate_check")) == 2

@@ -106,7 +106,7 @@ class ScriptedLLM:
     def __init__(self, **handlers) -> None:
         self.handlers = handlers
 
-    async def complete(self, messages, json_schema=None) -> str:
+    async def complete(self, messages, json_schema=None, think=False) -> str:
         handler = self.handlers[json_schema["title"].split("[")[0]]
         reply = handler(messages) if callable(handler) else handler.pop(0)
         if isinstance(reply, Exception):
@@ -189,6 +189,8 @@ async def map_template(ac, app, user, fault=None) -> tuple[list, str, uuid.UUID]
             {"intent": "map_template", "template_document_id": tpl["document_id"]}
         ),
         BatchDraft=lambda m: ir_reply(),
+        # one slide holds every field: an invalid batch reply sends each field to its own call
+        LLMSlotValues=lambda m: f"not json {S}",
         LLMExtraction=extraction_reply(source_id, fault),
     )
     files = [("tpl", f"tpl_{S}.pptx"), ("src", f"src_{S}.txt")]

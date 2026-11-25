@@ -9,3 +9,8 @@ __pycache__/
 tests/eval/report.json
 .handoff/
 graphify-out/
+frontend/node_modules/
+frontend/dist/
+templates/*.pptx
+templates/*.docx
+templates/*.xlsx

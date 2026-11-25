@@ -1,10 +1,15 @@
+import asyncio
 import re
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import structlog
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from doc_intel.api.v1 import (
@@ -12,6 +17,7 @@ from doc_intel.api.v1 import (
     documents,
     health,
     jobs,
+    library,
     mapping_runs,
     pipe,
     projects,
@@ -34,6 +40,9 @@ from doc_intel.vector.qdrant_store import QdrantStore
 log = structlog.get_logger()
 
 _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+# the Vite dev server of the custom UI (frontend/)
+UI_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
 class RequestIdMiddleware:
@@ -80,6 +89,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         configure_logging(settings.log_level)
         app.state.settings = settings
+        app.state.scans = {}  # library scans (api/v1/library.py)
+        app.state.scan_tasks = set()
+        app.state.template_lock = asyncio.Lock()  # one extraction at a time: sync and uploads
         app.state.engine = make_engine(settings.database_url)
         app.state.sessionmaker = async_sessionmaker(app.state.engine, expire_on_commit=False)
         app.state.storage = LocalStorage(settings.storage_root)
@@ -131,9 +143,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if settings.job_concurrency
                 else None
             )
+            library.start_sync(app)  # a background task: extraction takes minutes
             try:
                 yield
             finally:
+                # library scans use the DB pool and storage: stop them before both close
+                for task in app.state.scan_tasks:
+                    task.cancel()
+                await asyncio.gather(*app.state.scan_tasks, return_exceptions=True)
                 if stop_worker:
                     await stop_worker()
         await store.close()
@@ -141,6 +158,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="doc_intel", version="0.1.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)
+    # added last = outermost: error responses and the request-id 500 carry CORS headers too
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=UI_ORIGINS,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-OWUI-User-Id",
+            "X-OWUI-Chat-Id",
+            "X-Request-Id",
+        ],
+        expose_headers=["X-Request-Id"],
+    )
     install_error_handlers(app)
     app.include_router(health.router, prefix="/v1")
     app.include_router(projects.router, prefix="/v1")
@@ -151,6 +182,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mapping_runs.router, prefix="/v1")
     app.include_router(artifacts.router, prefix="/v1")
     app.include_router(pipe.router, prefix="/v1")
+    app.include_router(library.router, prefix="/v1")
+    app.include_router(library.sync_router, prefix="/v1")
+    # Only `/` and `/assets` (the Vite build): a catch-all mount would shadow routes added later
+    # and turn unknown paths into non-JSON 404s.
+    # shortcut: no SPA fallback (a deep link reloads as 404), add one if the UI gets URL routes.
+    index = FRONTEND_DIST / "index.html"
+    if index.exists():
+        app.add_api_route("/", lambda: FileResponse(index), include_in_schema=False)
+        app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets", check_dir=False))
     return app
 
 

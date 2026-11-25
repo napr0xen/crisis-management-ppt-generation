@@ -248,3 +248,24 @@ def test_reranker_real_model() -> None:
     assert len(out) == 2
     assert out[0].text == hits[1].text
     assert out[0].score >= out[1].score
+
+
+async def test_repeated_query_is_served_from_the_cache():
+    requests: list[dict] = []
+    embedder = _embedder(_ollama(requests))
+    first = await embedder.embed_query("how many?")
+    assert await embedder.embed_query("how many?") == first
+    assert len(requests) == 1
+    await embedder.embed_query("another?")
+    assert len(requests) == 2
+
+
+async def test_query_cache_is_bounded_and_evicts_the_oldest():
+    from doc_intel.embeddings.ollama import QUERY_CACHE_SIZE
+
+    requests: list[dict] = []
+    embedder = _embedder(_ollama(requests))
+    for i in range(QUERY_CACHE_SIZE + 1):
+        await embedder.embed_query(f"q{i}")
+    await embedder.embed_query("q0")  # evicted, so a new request
+    assert len(requests) == QUERY_CACHE_SIZE + 2

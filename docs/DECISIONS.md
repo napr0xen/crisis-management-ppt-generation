@@ -207,7 +207,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 
 ## ADR-012 — Global template library with copy-on-use
 
-**Status:** Accepted
+**Status:** Superseded by ADR-014 (only the CLI-only registration rule; copy-on-use and the chat resolution order stand)
 
 **Context.** Users want a deck or document generated from source files alone ("make a powerpoint out of this"), without uploading a template each time. Extracting a 10-slide template's IR takes about 6 minutes on qwen3:14b. Every tenant table carries `(user_id, project_id)` with a composite FK to `projects` (ADR-009), so a shared template can't live in those tables without a fake owner.
 
@@ -237,3 +237,80 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 **Trade-offs.**
 - A paraphrased value ("make it two million" for `2000000`) is rejected. The user writes the value itself instead.
 - The edit LLM sees the field list, current values and conflict candidates, which is document-derived text. It stays inside the local LLM call and is never logged.
+
+## ADR-014 — Library templates can also be added and removed over HTTP; supersedes ADR-012's CLI-only rule
+
+**Status:** Accepted
+
+**Context.** The custom web UI (`frontend/`) needs a Templates page with upload, scan status and delete. ADR-012 allowed registration through the CLI only, because there was no admin role and the Pipe's shared secret was not an admin credential. In this single-operator, local deployment the holder of `PIPE_SHARED_SECRET` is the operator: the same person runs the CLI, the API and the UI.
+
+**Decision.**
+- `GET/POST /v1/library/templates`, `DELETE /v1/library/templates/{id}` and `GET /v1/library/scans/{scan_id}` are available to the bearer-secret holder (plus the usual `X-OWUI-User-Id`). The library stays global: no project in the path. The CLI keeps working and shares `templates/library.py` (`prepare`, `store`) with the HTTP path.
+- Upload checks (size, type, name and file uniqueness, AnchorMap) run in the request. The IR build, which takes minutes on a local LLM, runs as a background task and is tracked by an in-memory scan record. Only an error code is stored for a failed scan, never exception text.
+- Copy-on-use (ADR-012) is unchanged: picking a template copies it into the caller's project, and deleting a library template never touches adopted copies.
+
+**Trade-offs.**
+- Any user who holds the shared secret can add or remove library templates. That is acceptable only while the deployment is single-operator; a multi-user deployment needs a real admin role first.
+- Scan state is lost on restart (a scan in flight is gone and the file is uploaded again); persist it if scans must survive a restart.
+
+## ADR-015 — Hybrid bounded thinking and curated retrieval context
+
+**Status:** Accepted
+
+**Context.** With thinking off, extraction of rows, records and synthesized lists misses structure that a short reasoning step finds. With thinking on for every call, `qwen3` reasoning loops until the timeout (see `LLM_ENABLE_THINKING`). Retrieval handed the LLM every neighbor chunk, including near-identical ones, with no token budget.
+
+**Decision.**
+- `LLM_HYBRID_THINKING` (`openai_compat` only): the four reasoning-heavy calls ask for thinking, streamed and capped at `LLM_THINKING_BUDGET_TOKENS` reasoning events. Over the cap the stream is closed and one non-streaming, non-thinking second pass gets the partial reasoning appended to the last user turn. `mlx_lm` cannot continue an assistant turn, so the overrun becomes a second pass instead of a continuation. The second pass never re-enters the bounded path, so it cannot loop.
+- Retrieval: chunks are embedded with `filename > section` context, near-duplicates (Jaccard >= 0.9) are dropped, the context is cut at `RETRIEVAL_CONTEXT_TOKENS`, query embeddings are cached (LRU 512), list items keep a `- ` prefix and running headers and footers are dropped at ingestion except their first copy (a vendor or project name repeated on every slide stays findable). Mapping sizes its chunk count from the token budget before fetching neighbors, half ranked hits and half neighbors, so the trim never drops a top hit.
+- A `retrieval` and an `llm_call` log event carry ids, scores and counts only.
+
+**Trade-offs.**
+- One SSE event counts as one token; a server that batches deltas under-counts, so the cap is loose there. Ollama ignores the per-call flag.
+- A cut-off reasoning costs a second request on the overrun path.
+- Existing collections keep the old (bare text) embeddings until documents are re-ingested.
+
+**Skipped.**
+- Chunk overlap: heading-aware chunking plus `with_neighbors` already restores context, and overlap would add near-duplicates that the new dedup then drops.
+- A date payload key: no query path filters on dates.
+- A retrieval result cache: results depend on the index state, and the embedding cache removes the dominant repeated cost.
+
+## ADR-016 — One extraction call per slide, sheet or section; thinking only for multi-row structure
+
+**Status:** Accepted (amends ADR-015's list of thinking calls)
+
+**Context.** A live run of a 10-slide deck (89 fields) took about 14 minutes. Every loose slot (not a table, chart, card set or numbered grid) was mapped alone: one retrieval, one extraction, often a corrective retry and a heading check, so two or three sequential LLM calls per slot. Consecutive slots on one slide repeated near-identical retrievals. Synthesis, the slot-role check and single-card records asked for bounded thinking, hit the 160-token cap and paid a second pass. Some slots also failed for structural reasons: cover-slide metadata (title, author, date) had no heading to retrieve by; a `#` count was accepted with its number from one chunk and its label from another; a tile caption token typed as a currency could never verify its own label text.
+
+**Decision.**
+- The loose fields of one unit (`_unit`: pptx slide, xlsx sheet, docx heading section) are mapped by one retrieval and one structured call, at most `MAX_BATCH_SLOTS` (12) per call. Each slot is still verified on its own by `resolve`, so nothing is populated without a verified quote. A lone loose field off the opening unit keeps the single-field path.
+- Escalation only when needed: a slot that breaks a slot rule is re-mapped alone with its one corrective retry; a list that needs synthesis is synthesized; the heading check runs only for slots with different headings that received the same value; an unusable batch reply falls back to the single-field path.
+- Batch retrieval merges one search per slot and one per distinct heading, cut by the `RETRIEVAL_CONTEXT_TOKENS` token budget. The opening unit always gets each source document's first two chunks (cover metadata).
+- Thinking (hybrid mode) is requested only by `fill_table_rows`/chart rows and by record groups of two or more rows. Synthesis, the slot-role check, one-row records and the batch call run without it.
+- A `#` count needs its number and its own label in the same chunk.
+- In a card, a typed token with no ordinal beside a numbered value token is the card's caption and is `text`. Table header cells without tokens are dropped from the IR by code. A pptx text box carries `fit_chars`, a soft length hint for the prompt only: never a constraint, a warning or a cut.
+
+**Trade-offs.**
+- A batch prompt shares one context: a slot whose evidence is outside the merged context is missing where a single-field retrieval might have found it. The per-slot searches feed the merge to limit this.
+- Column positions in a sideways source table are still read by the model; code checks only that the label and the value share a chunk.
+- Existing template IRs keep the old types and no `fit_chars` until the template is extracted again.
+
+**Skipped.**
+- Batching card sets and numbered grids with the loose slots: they already map in one call per group.
+- Writing `fit_chars` into `constraints.max_chars`: it would trigger synthesis and `max_chars_exceeded` warnings for estimates.
+
+## ADR-017 — templates/ is the library's source of truth
+
+**Status:** Accepted. Amends ADR-014: uploads and deletes go through the folder.
+
+**Context.** The library lived only in the database and blob storage, so a template could be added through the UI or the CLI with no durable, reviewable source, and a changed extraction (a new IR builder) could not be applied without re-uploading every template by hand.
+
+**Decision.**
+- `TEMPLATES_DIR` (default `templates/`) holds the library files. At startup and on `POST /v1/templates/sync` a background sync adds new files, re-extracts files whose bytes changed or whose row has an older `ir_builder_version`, and prunes rows whose file is gone (system-design § 5.1).
+- `POST /v1/library/templates` saves the upload into the folder (`409` if the name exists) before the scan; `DELETE` removes the row, the blob and the file. A later sync therefore finds file and row equal and keeps them.
+- A missing `TEMPLATES_DIR` disables the sync instead of pruning.
+- One `asyncio.Lock` serializes the sync and upload scans.
+- The CLI `reset-library` empties the table and blobs; it leaves the folder alone.
+
+**Trade-offs.**
+- Scan state is in memory and the lock is per process: a restart loses a running sync (the next start retries) and two backend processes would race.
+- Copies already adopted into a chat keep the IR they were adopted with; use a new chat to pick the re-extracted template.
+- Files skipped for duplicate bytes or a name clash show only in the log counts, not in the UI.

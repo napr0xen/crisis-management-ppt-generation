@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     # Set it with the same value in compose: Open WebUI shares the Docker network with Qdrant.
     qdrant_api_key: SecretStr | None = None
     storage_root: Path = Path("./data/storage")
+    # the library's source of truth (ADR-017); a relative path resolves against the process cwd
+    templates_dir: Path = Path("templates")
     # >= 32 chars: an empty SIGNING_SECRET would make every signed download link forgeable.
     pipe_shared_secret: SecretStr = Field(min_length=32)
     signing_secret: SecretStr = Field(min_length=32)
@@ -50,6 +52,11 @@ class Settings(BaseSettings):
     # openai_compat only: send chat_template_kwargs (mlx_lm.server, LM Studio, vLLM need it to
     # switch Qwen3 reasoning off); strict OpenAI-compatible servers reject the field
     llm_chat_template_kwargs: bool = False
+    # openai_compat only: reasoning-heavy calls think up to the budget, else a non-thinking pass
+    llm_hybrid_thinking: bool = False
+    llm_thinking_budget_tokens: int = Field(default=160, ge=1)  # reasoning tokens before the cut
+    # tokens of retrieved chunks (headers included) handed to the LLM per call
+    retrieval_context_tokens: int = Field(default=4500, ge=512)
     qdrant_collection: str = "doc_chunks"  # tests use their own collection
     # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
     # RAM budget fits one Docling/LLM job at a time (ADR-010); revisit with more memory.

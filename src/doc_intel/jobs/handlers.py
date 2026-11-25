@@ -17,6 +17,7 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.db import repo
 from doc_intel.db.models import Job
 from doc_intel.embeddings.schemas import Embedder
+from doc_intel.ingestion.chunker import embed_text
 from doc_intel.ingestion.pipeline import parse_and_chunk
 from doc_intel.ingestion.upload import artifact_key, parsed_key
 from doc_intel.jobs.worker import Handler, OnFailed, Sessionmaker, set_progress
@@ -112,7 +113,7 @@ def make_handlers(
             await vector_store.delete_document_points(ctx, document_id)
             for start in range(0, total, INDEX_BATCH):
                 batch = chunks[start : start + INDEX_BATCH]
-                embeddings = await embedder.embed_documents([c.text for c in batch])
+                embeddings = await embedder.embed_documents([embed_text(c) for c in batch])
                 await vector_store.upsert_chunks(ctx, batch, embeddings)
                 done = start + len(batch)
                 await set_progress(sessionmaker, ctx, job.id, {**progress, "done": done})

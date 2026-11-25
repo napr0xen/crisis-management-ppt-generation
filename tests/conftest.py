@@ -24,6 +24,13 @@ os.environ.setdefault("SIGNING_SECRET", "test-signing-secret-0123456789abcdef")
 
 
 @pytest.fixture(autouse=True)
+def _reset_templates_dir():
+    yield
+    # an upload test creates the folder: drop it so the next test starts without one
+    shutil.rmtree(os.environ["TEMPLATES_DIR"], ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_structlog():
     yield
     # create_app/configure_logging bind the test's captured stdout, closed once the test ends.
@@ -58,6 +65,11 @@ os.environ["JOB_CONCURRENCY"] = "0"
 os.environ["QDRANT_COLLECTION"] = f"doc_chunks_test{_RUN_SUFFIX}"
 os.environ["STORAGE_ROOT"] = tempfile.mkdtemp(prefix="doc_intel_test_storage_")
 atexit.register(shutil.rmtree, os.environ["STORAGE_ROOT"], ignore_errors=True)
+
+# A folder that never exists: app startups skip the templates/ sync. Tests of the sync, or that
+# save uploads, point the setting at their own tmp dir.
+os.environ["TEMPLATES_DIR"] = str(Path(tempfile.mkdtemp(prefix="doc_intel_test_tpl_")) / "absent")
+atexit.register(shutil.rmtree, Path(os.environ["TEMPLATES_DIR"]).parent, ignore_errors=True)
 
 AUTH = {"Authorization": f"Bearer {PIPE_SECRET}"}
 

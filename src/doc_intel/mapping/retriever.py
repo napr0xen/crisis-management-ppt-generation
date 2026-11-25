@@ -1,13 +1,20 @@
 """Hybrid retrieval shared by Q&A and mapping (system-design § 3)."""
 
 import asyncio
+import re
+from collections.abc import Callable
 from uuid import UUID
 
+import structlog
+
+from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.reranker import BGEReranker
 from doc_intel.embeddings.schemas import Embedder, Hit
+from doc_intel.ingestion.pipeline import count_tokens
 from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
 
+log = structlog.get_logger()
 TOP_N = 8  # hits handed to the LLM
 
 
@@ -22,6 +29,50 @@ def format_hit(hit: Hit) -> str:
     section = _inline(hit.section_heading or "") or "-"
     header = f"[{hit.chunk_id} | {_inline(hit.filename)} | p.{page} | {section}]"
     return f"{header}\n{hit.text}"
+
+
+_WORDS = re.compile(r"\w+")
+NEAR_DUPLICATE = 0.9  # Jaccard overlap of the word sets
+
+
+def curate(
+    hits: list[Hit], budget_tokens: int, count: Callable[[str], int]
+) -> tuple[list[Hit], int]:
+    """`hits` in their order minus near-duplicates, cut where the formatted chunks would exceed
+    `budget_tokens` (the first is always kept), and the kept chunks' token total."""
+    kept: list[Hit] = []
+    seen: list[set[str]] = []
+    used = 0
+    for h in hits:
+        words = set(_WORDS.findall(h.text.lower()))
+        if any(len(words & o) / len(words | o) >= NEAR_DUPLICATE for o in seen if words | o):
+            continue
+        tokens = count(format_hit(h))
+        if kept and used + tokens > budget_tokens:
+            break
+        used += tokens
+        kept.append(h)
+        seen.append(words)
+    return kept, used
+
+
+def select_context(hits: list[Hit], budget_tokens: int | None = None) -> list[Hit]:
+    """`curate` with the configured token budget (or `budget_tokens`); logs ids, scores and counts
+    only."""
+    s = get_settings()
+    kept, used = curate(
+        hits,
+        budget_tokens or s.retrieval_context_tokens,
+        lambda t: count_tokens(t, s.chunk_tokenizer),
+    )
+    log.info(
+        "retrieval",
+        chunk_ids=[str(h.chunk_id) for h in kept],
+        scores=[round(h.score, 4) for h in kept],
+        context_tokens=used,
+        hits=len(kept),
+    )
+    return kept
 
 
 class Retriever:
@@ -79,3 +130,12 @@ class Retriever:
                 order.get(h.chunk_id, 0),
             ),
         )
+
+    async def opening(self, ctx: TenantContext, document_ids: list[UUID], n: int = 2) -> list[Hit]:
+        """The first `n` chunks of each document (title, author, date usually sit there), documents
+        in the given order, chunks by index."""
+        found = await self._store.retrieve(
+            ctx, [chunk_id(d, i) for d in document_ids for i in range(n)]
+        )
+        rank = {d: k for k, d in enumerate(document_ids)}
+        return sorted(found, key=lambda h: (rank.get(h.document_id, len(rank)), h.chunk_index or 0))

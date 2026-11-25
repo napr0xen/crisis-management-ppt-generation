@@ -182,3 +182,49 @@ def test_production_tokenizer_limit():
     docs = [parser(source()) for parser, source in NATIVE + DOCLING] + [long_doc]
     for doc in docs:
         assert run(doc, 512, count)
+
+
+def _chunk(text="body", heading="Impact", filename="ops.pdf"):
+    return ChunkPayload(
+        document_id=DOC_ID,
+        filename=filename,
+        page_number=1,
+        section_heading=heading,
+        element_type="text",
+        chunk_index=0,
+        text=text,
+    )
+
+
+def test_embed_text_prefixes_filename_and_section():
+    from doc_intel.ingestion.chunker import embed_text
+
+    assert embed_text(_chunk()) == "ops.pdf > Impact\nbody"
+    assert embed_text(_chunk(heading=None)) == "ops.pdf\nbody"
+
+
+def _el(text, page):
+    return ParsedElement(element_type="text", text=text, page_number=page)
+
+
+def test_drop_repeated_removes_running_headers_only():
+    from doc_intel.ingestion.docling_parser import drop_repeated
+
+    header = [_el("ACME CONFIDENTIAL", p) for p in (1, 2, 3, 4)]
+    body = [_el(f"body {p}", p) for p in (1, 2, 3, 4)]
+    sparse = [_el("Appendix", p) for p in (1, 2, 3)]  # 3 pages but under half of 8
+    tail = [_el(f"tail {p}", p) for p in (5, 6, 7, 8)]
+    out = drop_repeated([*header, *body, *sparse, *tail])
+    assert [e.text for e in out if e.text == "ACME CONFIDENTIAL"] == ["ACME CONFIDENTIAL"]
+    assert out[0] == header[0]  # the first copy stays, so a repeated vendor name is findable
+    assert len(out) == 1 + len(body) + len(sparse) + len(tail)
+
+
+def test_drop_repeated_needs_three_pages_and_ignores_unpaged_elements():
+    from doc_intel.ingestion.docling_parser import drop_repeated
+
+    two_pages = [_el("Footer", 1), _el("Footer", 2)]
+    assert drop_repeated(two_pages) == two_pages
+    unpaged = [_el("Same", None) for _ in range(5)]
+    assert drop_repeated(unpaged) == unpaged
+    assert drop_repeated([]) == []

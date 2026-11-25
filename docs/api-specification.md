@@ -4,6 +4,8 @@
 
 - Base URL: `http://127.0.0.1:8000`. All routes are under `/v1`.
 - From inside Docker (the Pipe) the base URL is `http://host.docker.internal:8000`.
+- **CORS:** `http://localhost:5173` and `http://127.0.0.1:5173` (the custom UI's dev server) may call the API: methods `GET`, `POST`, `DELETE`, `OPTIONS`; headers `Authorization`, `Content-Type`, `X-OWUI-User-Id`, `X-OWUI-Chat-Id`, `X-Request-Id`; `X-Request-Id` is exposed. The CORS layer is outermost, so error responses carry the headers too. No other origin is allowed.
+- **Static UI:** if `frontend/dist/index.html` exists when the app starts, the API serves it at `GET /` and the build's files under `/assets/`. Nothing else is mounted, so every other path (including an unknown `/v1/...` path) returns the JSON `404` envelope. There is no single-page fallback.
 
 ## Authentication & tenancy
 
@@ -124,6 +126,8 @@ Headers: auth + `X-OWUI-User-Id` + `X-OWUI-Chat-Id`. Request:
 }
 ```
 
+Optional body fields `library_template_id` and `template_document_id` (uuid; at most one, both set → `422`). When one is set, the router LLM is skipped: after the wait for pending ingests the flow maps that library template (copied into the chat's project) or that uploaded document (marked as the template, IR extracted) directly. An unknown id, or an id that belongs to another user's project, ends the stream with an `error` event (`not_found`), then `done`.
+
 Limits: `messages` 1..50 items (`role` `user` or `assistant`; 51 → `422`); `files` up to 200 items; `files[].openwebui_file_id` 1..128 chars; `files[].filename` up to 255 chars.
 
 Response: `text/event-stream`.
@@ -141,7 +145,7 @@ Response: `text/event-stream`.
 - A failed `extract_template` or mapping job ends the turn with `error`, then `done`.
 - An edit turn (Phase 11) waits on the new run's `render_artifact` job; `done` carries the new `mapping_run_id` and `artifact_id`. A rejected edit is a `delta`, not an `error`.
 
-Routing behavior, including the template library choice (Phase 9), is described in [system-design.md § 9](system-design.md#9-chat-orchestration-chat). Library templates are managed only through the CLI (`uv run python -m doc_intel.cli seed-template PATH --name NAME [--description TEXT] [--category TEXT]`, `list-templates`, `show-template ID`, `remove-template ID`). No HTTP endpoint exposes them (ADR-012). The Pipe drops internal `### Task:` requests before calling this endpoint.
+Routing behavior, including the template library choice (Phase 9), is described in [system-design.md § 9](system-design.md#9-chat-orchestration-chat). Library templates are managed through the CLI (`uv run python -m doc_intel.cli seed-template PATH --name NAME [--description TEXT] [--category TEXT]`, `list-templates`, `show-template ID`, `remove-template ID`) or over HTTP (see [Template library](#template-library), ADR-014). The Pipe drops internal `### Task:` requests before calling this endpoint.
 
 ---
 
@@ -298,6 +302,116 @@ Any violation → `422` and nothing is applied.
 `202`: `{"mapping_run_id": "uuid (new)", "version": 2, "job_id": "uuid"}`. The new run starts at `status = 'rendering'` and its `render_artifact` job writes the next artifact.
 
 Errors: `404` unknown run or another tenant's run; `409` the run is not `completed`, or the version could not be allocated after one retry; `422` as above.
+
+### `GET /v1/projects/{project_id}/mapping-runs/{run_id}/conflicts`
+
+Every `conflict` result of the run, in IR field order: `{"items": [Conflict]}`.
+
+```json
+{"items": [{
+  "field_key": "affected_customers", "field_label": "Affected customers",
+  "slide_number": 3, "section_title": "Impact",
+  "candidates": [
+    {"index": 0, "value": 1200, "source_filename": "ops_report.pdf", "page_number": 4,
+     "verbatim_quote": "about 1,200 customers"}
+  ]
+}]}
+```
+
+- `field_key` is the IR `field_id`; `field_label` is its `label`.
+- `slide_number` comes from a pptx anchor id (`pptx:s<N>:`), else `null`.
+- `section_title` is the field's `context` (card heading or row label) if it has one; otherwise the slide title (pptx: the `section_path` element after `Slide N`, if the slide has a title) or the last `section_path` element (docx, xlsx); else `null`.
+- `candidates[].index` is the `candidate_index` to send back; `source_filename`, `page_number` and `verbatim_quote` are the first evidence entry of that candidate.
+- Fields that share one fact (one edit, see [system-design.md § 10](system-design.md#10-conversational-edits-chateditspy)) appear once, as the first of them in IR order.
+- Errors: `404` unknown run or another tenant's run.
+
+### `POST /v1/projects/{project_id}/mapping-runs/{run_id}/resolve-conflicts`
+
+Resolves conflicts as a new version and waits for its render. Makes no LLM call.
+
+```json
+{"resolutions": [
+  {"field_key": "affected_customers", "candidate_index": 0},
+  {"field_key": "spokesperson", "custom_value": "Jane Doe"}
+]}
+```
+
+- `resolutions`: 1 to 50 items; each has `field_key` (up to 64 chars) and exactly one of `candidate_index` (integer, 0 or more) or `custom_value` (1 to 10,000 chars). Extra fields → `422`.
+- A `candidate_index` is a `choose_candidate` edit op and a `custom_value` is a `set_value` edit op (`provenance = user`). They go through the same validation as [`/edits`](#post-v1projectsproject_idmapping-runsrun_idedits), so a custom value must fit the field's type. A field sharing one fact with another resolved field counts as the same field. Any violation → `422` and nothing is applied.
+- The new run and its `render_artifact` job are committed first. The request then waits for that job, polling every 0.25 s for at most 60 s.
+
+`200`:
+
+```json
+{
+  "mapping_run_id": "uuid (new)", "version": 2, "job_id": "uuid",
+  "status": "succeeded",
+  "artifact": { "…": "Artifact" },
+  "remaining_conflicts": [ { "…": "Conflict" } ]
+}
+```
+
+- `status` is the render job's status. `artifact` is `null` if the render has not finished within the wait (`status` is then `queued` or `running`; poll `GET .../mapping-runs/{mapping_run_id}`) or failed (`status` is `failed`).
+- `remaining_conflicts` are the conflicts of the new run, in the shape above.
+- Errors: `404` unknown run or another tenant's run; `409` the run is not `completed`, or the version could not be allocated after one retry; `422` as above.
+
+---
+
+## Template library
+
+The library is global (no project in the path). Every route needs `Authorization: Bearer <PIPE_SHARED_SECRET>` and `X-OWUI-User-Id`; the bearer-secret holder is the operator of this single-operator deployment ([ADR-014](DECISIONS.md)). Chat users still get a per-project copy when they pick a template (copy-on-use, ADR-012).
+
+`Scan` (in-memory, lost on restart):
+
+```json
+{"scan_id": "uuid", "name": "Weekly status", "status": "scanning",
+ "progress": {"done": 2, "total": 10, "part": "slide 3"},
+ "template_id": null, "error_code": null}
+```
+
+- `status`: `scanning`, `ready` (`template_id` set) or `failed` (`error_code` set, for example `ir_invalid` or `upstream_unavailable`; never exception text).
+- `progress` is `null` before the first IR batch reports and once the scan has finished; `done` is the number of batches finished before the current one, `part` is `slide N` / `sheet N` or `null`.
+
+### `GET /v1/library/templates`
+
+```json
+{
+  "items": [{
+    "id": "uuid", "name": "Weekly status", "description": "…", "category": "ops",
+    "format": "pptx", "filename": "status.pptx", "size_bytes": 48211,
+    "created_at": "…", "slide_count": 10, "field_count": 24, "table_count": 2,
+    "chart_count": 1, "anchor_count": 61, "scan_status": "ready"
+  }],
+  "scans": [ { "…": "Scan" } ]
+}
+```
+
+- `items` are the registered templates by name. `slide_count` is the highest `pptx:s<N>:` among the AnchorMap's anchor ids (a trailing slide without anchors is not counted); `null` for docx and xlsx. `field_count` = IR fields; `table_count` = distinct native tables written by fields (`fill_table_rows` or table-cell anchors); `chart_count` = fields of type `chart`.
+- `scans` are the scans that are in flight or failed. A finished scan is an `items` entry instead.
+
+### `POST /v1/library/templates`
+
+`multipart/form-data`: `file` (PPTX, DOCX or XLSX), `name` (1 to 100 chars), `description` (0 to 500, optional), `category` (0 to 50, optional).
+
+In the request: the upload is validated (size and type), the name and file hash must be new, and the AnchorMap is built. The IR build then runs in the background.
+
+`202`: `{"scan_id": "uuid"}`. Poll `GET /v1/library/scans/{scan_id}`.
+
+The file is also saved as `TEMPLATES_DIR/<basename of the upload>` (created if missing) so the folder stays the source of truth ([ADR-017](DECISIONS.md)); it stays if the scan fails, and the next sync retries it. `row.filename` is that basename.
+
+Errors: `409` a template with this name or file exists, or `TEMPLATES_DIR` already holds a file with that name; `413`; `415` (not a PPTX/DOCX/XLSX, or content does not match); `422` a bad field, an unusable file name (empty or starting with a dot), an unreadable template or one with no fillable location.
+
+### `GET /v1/library/scans/{scan_id}`
+
+Returns a `Scan`. `404` unknown id (including after a restart).
+
+### `DELETE /v1/library/templates/{id}`
+
+Removes the row, then the stored file (as the CLI's `remove-template`), then `TEMPLATES_DIR/<filename>` if it is a regular file in that folder (a missing file is fine; a path that resolves outside the folder is never touched). Copies already adopted into projects are untouched. `204`; `404` unknown id.
+
+### `POST /v1/templates/sync`
+
+Syncs `TEMPLATES_DIR` into the library in the background (system-design § 5.1). The same bearer auth. `202`: `{"status": "started"}`; `409` when a sync or an upload scan is already running. Progress shows as entries in `GET /v1/library/templates` `scans`. The sync also runs once at startup. A missing `TEMPLATES_DIR` disables it: nothing is added or pruned.
 
 ---
 
