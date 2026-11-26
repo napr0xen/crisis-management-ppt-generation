@@ -228,3 +228,115 @@ def test_drop_repeated_needs_three_pages_and_ignores_unpaged_elements():
     unpaged = [_el("Same", None) for _ in range(5)]
     assert drop_repeated(unpaged) == unpaged
     assert drop_repeated([]) == []
+
+
+# --- Phase 23: provenance ids ---------------------------------------------------------------
+
+
+def tbl(rows, page=None, section=None) -> ParsedElement:
+    return ParsedElement(element_type="table", rows=rows, page_number=page, section_heading=section)
+
+
+def test_table_rows_get_ids_per_page_and_count_tables_per_page():
+    doc = ParsedDocument(
+        elements=[
+            tbl([["Item", "Amt"], ["a", "1"]], page=1),
+            tbl([["Item", "Amt"], ["b", "2"], ["c", "3"]], page=1),
+            tbl([["Item", "Amt"], ["d", "4"]], page=2),
+        ]
+    )
+    chunks = run(doc, 100)
+    assert [[r.id for r in c.rows] for c in chunks] == [
+        ["P1-T1-R01"],
+        ["P1-T2-R01", "P1-T2-R02"],
+        ["P2-T1-R01"],
+    ]
+    assert chunks[1].rows[1].cells == {"Item": "c", "Amt": "3"}
+
+
+def test_ids_drop_the_page_segment_without_pages_and_tables_count_document_wide():
+    doc = ParsedDocument(
+        elements=[
+            text("intro words", "S"),
+            tbl([["h"], ["x"]], section="S"),
+            tbl([["h"], ["y"]], section="T"),
+            text("outro", "T"),
+        ]
+    )
+    chunks = run(doc, 100)
+    assert chunks[0].block_ids == ["B01"]
+    assert [r.id for r in chunks[1].rows] == ["T1-R01"]
+    assert [r.id for r in chunks[2].rows] == ["T2-R01"]
+    assert chunks[3].block_ids == ["B02"]
+
+
+def test_split_table_pieces_carry_only_their_own_rows_and_repeat_the_header():
+    rows = [["k", "v"]] + [[f"row{i}", "x y"] for i in range(1, 7)]
+    chunks = run(ParsedDocument(elements=[tbl(rows, page=3)]), 20)
+    assert len(chunks) > 1
+    seen = []
+    for c in chunks:
+        lines = c.text.split("\n")
+        assert lines[0] == "| k | v |"
+        assert len(lines) - 2 == len(c.rows)
+        assert [r.cells["k"] for r in c.rows] == [ln.split(" | ")[0][2:] for ln in lines[2:]]
+        seen += [r.id for r in c.rows]
+    assert seen == [f"P3-T1-R{i:02d}" for i in range(1, 7)]
+
+
+def test_empty_and_duplicate_headers_become_col_j():
+    chunks = run(ParsedDocument(elements=[tbl([["Name", "", "Name"], ["a", "b", "c"]])]), 100)
+    assert chunks[0].rows[0].cells == {"Name": "a", "col2": "b", "col3": "c"}
+
+
+def test_header_whitespace_is_collapsed_in_cell_keys():
+    chunks = run(ParsedDocument(elements=[tbl([["Net   \n movement"], ["5"]])]), 100)
+    assert chunks[0].rows[0].cells == {"Net movement": "5"}
+
+
+def test_packed_text_chunk_lists_its_blocks_and_a_split_block_repeats_its_id():
+    doc = ParsedDocument(
+        elements=[
+            text("one two", "A", 1),
+            text("three four", "A", 1),
+            text("a b c d e f g h", "A", 1),
+        ]
+    )
+    chunks = run(doc, 4)
+    assert chunks[0].block_ids == ["P1-B01", "P1-B02"]
+    assert [c.block_ids for c in chunks[1:]] == [["P1-B03"]] * (len(chunks) - 1)
+
+
+def test_shortcut_chunks_have_no_rows():
+    big_header = [["h1 h2 h3 h4 h5 h6", "h7"], ["a", "b"], ["c", "d"]]
+    assert all(c.rows is None for c in run(ParsedDocument(elements=[tbl(big_header)]), 8))
+    oversized = [["k"], ["one two three four five six seven eight"], ["z"]]
+    chunks = run(ParsedDocument(elements=[tbl(oversized)]), 6)
+    assert len(chunks) > 1
+    assert any(c.rows is None for c in chunks)
+    assert all(c.rows is None or c.rows for c in chunks)
+
+
+def test_chunk_text_has_no_ids_and_text_chunks_have_no_rows():
+    chunks = run(
+        ParsedDocument(elements=[text("hello world", None, 1), tbl([["h"], ["x"]], 1)]), 50
+    )
+    assert chunks[0].rows is None
+    assert chunks[1].block_ids == []
+    assert chunks[1].text == "| h |\n| --- |\n| x |"
+
+
+def test_parse_and_chunk_gives_a_csv_table_row_ids():
+    from doc_intel.ingestion.pipeline import parse_and_chunk
+
+    _, chunks = parse_and_chunk(
+        b"name,amount\nrent,10\ntax,20\n",
+        "csv",
+        document_id=DOC_ID,
+        filename="f.csv",
+        max_tokens=100,
+        tokenizer_model="Qwen/Qwen3-Embedding-0.6B",
+    )
+    rows = [r for c in chunks if c.rows for r in c.rows]
+    assert [r.id for r in rows] == ["T1-R01", "T1-R02"]
+    assert rows[1].cells == {"name": "tax", "amount": "20"}

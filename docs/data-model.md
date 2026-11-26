@@ -215,6 +215,10 @@ Accessed only through `src/doc_intel/vector/qdrant_store.py`.
 | `section_heading` | string \| null | no |
 | `chunk_index` | integer | no |
 | `text` | string | no (chunk text, used by the verifier) |
+| `block_ids` | array of string | no (text chunks: provenance ids of the blocks in `text`, e.g. `P1-B03`, in order; a split block repeats its id; `[]` otherwise) |
+| `rows` | array of `{id, cells}` \| null | no (table chunks: the data rows whose Markdown lines are in `text`, in line order; `id` like `P1-T2-R04` (`T2-R04` when there is no page), `cells` keyed by column header, an empty or duplicate header as `col<j>` (1-based). `null` for text chunks and for table chunks split as plain text (oversized header or row)) |
+
+Provenance ids are `P<page>-T<n>-R<nn>` (table `n` counted per page, data row `nn` 1-based) and `P<page>-B<nn>` (text block per page), assigned in document order. They are not part of `text`. Points written before Phase 23 lack `block_ids` and `rows` (read as `[]` and `null`); re-ingest the document to get them.
 
 **Isolation rules.**
 - Upserts carry the tenant filter as Qdrant's `update_filter`, so a tenant can never overwrite another tenant's existing point (even by reusing its `document_id`).

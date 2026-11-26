@@ -19,6 +19,7 @@ PREFETCH_LIMIT = 40  # per retrieval mode, before RRF (system-design § 3)
 # ~26 KB of JSON per 1024-dim point: 256 keeps each request far below Qdrant's 32 MB limit.
 UPSERT_BATCH = 256
 _INDEXED_KEYWORDS = ("project_id", "document_id", "element_type")
+_OPTIONAL_KEYS = ("chunk_index", "block_ids", "rows")
 _HIT_KEYS = [k for k in Hit.model_fields if k not in ("chunk_id", "score")]
 
 
@@ -43,8 +44,9 @@ def _tenant_filter(ctx: TenantContext, *conditions: m.Condition) -> m.Filter:
 
 
 def _hit(point_id: str | int, payload: dict, score: float) -> Hit:
-    fields = {k: payload[k] for k in _HIT_KEYS if k != "chunk_index"}
-    return Hit(chunk_id=point_id, score=score, chunk_index=payload.get("chunk_index"), **fields)
+    fields = {k: payload[k] for k in _HIT_KEYS if k not in _OPTIONAL_KEYS}
+    optional = {k: payload[k] for k in _OPTIONAL_KEYS if k in payload}  # old points lack these
+    return Hit(chunk_id=point_id, score=score, **optional, **fields)
 
 
 class QdrantStore:

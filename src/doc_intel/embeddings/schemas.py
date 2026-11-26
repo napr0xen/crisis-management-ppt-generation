@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from doc_intel.ingestion.schemas import ElementType
+from doc_intel.ingestion.schemas import ElementType, TableRow
 
 DENSE_DIM = 1024  # EMBEDDING_DIMENSIONS default; the Qdrant `dense` vector size
 
@@ -50,3 +50,5 @@ class Hit(BaseModel):
     text: str
     score: float
     chunk_index: int | None = None  # None for a point written before it was in the payload
+    block_ids: list[str] = []  # empty for a point written before Phase 23
+    rows: list[TableRow] | None = None  # None for a point written before Phase 23

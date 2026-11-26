@@ -80,3 +80,15 @@ def test_evidence_item_is_optional_and_round_trips():
     assert Evidence.model_validate_json(item.model_dump_json()).item == 2
     with pytest.raises(ValidationError):
         Evidence.model_validate({**old, "item": -1})
+
+
+def test_quote_strips_provenance_ids_and_keeps_other_brackets():
+    from doc_intel.mapping.schemas import LLMQuote
+
+    q = lambda s: LLMQuote(chunk_id="c", quote=s).quote  # noqa: E731
+    assert q("[P1-T2-R04] | Closing | 10 |") == "| Closing | 10 |"
+    assert q("[T2-R04] x") == "x"
+    assert q("[P12-T3-R04] text") == "text"
+    assert q("see [B12] and [P1-B03] here") == "see [B12] and [P1-B03] here"
+    assert q("a [P1-T2-R04] b") == "a b"
+    assert q("[1] and [Note] stay") == "[1] and [Note] stay"

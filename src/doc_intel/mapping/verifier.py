@@ -195,6 +195,11 @@ def canonical_value(value: str | int | float, value_type: str) -> int | float | 
     return int(c) if c == c.to_integral_value() else float(c)
 
 
+def states_value(text: str, value_type: str) -> bool:
+    """`text` states at least one number (or date, for `date`) the verifier can read."""
+    return bool(_dates(text, True) if value_type == "date" else _numbers(text, True))
+
+
 def value_in_quotes(value: str | int | float, value_type: str, quotes: list[str]) -> bool:
     """A typed value (`number`, `currency`, `percent`, `date`) appears in some verified quote."""
     c = _canonical(value, value_type)

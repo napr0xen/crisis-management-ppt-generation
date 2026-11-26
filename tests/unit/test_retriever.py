@@ -229,3 +229,27 @@ def test_select_context_cuts_by_an_explicit_token_budget_and_keeps_the_first():
     hits = _hits(5)
     assert select_context(hits, 1) == hits[:1]
     assert select_context(hits, 100_000) == hits
+
+
+def _table_hit(text: str, rows) -> Hit:
+    h = _hits(1)[0]
+    return h.model_copy(update={"element_type": "table", "text": text, "rows": rows})
+
+
+def test_format_hit_prefixes_row_ids_after_the_header_lines():
+    from doc_intel.ingestion.schemas import TableRow
+
+    text = "| k |\n| --- |\n| a |\n| b |"
+    rows = [TableRow(id="P1-T2-R01", cells={"k": "a"}), TableRow(id="P1-T2-R02", cells={"k": "b"})]
+    body = format_hit(_table_hit(text, rows)).split("\n", 1)[1]
+    assert body == "| k |\n| --- |\n[P1-T2-R01] | a |\n[P1-T2-R02] | b |"
+
+
+def test_format_hit_leaves_a_mismatched_or_text_hit_unchanged():
+    from doc_intel.ingestion.schemas import TableRow
+
+    text = "| k |\n| --- |\n| a |\n| b |"
+    one = [TableRow(id="T1-R01", cells={"k": "a"})]
+    assert format_hit(_table_hit(text, one)).split("\n", 1)[1] == text
+    assert format_hit(_table_hit(text, None)).split("\n", 1)[1] == text
+    assert format_hit(_hits(1)[0].model_copy(update={"block_ids": ["B01"]})).endswith("\nt0")

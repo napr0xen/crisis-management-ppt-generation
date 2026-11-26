@@ -28,7 +28,10 @@ def format_hit(hit: Hit) -> str:
     page = hit.page_number if hit.page_number is not None else "-"
     section = _inline(hit.section_heading or "") or "-"
     header = f"[{hit.chunk_id} | {_inline(hit.filename)} | p.{page} | {section}]"
-    return f"{header}\n{hit.text}"
+    lines = hit.text.split("\n")
+    if hit.rows and len(lines) - 2 == len(hit.rows):  # header + separator, then one line per row
+        lines[2:] = [f"[{r.id}] {ln}" for r, ln in zip(hit.rows, lines[2:], strict=True)]
+    return f"{header}\n" + "\n".join(lines)
 
 
 _WORDS = re.compile(r"\w+")

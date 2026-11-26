@@ -10,7 +10,7 @@ from qdrant_client import models as m
 from doc_intel.core.config import Settings, get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import DENSE_DIM, Embedding, Hit, SparseVector
-from doc_intel.ingestion.schemas import ChunkPayload
+from doc_intel.ingestion.schemas import ChunkPayload, TableRow
 from doc_intel.main import create_app
 from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
 from tests.conftest import qdrant_api_key
@@ -229,3 +229,39 @@ async def test_ensure_collection_refuses_a_collection_built_for_other_vectors():
     finally:
         await client.delete_collection(name)
         await client.close()
+
+
+async def test_rows_and_block_ids_round_trip(vector_store):
+    ctx, doc = tenant(), uuid.uuid4()
+    rows = [TableRow(id="P1-T1-R01", cells={"k": "a"}), TableRow(id="P1-T1-R02", cells={"k": "b"})]
+    t = chunk(doc, 0, "table").model_copy(update={"rows": rows})
+    x = chunk(doc, 1).model_copy(update={"block_ids": ["P2-B01", "P2-B02"]})
+    await vector_store.upsert_chunks(ctx, [t, x], [emb(0, 100), emb(1, 101)])
+
+    got = {
+        h.chunk_index: h
+        for h in await vector_store.retrieve(ctx, [chunk_id(doc, 0), chunk_id(doc, 1)])
+    }
+    assert got[0].rows == rows and got[0].block_ids == []
+    assert got[1].block_ids == ["P2-B01", "P2-B02"] and got[1].rows is None
+    hits = await vector_store.hybrid_search(ctx, emb(0, 100), limit=1)
+    assert hits[0].rows == rows
+
+
+async def test_a_point_without_the_new_keys_loads_with_defaults(vector_store):
+    ctx, doc = tenant(), uuid.uuid4()
+    await seed(vector_store, ctx, doc)
+    pid = str(chunk_id(doc, 0))
+    await vector_store._client.overwrite_payload(
+        vector_store._collection,
+        {
+            k: v
+            for k, v in (await vector_store._client.retrieve(vector_store._collection, [pid]))[
+                0
+            ].payload.items()
+            if k not in ("rows", "block_ids")
+        },
+        points=[pid],
+    )
+    (hit,) = await vector_store.retrieve(ctx, [chunk_id(doc, 0)])
+    assert hit.rows is None and hit.block_ids == []

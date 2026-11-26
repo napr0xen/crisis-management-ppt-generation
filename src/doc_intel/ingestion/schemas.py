@@ -33,6 +33,15 @@ class ParsedDocument(BaseModel):
     page_count: int | None = None
 
 
+class TableRow(BaseModel):
+    """One data row of a table chunk: provenance id and cells keyed by column header."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    cells: dict[str, str]
+
+
 class ChunkPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -43,6 +52,8 @@ class ChunkPayload(BaseModel):
     element_type: ElementType
     chunk_index: int
     text: str
+    block_ids: list[str] = []  # provenance ids of the text blocks in a text chunk
+    rows: list[TableRow] | None = None  # table chunks: the data rows in `text`, in line order
 
 
 class Parser(Protocol):

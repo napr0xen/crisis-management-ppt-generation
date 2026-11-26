@@ -3,10 +3,11 @@
 Phase 7 writers, Phase 8 summary and Phase 11 edits read these shapes; change them only with docs.
 """
 
+import re
 import uuid
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from doc_intel.mapping.verifier import MIN_QUOTE_CHARS
 
@@ -37,9 +38,19 @@ class _Strict(BaseModel):
 # LLM output (system-design § 7.2). One model per value shape keeps Ollama's JSON grammar free of
 # unions: LLMExtraction[str], LLMExtraction[list[str]], LLMExtraction[list[list[str]]].
 # No length limits: one bad quote must drop that quote, not fail the whole reply.
+_PROVENANCE_ID = re.compile(r"\[(?:P\d+-)?T\d+-R\d+\] ?")
+
+
 class LLMQuote(_Strict):
     chunk_id: str
     quote: str
+
+    @field_validator("quote")
+    @classmethod
+    def _without_provenance_ids(cls, v: str) -> str:
+        """`format_hit` shows `[P1-T2-R04]` before a row; the chunk text has none, and no id digit
+        may verify a number."""
+        return _PROVENANCE_ID.sub("", v)
 
 
 class LLMCandidate[V](_Strict):

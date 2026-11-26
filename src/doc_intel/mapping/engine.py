@@ -55,6 +55,7 @@ from doc_intel.mapping.verifier import (
     derived_in_quotes,
     normalize,
     source_text,
+    states_value,
     supported,
     value_in_quotes,
     verify_quote,
@@ -687,6 +688,44 @@ def _rule_notes(field: IRField, hits: list[Hit], extraction: LLMExtraction[Any])
     return notes
 
 
+def _row_label_note(
+    field: IRField, hits: Sequence[Hit], value: Any, evidence: list[Evidence]
+) -> str | None:
+    """A typed value that sits only in cells labelled otherwise (row label + column header, from
+    the cited chunks' structured rows) while another cell is labelled like the slot: the note for
+    the retry, else None. No rows, no labelled match anywhere or a value cell that matches: None."""
+    cited = {e.chunk_id for e in evidence}
+    cells = [
+        (r.id, first if k != next(iter(r.cells)) else "", k, v)
+        for h in hits
+        if h.chunk_id in cited
+        for r in h.rows or []
+        for first in [next(iter(r.cells.values()), "")]
+        for k, v in r.cells.items()
+    ]
+    kind = field.expected_type
+    named = [_names(field.label, [f"{row} {head}"]) for _, row, head, _ in cells]
+    stated = [value_in_quotes(value, kind, [text]) for *_, text in cells]
+    if not any(stated) or any(n and s for n, s in zip(named, stated, strict=True)):
+        return None
+    # the labelled cell must itself state a value of the slot's type, else it is no rival
+    true = next(
+        (
+            c
+            for c, n, s in zip(cells, named, stated, strict=True)
+            if n and not s and states_value(c[3], kind)
+        ),
+        None,
+    )
+    if true is None:
+        return None
+    at = next(c for c, s in zip(cells, stated, strict=True) if s)
+    return (
+        f"{str(value)[:40]!r} is in row [{at[0]}] {(at[1] or at[2])[:60]!r}; the slot "
+        f"{field.label[:60]!r} is row [{true[0]}] {(true[1] or true[2])[:60]!r}."
+    )
+
+
 def _rejection(
     field: IRField, hits: list[Hit], value: Any, evidence: list[Evidence]
 ) -> tuple[str, str] | None:
@@ -711,6 +750,10 @@ def _rejection(
         return f"{kind}_not_in_quote", (
             f"the {kind} {shown} is not written in its quotes; quote the line that states it."
         )
+    if field.expected_type in TYPED_TYPES and (
+        note := _row_label_note(field, hits, value, evidence)
+    ):
+        return "row_label_mismatch", note
     return None
 
 
@@ -1020,6 +1063,25 @@ def _supports(expected_type: str, cell: str, quote: str) -> bool:
     return normalize(cell) in normalize(quote)
 
 
+def _mixed_rows(
+    types: list[str], cells: list[str], hits: Sequence[Hit], evidence: list[Evidence]
+) -> dict[str, set[int]] | None:
+    """`{source row id: indexes of the non-empty cells it states}` when every non-empty cell is
+    stated by some row of the cited chunks but no single row states them all (a row mixed from
+    several source rows); None when one row does, or a cell is in no structured row (unknown)."""
+    # shortcut: a wrapped cell Docling puts in its own row (other cells empty) makes a correct
+    # template row look mixed and drops it; merge continuation rows in the parser if seen live.
+    cited = {e.chunk_id for e in evidence}
+    rows = [r for h in hits if h.chunk_id in cited for r in h.rows or []]
+    wanted = {j for j, c in enumerate(cells) if c}
+    by_row = {
+        r.id: {j for j in wanted if any(_supports(types[j], cells[j], v) for v in r.cells.values())}
+        for r in rows
+    }
+    covered = set().union(*by_row.values()) if by_row else set()
+    return by_row if wanted and covered == wanted and wanted not in by_row.values() else None
+
+
 def _verified_row(
     types: list[str], hits: list[Hit], row: LLMRow | LLMRecord
 ) -> tuple[list[str], list[Evidence], list[list[bool]], bool]:
@@ -1058,6 +1120,20 @@ def _same_span(a: Evidence, b: Evidence) -> bool:
 
 
 _Row = tuple[list[str], list[Evidence], list[list[bool]], int | None]
+
+
+def _stray_cells(
+    types: list[str], cells: list[str], hits: Sequence[Hit], spans: list[Evidence]
+) -> set[int]:
+    """For a record mixed from several source rows (`_mixed_rows`), the cells the best row does
+    not state: the row stating most cells, then the one stating the key (first non-empty) cell,
+    then the first id. Else none."""
+    by_row = _mixed_rows(types, cells, hits, spans)
+    if by_row is None:
+        return set()
+    key = next(j for j, c in enumerate(cells) if c)
+    best = min(by_row, key=lambda r: (-len(by_row[r]), key not in by_row[r], r))
+    return {j for j, c in enumerate(cells) if c and j not in by_row[best]}
 
 
 def _record_row(types: list[str], hits: list[Hit], record: LLMRecord | None) -> _Row:
@@ -1134,9 +1210,11 @@ def _record_results(
         others = [a for k, a in anchors if k != i]
         kept: dict[int, tuple[Value, list[int]]] = {}
         loose = False
+        # a keyed card is a one-row group whose slots may come from different source rows
+        stray = _stray_cells(types[i], cells, hits, spans) if len(group) > 1 else set()
         for j, field in enumerate(row_fields):
             by = [s for s in range(len(spans)) if support[s][j]]
-            value = _cell_value(cells[j], types[i][j]) if by else None
+            value = _cell_value(cells[j], types[i][j]) if by and j not in stray else None
             if not cells[j]:
                 results[field.field_id] = _missing(field, "not_found_by_llm", docs)
             elif value is None or (
@@ -1262,9 +1340,12 @@ def _table_result(
     """The rows whose every cell a quote states; unverified rows stay out of the table."""
     types = ["text"] * len(field.constraints.columns or rows.rows[0].cells())
     llm_rows = rows.rows[: field.constraints.max_items]
-    kept, evidence, all_anchored = [], [], True
+    kept, evidence, all_anchored, mixed = [], [], True, 0
     for cells, ev, support, anchored in (_verified_row(types, hits, r) for r in llm_rows):
         if ev and any(cells) and all(not c or any(s) for c, s in zip(cells, support, strict=True)):
+            if _mixed_rows(types, cells, hits, ev) is not None:
+                mixed += 1  # its cells come from different source rows
+                continue
             kept.append(cells)
             evidence += [
                 e
@@ -1272,6 +1353,8 @@ def _table_result(
                 if (e.chunk_id, e.quote) not in {(x.chunk_id, x.quote) for x in evidence}
             ]
             all_anchored &= anchored
+    if mixed:
+        _log_rejected(field.field_id, ["row_mixed"] * mixed)
     converted = _convert(kept, "table")
     if converted is None:
         return _missing(field, "evidence_failed_verification", docs)
