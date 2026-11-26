@@ -5,7 +5,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -279,7 +279,9 @@ async def map_field(
     retriever: Retriever,
     llm: LLMClient,
     other_headings: Sequence[str] = (),
+    retry: tuple[LLMExtraction[Any], list[str]] | None = None,
 ) -> FieldMappingResult:
+    """`retry`: an earlier reply and why it was rejected, sent with the first extraction."""
     if field.expected_type in _ROW_TYPES:
         group = await map_group(ctx, [[field]], document_ids, retriever, llm, other_headings)
         return group[field.field_id]
@@ -293,7 +295,7 @@ async def map_field(
         first = _missing(field, "not_found_by_llm", document_ids)
         return await _synthesized(llm, field, hits, first, document_ids)
     try:
-        extraction = await extract(llm, field, hits)
+        extraction = await extract(llm, field, hits, retry=retry)
         if notes := _rule_notes(field, hits, extraction):  # one corrective retry, never a loop
             extraction = await extract(llm, field, hits, retry=(extraction, notes))
         # the heading check keeps sibling cards' values out (Phase 14), so it needs siblings
@@ -302,9 +304,38 @@ async def map_field(
     except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
         return _missing(field, "llm_error", document_ids)
     result = resolve(field, hits, extraction, checked_documents=document_ids)
+    result = await _filled_by_synthesis(llm, field, hits, result, document_ids)
+    return await _escalated(llm, field, hits, result, document_ids, other_headings, extraction)
+
+
+MIN_PROSE_CHARS = 40  # a slot this many characters wide holds a sentence, not a label or figure
+# shortcut: box size cannot tell a name in a wide box from prose, so it gets one (verified,
+# at most partial when weak) synthesis try too; upgrade with a prose signal from the IR.
+
+
+def _prose(field: IRField) -> bool:
+    """A free-text slot sized for prose: its box fits (`fit_chars`) or allows (`max_chars`) a
+    sentence. A slot of unknown size is not."""
+    size = field.fit_chars or field.constraints.max_chars or 0
+    return field.expected_type in ("text", *_LISTS) and size >= MIN_PROSE_CHARS
+
+
+async def _filled_by_synthesis(
+    llm: LLMClient,
+    field: IRField,
+    hits: list[Hit],
+    result: FieldMappingResult,
+    docs: list[uuid.UUID],
+) -> FieldMappingResult:
+    """A list the verbatim pass could not fill whole (`_needs_synthesis`), or an extractive prose
+    slot the model reports not found, gets one grounded synthesis attempt; the prose fallback
+    follows the synthesis-mode rules, so a weakly backed value is at most `partial`."""
     if field.expected_type in _LISTS and _needs_synthesis(field, result):
-        result = await _synthesized(llm, field, hits, result, document_ids)
-    return await _escalated(llm, field, hits, result, document_ids, other_headings)
+        return await _synthesized(llm, field, hits, result, docs)
+    if field.mode == "extractive" and result.missing_reason == "not_found_by_llm" and _prose(field):
+        loose = field.model_copy(update={"mode": "synthesis"})
+        return await _synthesized(llm, loose, hits, result, docs)
+    return result
 
 
 def _escalation_reason(field: IRField, result: FieldMappingResult, hits: list[Hit]) -> str | None:
@@ -323,6 +354,19 @@ def _escalation_reason(field: IRField, result: FieldMappingResult, hits: list[Hi
     return "high_score_miss" if any(h.score >= threshold for h in hits) else None
 
 
+def _near_cited(hits: list[Hit], extraction: LLMExtraction[Any]) -> list[Hit]:
+    """The retrieved chunks the candidates cite and their neighbors, else every chunk."""
+    cited = {q.chunk_id.strip().lower() for c in extraction.candidates for q in c.quotes}
+    at = {(h.document_id, h.chunk_index) for h in hits if str(h.chunk_id) in cited}
+    beside = {(d, i + step) for d, i in at if i is not None for step in (-1, 1)}
+    near = [h for h in hits if str(h.chunk_id) in cited or (h.document_id, h.chunk_index) in beside]
+    return near or hits
+
+
+def _log_rejected(slot_id: str, codes: list[str]) -> None:
+    log.info("verification_rejected", slot_id=slot_id, codes=codes)  # codes only, never text
+
+
 async def _escalated(
     llm: LLMClient,
     field: IRField,
@@ -330,19 +374,30 @@ async def _escalated(
     first: FieldMappingResult,
     docs: list[uuid.UUID],
     other_headings: Sequence[str] = (),
+    extraction: LLMExtraction[Any] | None = None,
 ) -> FieldMappingResult:
     """At most one more extraction, thinking on, for a conflict, a verification failure or a
-    high-score miss. Verified like the first pass, a list re-checked against its length limits;
-    a `missing` reply, a list that still overflows or an LLM error keeps the first result, so a
-    verified conflict is never dropped and nothing loops. Groups: `_escalated_group`."""
+    high-score miss. A verification failure of `extraction` (the first reply) logs its reason
+    codes and retries with that reply and one note per rejected candidate, over the cited chunks
+    and their neighbors. Verified like the first pass, a list re-checked against its length
+    limits; a `missing` reply, a list that still overflows or an LLM error keeps the first result,
+    so a verified conflict is never dropped and nothing loops. Groups: `_escalated_group`."""
     s = get_settings()
+    failed = first.missing_reason == "evidence_failed_verification"
+    rejected = _rejections(field, hits, extraction) if failed and extraction else []
+    if rejected:
+        _log_rejected(field.field_id, [code for code, _ in rejected])
     if not s.think_on_escalation or (reason := _escalation_reason(field, first, hits)) is None:
         return first
     start, after, error = time.monotonic(), first, None
     lists = field.expected_type in _LISTS
+    retry = None
+    if rejected and extraction:
+        hits = _near_cited(hits, extraction)
+        retry = (extraction, [f"{code}: {note}" for code, note in rejected])
     try:
         budget = s.think_escalation_max_tokens
-        extraction = await extract(llm, field, hits, think_budget=budget)
+        extraction = await extract(llm, field, hits, retry=retry, think_budget=budget)
         if other_headings:  # the same heading check as the first pass
             extraction = await check_candidates(llm, field, hits, extraction, other_headings)
         after = resolve(field, hits, extraction, checked_documents=docs)
@@ -386,6 +441,16 @@ def _needs_synthesis(field: IRField, result: FieldMappingResult) -> bool:
     )
 
 
+def _backing(text: str, said: list[str], loose: bool) -> Literal["strong", "weak"] | None:
+    """`strong` when the quotes `supported` the item. When `loose`, `weak` for an item a summary
+    of table rows writes (it shares few of their words): every number it states is quoted, or it
+    states none and half its words are. Else None: the item is dropped."""
+    if text and supported(text, said):
+        return "strong"
+    floor = 0.0 if any(map(str.isdigit, text)) else MIN_PROSE_SUPPORT
+    return "weak" if loose and text and supported(text, said, floor) else None
+
+
 async def _synthesized(
     llm: LLMClient,
     field: IRField,
@@ -409,13 +474,8 @@ async def _synthesized(
     for cand in draft.items:
         quotes = _evidence(hits, cand.quotes)
         text = _BULLET.sub("", cand.value.strip())
-        said = [e.quote for e in quotes]
-        strong = bool(text) and supported(text, said)
-        # a summary of table rows shares few of their words: kept if every number it states is
-        # quoted, a number-free item if half its words are
-        floor = 0.0 if any(map(str.isdigit, text)) else MIN_PROSE_SUPPORT
-        if strong or (field.mode == "synthesis" and text and supported(text, said, floor)):
-            weak |= not strong
+        if backing := _backing(text, [e.quote for e in quotes], field.mode == "synthesis"):
+            weak |= backing == "weak"
             evidence += [e.model_copy(update={"item": len(values) if lists else 0}) for e in quotes]
             values.append(text)
     if draft.not_found or not values:
@@ -627,6 +687,43 @@ def _rule_notes(field: IRField, hits: list[Hit], extraction: LLMExtraction[Any])
     return notes
 
 
+def _rejection(
+    field: IRField, hits: list[Hit], value: Any, evidence: list[Evidence]
+) -> tuple[str, str] | None:
+    """Why the verifier rejects a candidate, as (reason code, note for the retry), else None. The
+    code alone is loggable; the note holds the value and goes only to the LLM."""
+    shown = repr(str(value)[:40])
+    if _convert(value, field.expected_type) is None:
+        return "value_unusable", f"{shown} is not a usable {field.expected_type} value."
+    if not evidence:
+        return "quote_not_in_chunk", (
+            f"no quote given for {shown} is copied verbatim from the chunk it cites; copy the "
+            "exact characters of that chunk."
+        )
+    if note := _rule_note(field, value, evidence, hits):
+        return "slot_rule", note
+    quotes = [e.quote for e in evidence]
+    if field.expected_type in TYPED_TYPES and not (
+        value_in_quotes(value, field.expected_type, quotes)
+        or (field.mode == "synthesis" and derived_in_quotes(value, field.expected_type, quotes))
+    ):
+        kind = "date" if field.expected_type == "date" else "number"
+        return f"{kind}_not_in_quote", (
+            f"the {kind} {shown} is not written in its quotes; quote the line that states it."
+        )
+    return None
+
+
+def _rejections(
+    field: IRField, hits: list[Hit], extraction: LLMExtraction[Any]
+) -> list[tuple[str, str]]:
+    """(code, note) for each candidate `_candidates` drops."""
+    found = (
+        _rejection(field, hits, c.value, _evidence(hits, c.quotes)) for c in extraction.candidates
+    )
+    return [r for r in found if r]
+
+
 def _candidates(
     field: IRField, hits: list[Hit], extraction: LLMExtraction[Any]
 ) -> list[tuple[Value, list[Evidence]]]:
@@ -635,18 +732,7 @@ def _candidates(
     for cand in extraction.candidates:
         evidence = _evidence(hits, cand.quotes)
         converted = _convert(cand.value, field.expected_type)
-        if not evidence or converted is None:
-            continue
-        if _rule_note(field, cand.value, evidence, hits):
-            continue
-        quotes = [e.quote for e in evidence]
-        if field.expected_type in TYPED_TYPES and not (
-            value_in_quotes(cand.value, field.expected_type, quotes)
-            or (
-                field.mode == "synthesis"
-                and derived_in_quotes(cand.value, field.expected_type, quotes)
-            )
-        ):
+        if converted is None or _rejection(field, hits, cand.value, evidence):
             continue
         value, key = converted
         known = merged.setdefault(key, (value, []))[1]
@@ -820,10 +906,14 @@ async def _group_pass(
     returned = len({r.n for r in records.records if 1 <= r.n <= len(group)})
     if returned < len(group):
         _log_short("records", len(group), returned, hits, records.not_found)
+    is_list = all(len(row) == 1 for row in group)
     if records.not_found or not records.records:
-        return all_missing("not_found_by_llm")
-    results = _record_results(group, hits, records, document_ids)
-    if all(len(row) == 1 for row in group):  # a list: duplicates collapse, gaps may be synthesized
+        if not (is_list and _prose(first)):
+            return all_missing("not_found_by_llm")
+        results = all_missing("not_found_by_llm")  # prose list slots: the synthesis fallback
+    else:
+        results = _record_results(group, hits, records, document_ids)
+    if is_list:  # a list: duplicates collapse, gaps may be synthesized
         return await _list_results(llm, group, hits, results, document_ids)
     return results
 
@@ -1095,7 +1185,8 @@ async def _list_results(
     docs: list[uuid.UUID],
 ) -> dict[str, FieldMappingResult]:
     """A numbered list: the distinct verified items fill slots 1..N in order; when that leaves
-    slots empty, the source may state the items in prose, so `synthesize` may fill them."""
+    slots empty, the source may state the items in prose, so `synthesize` may fill them. Prose
+    slots (`_prose`) also keep a weakly backed item (`_backing`), and its slot is `partial`."""
     slots = [row[0] for row in group]
     kept, seen = [], set()
     for f in slots:
@@ -1127,14 +1218,16 @@ async def _list_results(
         draft = await synthesize(llm, pseudo, hits)
     except LLMInvalidOutput:
         return collapsed
-    items: list[tuple[str, list[Evidence]]] = []
+    items: list[tuple[str, list[Evidence], bool]] = []
     seen = set()
+    loose = _prose(slots[0])  # prose slots keep weakly backed items, as partial
     for cand in draft.items:
         quotes = _evidence(hits, cand.quotes)
         text = _BULLET.sub("", cand.value.strip())
-        if text and normalize(text) not in seen and supported(text, [e.quote for e in quotes]):
+        backing = _backing(text, [e.quote for e in quotes], loose)
+        if backing and normalize(text) not in seen:
             seen.add(normalize(text))
-            items.append((text, quotes))
+            items.append((text, quotes, backing == "weak"))
     items = items[: len(slots)]
     if len(items) <= have:
         return collapsed
@@ -1143,14 +1236,14 @@ async def _list_results(
         if k >= len(items):
             filled[f.field_id] = _missing(f, "not_found_by_llm", docs)
             continue
-        text, quotes = items[k]
+        text, quotes, weak = items[k]
         filled[f.field_id] = FieldMappingResult(
             field_id=f.field_id,
-            status="populated",
+            status="partial" if weak else "populated",
             value=[text] if f.expected_type in _LISTS else text,
             evidence=[e.model_copy(update={"item": 0}) for e in quotes],  # summarised: item 0
-            confidence=CONF_SYNTH,
-            missing_reason=None,
+            confidence=CONF_PARTIAL if weak else CONF_SYNTH,
+            missing_reason="insufficient_evidence" if weak else None,
             checked_documents=docs,
             conflict_details=None,
             provenance="rag",
@@ -1260,11 +1353,14 @@ async def _check_slot_roles(
     fields: list[IRField],
     results: dict[str, FieldMappingResult],
     shared: dict[str, tuple[str, str, str]],
-) -> None:
+    only: set[str] | None = None,
+) -> dict[str, tuple[FieldMappingResult, str]]:
     """Slots of one text box, or typed slots of one slide, are different roles, but the per-field
     check cannot see the other slots, so one value filled into several of them is checked once,
     together. A slot the quotes do not state, or any slot when the check is unusable, is never
-    populated."""
+    populated. `only`: check just the groups holding one of these fields. Returns each slot the
+    check rejected (not its shared copies, not on an unusable check) with its result before and
+    the reason for its retry."""
     boxes: dict[tuple[str, object, str], list[IRField]] = {}
     for f in fields:
         r = results[f.field_id]
@@ -1279,8 +1375,11 @@ async def _check_slot_roles(
             elif f.expected_type in TYPED_TYPES:
                 boxes.setdefault(("typed", _unit(f), normalize(str(r.value))), []).append(f)
     demoted: dict[str, MissingReason] = {}
+    rejected: dict[str, tuple[FieldMappingResult, str]] = {}
     for group in boxes.values():
         if len(group) < 2 or len({normalize(f.label) for f in group}) < 2:
+            continue
+        if only is not None and not any(f.field_id in only for f in group):
             continue
         evidence = list(
             {(e.chunk_id, e.quote): e for f in group for e in results[f.field_id].evidence}.values()
@@ -1291,6 +1390,14 @@ async def _check_slot_roles(
         except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
             keep, reason = set(), "llm_error"
         demoted |= {f.field_id: reason for f in group if f.field_id not in keep}
+        if reason == "evidence_failed_verification":
+            value = repr(str(results[group[0].field_id].value)[:40])
+            roles = [bounded_field(f).label for f in group if f.field_id in keep]
+            for f in group:
+                if f.field_id not in keep:
+                    held = f"is the value of {', '.join(roles)}" if roles else "is not stated"
+                    note = f"slot_role: {value} {held}, not of {bounded_field(f).label}."
+                    rejected[f.field_id] = (results[f.field_id], note)
     for fid, reason in list(demoted.items()):  # copies of a demoted fact elsewhere
         if key := shared.get(fid):
             demoted |= {
@@ -1301,6 +1408,17 @@ async def _check_slot_roles(
     for f in fields:
         if reason := demoted.get(f.field_id):
             results[f.field_id] = _missing(f, reason, results[f.field_id].checked_documents)
+    return rejected
+
+
+def _echo(value: Value | None, evidence: list[Evidence]) -> LLMExtraction[Any]:
+    """A result as the extraction reply that gave it, echoed back in a retry."""
+    quotes = [LLMQuote(chunk_id=str(e.chunk_id), quote=e.quote) for e in evidence]
+    return LLMExtraction[Any](
+        candidates=[LLMCandidate[Any](value=str(value), quotes=quotes)],
+        not_found=False,
+        incomplete=False,
+    )
 
 
 MAX_BATCH_SLOTS = 12
@@ -1397,9 +1515,7 @@ async def map_batch(
             continue
         extractions[f.field_id] = extraction
         result = resolve(f, hits, extraction, checked_documents=document_ids)
-        if f.expected_type in _LISTS and _needs_synthesis(f, result):
-            result = await _synthesized(llm, f, hits, result, document_ids)
-        results[f.field_id] = result
+        results[f.field_id] = await _filled_by_synthesis(llm, f, hits, result, document_ids)
     same: dict[str, list[IRField]] = {}
     for f in fields:
         r = results[f.field_id]
@@ -1423,7 +1539,10 @@ async def map_batch(
         if f.field_id in extractions:
             first = results[f.field_id]
             sibs = siblings.get(f.field_id, ())
-            results[f.field_id] = await _escalated(llm, f, hits, first, document_ids, sibs)
+            extraction = extractions[f.field_id]
+            results[f.field_id] = await _escalated(
+                llm, f, hits, first, document_ids, sibs, extraction
+            )
     return results
 
 
@@ -1492,8 +1611,43 @@ async def map_fields(
                     by_fact[key] = results[f.field_id]
         if on_field:
             await on_field(len(results), "")
-    await _check_slot_roles(llm, fields, results, shared)
+    rejected = await _check_slot_roles(llm, fields, results, shared)
+    ungrouped = [f for f in fields if f.field_id in rejected and f.field_id not in groups]
+    await _retry_roles(ctx, ungrouped, fields, rejected, document_ids, retriever, llm, results)
     return {f.field_id: results[f.field_id] for f in fields}
+
+
+async def _retry_roles(
+    ctx: TenantContext,
+    todo: list[IRField],
+    fields: list[IRField],
+    rejected: dict[str, tuple[FieldMappingResult, str]],
+    document_ids: list[uuid.UUID],
+    retriever: Retriever,
+    llm: LLMClient,
+    results: dict[str, FieldMappingResult],
+) -> None:
+    """A role the check rejected (`todo`) gets one `map_field` retry told why. A miss or the
+    rejected value again keeps it rejected; another value replaces it and its shared copies, and
+    its groups are role-checked once more, never retried again."""
+    shared = shared_facts(fields)
+    siblings = sibling_headings(fields)
+    retried = set()
+    for f in todo:
+        before, note = rejected[f.field_id]
+        _log_rejected(f.field_id, ["slot_role"])
+        retry = (_echo(before.value, before.evidence), [note])
+        sibs = siblings.get(f.field_id, ())
+        after = await map_field(ctx, f, document_ids, retriever, llm, sibs, retry)
+        if after.status == "missing" or normalize(str(after.value)) == normalize(str(before.value)):
+            continue
+        retried.add(f.field_id)
+        key = shared.get(f.field_id)
+        for g in fields:  # the copies of its fact on other slides take the new answer
+            if g.field_id == f.field_id or (key and shared.get(g.field_id) == key):
+                results[g.field_id] = after.model_copy(update={"field_id": g.field_id})
+    if retried:  # a retried value may collide with a third role
+        await _check_slot_roles(llm, fields, results, shared, only=retried)
 
 
 def _length(value: Value | None) -> int | None:

@@ -63,6 +63,8 @@ class ScriptedLLM:
             return draft_reply("pptx")
         if system == load_prompt("table_rows"):  # the fixture's empty table (code-made field)
             return json.dumps({"rows": [], "not_found": True})
+        if system == load_prompt("field_synthesis"):  # a prose-sized miss: one synthesis try
+            return json.dumps({"items": [], "not_found": True})
         hit = CHUNK_ID.search(user).group(1)
         if system == load_prompt("slot_values"):  # a unit's loose fields in one call
             return batch(*[self._answer(hit) for _ in range(slot_count(user))])

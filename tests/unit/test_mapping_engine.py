@@ -888,14 +888,14 @@ HOLDER, BANK = _slot_field("holder", "Account Holder"), _slot_field("bank", "Ban
 
 
 async def test_slot_roles_demote_the_slot_the_quote_does_not_state():
-    out, llm = await _box([HOLDER, BANK], _box_batch(2), ROLES_HOLDER)
+    out, llm = await _box([HOLDER, BANK], _box_batch(2), ROLES_HOLDER, NOT_FOUND)
     assert out["holder"].status == "populated"
     assert (out["bank"].status, out["bank"].missing_reason) == (
         "missing",
-        "evidence_failed_verification",
+        "evidence_failed_verification",  # the role retry found nothing else
     )
     assert out["bank"].checked_documents == DOCS
-    assert len(llm.calls) == 2  # one batch, one role check
+    assert len(llm.calls) == 3  # one batch, one role check, one role retry
 
 
 async def test_slot_roles_keep_every_slot_the_llm_confirms():
@@ -929,8 +929,8 @@ async def test_slot_roles_not_asked_for_other_anchors_or_same_label():
 
 async def test_slot_roles_demotion_reaches_a_shared_copy_on_another_slide():
     copy = _slot_field("bank_copy", "Bank Name", slide=2)
-    out, llm = await _box([HOLDER, BANK, copy], _box_batch(2), ROLES_HOLDER)
-    assert len(llm.calls) == 2
+    out, llm = await _box([HOLDER, BANK, copy], _box_batch(2), ROLES_HOLDER, NOT_FOUND)
+    assert len(llm.calls) == 3  # one batch, one role check, one role retry
     assert out["holder"].status == "populated"
     assert {out[f].missing_reason for f in ("bank", "bank_copy")} == {
         "evidence_failed_verification"
@@ -970,14 +970,14 @@ CLOSING = _typed("closing", "Closing Balance", "pptx:s1:sp14", "currency")
 
 async def test_typed_roles_finance_value_kept_only_for_the_stated_role():
     out, llm = await _typed_run(
-        [NET, CLOSING], CASH_HIT, CASH, '{"about": "Closing", "slots": [2]}'
+        [NET, CLOSING], CASH_HIT, CASH, '{"about": "Closing", "slots": [2]}', NOT_FOUND
     )
     assert out["closing"].status == "populated"
     assert (out["net"].status, out["net"].missing_reason) == (
         "missing",
         "evidence_failed_verification",
     )
-    assert len(llm.calls) == 2  # one batch, one role check
+    assert len(llm.calls) == 3  # one batch, one role check, one role retry
 
 
 async def test_typed_roles_kpi_card_target_and_actual():
@@ -985,11 +985,11 @@ async def test_typed_roles_kpi_card_target_and_actual():
     actual = _typed("actual", "Actual", "pptx:s3:sp5", "percent", slide=3)
     batch = _typed_batch(KPI_HIT, "87 %", "reached 87 % this quarter", 2)
     out, llm = await _typed_run(
-        [target, actual], KPI_HIT, batch, '{"about": "Actual", "slots": [2]}'
+        [target, actual], KPI_HIT, batch, '{"about": "Actual", "slots": [2]}', NOT_FOUND
     )
     assert out["actual"].status == "populated"
     assert out["target"].status == "missing"
-    assert len(llm.calls) == 2
+    assert len(llm.calls) == 3
 
 
 async def test_typed_roles_both_confirmed_stay_populated():

@@ -32,6 +32,7 @@ CHUNKS = [
     "Control room log B: 15,000 customers lost power after the fire.",
 ]
 SUMMARY_QUOTE = "substation fire on Main Street caused a widespread outage"
+NO_SYNTHESIS = json.dumps({"items": [], "not_found": True})
 
 
 def draft_reply() -> str:
@@ -153,6 +154,7 @@ async def test_mapping_run_populates_misses_and_conflicts(
         # slide 1 holds two loose fields: one batch call; slide 2's `customers` shares a batch
         # with the code-made field for its uncovered `{{incident_date}}` token
         batch([candidate("Substation fire", chunk_id(source, 0), SUMMARY_QUOTE)], []),
+        NO_SYNTHESIS,  # the spokesperson box is sized for prose: one synthesis try
         batch(
             [
                 candidate("12,000", chunk_id(source, 1), "12,000 customers lost power"),
@@ -163,6 +165,7 @@ async def test_mapping_run_populates_misses_and_conflicts(
         # the fixture's empty stakeholder table gets a fill_table_rows field from code
         json.dumps({"rows": [], "not_found": True}),
         extraction([], not_found=True),  # slide 3's code-made `[note]` field, mapped alone
+        NO_SYNTHESIS,  # its box is sized for prose too
     )
     await drain_one(migrated_db, vector_store, llm)
 
@@ -179,7 +182,7 @@ async def test_mapping_run_populates_misses_and_conflicts(
         "conflict": 1,
         "warnings": [],
     }
-    assert len(llm.calls) == 4
+    assert len(llm.calls) == 6  # + the two prose slots' synthesis tries
     assert seen == {fid: [f"Sib {fid}"] for fid in seen} and len(seen) == 5  # handler wiring
 
     summary = body["results"]["incident_summary"]

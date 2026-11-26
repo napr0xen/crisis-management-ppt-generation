@@ -82,7 +82,10 @@ async def test_round_trip(client, session, migrated_db, vector_store, user_a, pr
     found = [candidate(value, chunk_id(source, 0), quote)]
     # found and lost share a unit (one batch call) except in pptx, where the lone `found` is a
     # batch of one on the opening slide and `lost` is mapped alone on slide 2
-    slots = [batch(found), extraction([], not_found=True)] if fmt == "pptx" else [batch(found, [])]
+    # pptx's `lost` box is sized for prose: its miss gets one synthesis try
+    no_synthesis = json.dumps({"items": [], "not_found": True})
+    pptx = [batch(found), extraction([], not_found=True), no_synthesis]
+    slots = pptx if fmt == "pptx" else [batch(found, [])]
     llm = FakeLLM(
         *slots,
         json.dumps({"rows": [], "not_found": True}),  # pptx/docx: the empty table's code field

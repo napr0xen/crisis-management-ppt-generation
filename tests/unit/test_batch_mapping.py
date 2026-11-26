@@ -283,7 +283,7 @@ async def test_batch_retrieval_searches_each_field_and_heading_then_widens_the_n
 async def test_fit_chars_is_a_soft_hint_beside_the_constraints_never_in_them():
     h = _hit(TEXT)
     field = _slot(1, constraints=Constraints(max_chars=100), fit_chars=40)
-    llm = FakeLLM(_reply())
+    llm = FakeLLM(_reply(), '{"items": [], "not_found": true}')  # prose-sized: a synthesis try
     await map_fields(CTX, [field, _slot(2, "Region")], DOCS, FakeRetriever([h]), llm)
     slot = _slots_spec(llm)["slots"][0]
     assert slot["fit_chars"] == 40 and slot["constraints"] == {"max_chars": 100}

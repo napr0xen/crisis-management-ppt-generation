@@ -515,6 +515,7 @@ async def test_map_template_end_to_end(
             draft_reply("pptx"),
             batch([candidate("Substation fire", chunk_id(source_id, 0), QUOTE)]),  # opening slide
             extraction([], not_found=True),  # `lost`, alone on slide 2
+            json.dumps({"items": [], "not_found": True}),  # its prose-sized box: synthesis try
             json.dumps({"rows": [], "not_found": True}),  # the empty table's code-made field
         ]
         set_intent(
