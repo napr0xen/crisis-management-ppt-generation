@@ -436,7 +436,7 @@ async def test_batch_without_fillable_anchors_may_return_no_fields():
 async def test_template_with_no_fields_at_all_is_ir_invalid():
     llm = FakeLLM('{"fields": []}')
     with pytest.raises(IRInvalid):
-        await build_ir(llm, AMAP, TID)
+        await build_ir(llm, AnchorMap(format="docx", anchors=[_anchor("a1")]), TID)
 
 
 MULTI = _anchor(
@@ -588,7 +588,8 @@ async def test_repair_applies_to_the_retry_reply_too():
         _reply(_amount("opening", "pptx:s2:sp30"), _amount("label_tok", "pptx:s2:sp26")),
     )
     ir = await build_ir(llm, amap, TID)
-    assert len(llm.calls) == 2 and [f.field_id for f in ir.fields] == ["opening"]
+    # sp31 carries the same token on the slide, so it is backfilled as a copy of sp30's field
+    assert len(llm.calls) == 2 and [f.field_id for f in ir.fields] == ["opening", "amount"]
 
 
 def _placeholder_zero_token():
@@ -1004,3 +1005,100 @@ def test_ir_builder_version_is_bumped_for_the_logo_rule():
     from doc_intel.templates.ir_builder import IR_BUILDER_VERSION
 
     assert IR_BUILDER_VERSION >= 2
+
+
+# ---- token coverage for every anchor kind ------------------------------------------------------
+
+
+def _shape(anchor_id, token, slide):
+    return _anchor(anchor_id, "shape_text", tokens=[token]).model_copy(
+        update={"path": [f"Slide {slide}"]}
+    )
+
+
+async def _backfilled(amap, *fields):
+    ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
+    return {f.field_id: f for f in ir.fields}
+
+
+async def test_an_uncovered_text_box_token_copies_the_same_slide_field():
+    made = _typed("pptx:s2:sp11", "[Opening Balance]", "currency", "opening").model_copy(
+        update={
+            "label": "Opening Balance",
+            "description": "Balance at the start.",
+            "mode": "synthesis",
+        }
+    )
+    amap = AnchorMap(
+        format="pptx",
+        anchors=[
+            _shape("pptx:s2:sp11", "[Opening Balance]", 2),
+            _shape("pptx:s2:sp28", "[Opening Balance]", 2),
+        ],
+    )
+    out = await _backfilled(amap, made)
+    (copy,) = [f for f in out.values() if f.anchor_id == "pptx:s2:sp28"]
+    assert copy.field_id not in {"opening"} and copy.write_mode == "replace_token"
+    assert copy.constraints.token == "[Opening Balance]" and not copy.required
+    assert (copy.label, copy.description, copy.expected_type, copy.mode) == (
+        "Opening Balance",
+        "Balance at the start.",
+        "currency",
+        "synthesis",
+    )
+
+
+async def test_an_uncovered_lone_text_box_token_gets_a_text_field():
+    amap = AnchorMap(
+        format="pptx", anchors=[_shape("pptx:s6:sp3", "[Scoring method / thresholds]", 6)]
+    )
+    filler = _anchor("pptx:s6:sp4", "shape_text", tokens=["[Title]"])
+    amap.anchors.append(filler)
+    out = await _backfilled(amap, _field("t", "pptx:s6:sp4", "replace_token", token="[Title]"))
+    (f,) = [f for f in out.values() if f.anchor_id == "pptx:s6:sp3"]
+    assert (f.expected_type, f.write_mode, f.constraints.token) == (
+        "text",
+        "replace_token",
+        "[Scoring method / thresholds]",
+    )
+    assert f.description == "The value for Scoring method / thresholds."
+
+
+@pytest.mark.parametrize("blank", ["TBD", "XXX", "____"])
+async def test_a_generic_blank_in_a_text_box_is_left_to_the_ir_model(blank):
+    # a bare blank in prose ("status TBD") may be the author's text; a named token never is
+    amap = AnchorMap(
+        format="pptx",
+        anchors=[
+            _anchor("pptx:s4:sp2", "shape_text", tokens=[blank]),
+            _anchor("pptx:s4:sp3", "shape_text", tokens=["[Title]"]),
+        ],
+    )
+    out = await _backfilled(amap, _field("t", "pptx:s4:sp3", "replace_token", token="[Title]"))
+    assert [f.anchor_id for f in out.values()] == ["pptx:s4:sp3"]
+
+
+async def test_a_token_copy_on_another_slide_does_not_copy_the_field():
+    made = _typed("pptx:s2:sp11", "[Opening Balance]", "currency", "opening").model_copy(
+        update={"label": "Opening Balance", "description": "Balance at the start."}
+    )
+    amap = AnchorMap(
+        format="pptx",
+        anchors=[
+            _shape("pptx:s2:sp11", "[Opening Balance]", 2),
+            _shape("pptx:s3:sp1", "[Opening Balance]", 3),
+        ],
+    )
+    empty = IRDraft.model_construct(fields=[]).model_dump_json()  # one batch per slide
+    ir = await build_ir(FakeLLM(_reply(made), empty), amap, TID)
+    out = {f.field_id: f for f in ir.fields}
+    (other,) = [f for f in out.values() if f.anchor_id == "pptx:s3:sp1"]
+    assert (other.expected_type, other.description) == ("text", "The value for Opening Balance.")
+
+
+async def test_a_sheet_cell_token_gets_no_replace_token_field():
+    sheet = _anchor("xlsx:S!A1", "sheet_cell", tokens=["[Total]"])
+    para = _anchor("xlsx:S!A2", "sheet_cell", tokens=["[Name]"])
+    amap = AnchorMap(format="xlsx", anchors=[sheet, para])
+    out = await _backfilled(amap, _field("n", "xlsx:S!A2", "fill_cell"))
+    assert list(out) == ["n"]

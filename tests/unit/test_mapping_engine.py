@@ -919,12 +919,10 @@ async def test_slot_roles_transport_error_propagates():
         await map_fields(CTX, [HOLDER, BANK], DOCS, FakeRetriever([BOX_HIT]), Down(_box_batch(2)))
 
 
-async def test_slot_roles_not_asked_for_other_anchors_same_label_or_typed_fields():
+async def test_slot_roles_not_asked_for_other_anchors_or_same_label():
     other = _slot_field("bank", "Bank Name", anchor="pptx:s1:sp9")
     same_label = _slot_field("holder2", "Account Holder")
-    number = HOLDER.model_copy(update={"expected_type": "number"})
-    number2 = BANK.model_copy(update={"expected_type": "number"})
-    for fields in ([HOLDER, other], [HOLDER, same_label], [number, number2]):
+    for fields in ([HOLDER, other], [HOLDER, same_label]):
         _, llm = await _box(fields, _box_batch(len(fields)))
         assert len(llm.calls) == 1  # the batch only: no role check
 
@@ -938,3 +936,82 @@ async def test_slot_roles_demotion_reaches_a_shared_copy_on_another_slide():
         "evidence_failed_verification"
     }
     assert out["bank_copy"].field_id == "bank_copy"
+
+
+# ---- slot roles: one cited number in several typed slots of one slide --------------------------
+
+CASH_HIT = _hit("Closing balance 402.031,45 $ at period end.", section="Cash flow")
+KPI_HIT = _hit("Actual completion reached 87 % this quarter.", section="KPI")
+
+
+def _typed_batch(hit, value, quote, count):
+    cand = _cand(value, (hit, quote))
+    entries = [
+        {"n": n, "candidates": [cand], "not_found": False, "incomplete": False}
+        for n in range(1, count + 1)
+    ]
+    return json.dumps({"slots": entries})
+
+
+def _typed(fid, label, anchor, expected_type, slide=1):
+    return _slot_field(fid, label, anchor, expected_type, slide)
+
+
+async def _typed_run(fields, hit, batch, *replies):
+    llm = FakeLLM(batch, *replies)
+    out = await map_fields(CTX, fields, DOCS, FakeRetriever([hit]), llm)
+    return out, llm
+
+
+CASH = _typed_batch(CASH_HIT, "402.031,45 $", "402.031,45 $ at period end", 2)
+NET = _typed("net", "Net Cash Movement", "pptx:s1:sp11", "currency")
+CLOSING = _typed("closing", "Closing Balance", "pptx:s1:sp14", "currency")
+
+
+async def test_typed_roles_finance_value_kept_only_for_the_stated_role():
+    out, llm = await _typed_run(
+        [NET, CLOSING], CASH_HIT, CASH, '{"about": "Closing", "slots": [2]}'
+    )
+    assert out["closing"].status == "populated"
+    assert (out["net"].status, out["net"].missing_reason) == (
+        "missing",
+        "evidence_failed_verification",
+    )
+    assert len(llm.calls) == 2  # one batch, one role check
+
+
+async def test_typed_roles_kpi_card_target_and_actual():
+    target = _typed("target", "Target", "pptx:s3:sp4", "percent", slide=3)
+    actual = _typed("actual", "Actual", "pptx:s3:sp5", "percent", slide=3)
+    batch = _typed_batch(KPI_HIT, "87 %", "reached 87 % this quarter", 2)
+    out, llm = await _typed_run(
+        [target, actual], KPI_HIT, batch, '{"about": "Actual", "slots": [2]}'
+    )
+    assert out["actual"].status == "populated"
+    assert out["target"].status == "missing"
+    assert len(llm.calls) == 2
+
+
+async def test_typed_roles_both_confirmed_stay_populated():
+    out, _ = await _typed_run(
+        [NET, CLOSING], CASH_HIT, CASH, '{"about": "Balance", "slots": [1, 2]}'
+    )
+    assert {r.status for r in out.values()} == {"populated"}
+
+
+async def test_typed_roles_not_asked_across_slides():
+    other_slide = _typed("closing", "Closing Balance", "pptx:s2:sp14", "currency", slide=2)
+    one = _typed_batch(CASH_HIT, "402.031,45 $", "402.031,45 $ at period end", 1)
+    lone = json.dumps(
+        {"candidates": json.loads(one)["slots"][0]["candidates"]}
+        | {"not_found": False, "incomplete": False}
+    )
+    out, llm = await _typed_run([NET, other_slide], CASH_HIT, one, lone)
+    assert len(llm.calls) == 2  # one batch per slide: no role check
+    assert {r.status for r in out.values()} == {"populated"}
+
+
+async def test_typed_roles_not_asked_for_the_same_label():
+    same_label = _typed("net2", "Closing Balance", "pptx:s1:sp20", "currency")
+    _, llm = await _typed_run([CLOSING, same_label], CASH_HIT, CASH)
+    assert len(llm.calls) == 1  # the batch only: no role check

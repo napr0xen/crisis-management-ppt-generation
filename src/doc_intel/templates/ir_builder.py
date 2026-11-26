@@ -30,7 +30,7 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 3  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 4  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -456,19 +456,34 @@ _NOT_ID = re.compile(r"[^a-z0-9]+")
 
 
 def _token_cells(amap: AnchorMap, fields: list[IRField], used: set[str]) -> list[IRField]:
-    """A `replace_token` field for each token of a native table cell that no field covers, so no
-    bracket token stays literal in the output (the IR model sometimes skips such cells)."""
+    """A `replace_token` field for each token no field covers, on any anchor a token can be written
+    to, so no bracket token stays literal in the output (the IR model sometimes skips cells and
+    repeated text boxes). A copy of a token another field already maps on the same slide or
+    sheet takes that field's label, description, type and mode."""
     owned = {_table_of(f.anchor_id) for f in fields if f.write_mode == "fill_table_rows"}
     covered = {
         (f.anchor_id, f.constraints.token) for f in fields if f.write_mode == "replace_token"
     }
     other = {f.anchor_id for f in fields if f.write_mode != "replace_token"}
+    twins = {
+        (_group_of(amap.format, f.anchor_id), f.constraints.token): f
+        for f in reversed(fields)
+        if f.write_mode == "replace_token"
+    }
     added = []
     for a in amap.anchors:
-        if a.kind != "table_cell" or a.anchor_id in other or _table_of(a.anchor_id) in owned:
+        if (
+            a.kind not in WRITE_MODE_KINDS["replace_token"]
+            or a.anchor_id in other
+            or _table_of(a.anchor_id) in owned
+        ):
             continue
         for token in a.tokens:
             if (a.anchor_id, token) in covered or _is_picture(token):
+                continue
+            # a bare blank in prose ("status TBD") may be the author's text; a bracketed name and
+            # any table-cell token are always slots
+            if a.kind != "table_cell" and not token.startswith(("{{", "[", "<")):
                 continue
             inner = token.strip("{}[]<> _") or "value"
             base = _NOT_ID.sub("_", inner.casefold()).strip("_")
@@ -478,17 +493,23 @@ def _token_cells(amap: AnchorMap, fields: list[IRField], used: set[str]) -> list
                 n += 1
                 field_id = f"{base}_{n}"
             used.add(field_id)
+            data = {
+                "label": (a.context if has_letter(a.context) else inner)[:120],
+                "description": f"The value for {inner}."[:500],
+                "expected_type": "text",
+                "mode": "extractive",
+            }
+            if twin := twins.get((_group_of(amap.format, a.anchor_id), token)):
+                data = {k: getattr(twin, k) for k in data}
             added.append(
                 IRField(
                     field_id=field_id,
                     anchor_id=a.anchor_id,
                     section_path=a.path,
-                    label=(a.context if has_letter(a.context) else inner)[:120],
-                    description=f"The value for {inner}."[:500],
-                    expected_type="text",
                     required=False,
                     write_mode="replace_token",
                     constraints=Constraints(token=token),
+                    **data,
                 )
             )
     return added

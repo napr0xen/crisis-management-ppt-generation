@@ -86,6 +86,7 @@ async def test_round_trip(client, session, migrated_db, vector_store, user_a, pr
     llm = FakeLLM(
         *slots,
         json.dumps({"rows": [], "not_found": True}),  # pptx/docx: the empty table's code field
+        *([extraction([], not_found=True)] if fmt == "docx" else []),  # header `<classification>`
     )
     await drain_one(migrated_db, vector_store, llm)
 
@@ -95,6 +96,8 @@ async def test_round_trip(client, session, migrated_db, vector_store, user_a, pr
     assert run["status"] == "completed", run
     assert run["results"]["found"]["status"] == "populated"
     assert run["results"]["lost"]["status"] == "missing"
+    if fmt == "docx":  # a named token the IR left uncovered gets a code-made field
+        assert run["results"]["classification"]["status"] == "missing"
     artifact = run["artifact"]
     assert artifact["format"] == fmt
     assert artifact["filename"].endswith(f".{fmt}")

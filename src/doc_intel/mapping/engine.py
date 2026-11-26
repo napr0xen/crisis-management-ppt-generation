@@ -1261,20 +1261,23 @@ async def _check_slot_roles(
     results: dict[str, FieldMappingResult],
     shared: dict[str, tuple[str, str, str]],
 ) -> None:
-    """Slots of one text box are different roles, but the per-field check cannot see the other
-    slots, so one value filled into several of them is checked once, together. A slot the quotes
-    do not state, or any slot when the check is unusable, is never populated."""
-    boxes: dict[tuple[str, str], list[IRField]] = {}
+    """Slots of one text box, or typed slots of one slide, are different roles, but the per-field
+    check cannot see the other slots, so one value filled into several of them is checked once,
+    together. A slot the quotes do not state, or any slot when the check is unusable, is never
+    populated."""
+    boxes: dict[tuple[str, object, str], list[IRField]] = {}
     for f in fields:
         r = results[f.field_id]
         if (
-            f.expected_type == "text"
-            and f.write_mode == "replace_token"
+            f.write_mode == "replace_token"
             and r.status in ("populated", "partial")
             and r.provenance == "rag"
-            and isinstance(r.value, str)
+            and r.value is not None
         ):
-            boxes.setdefault((f.anchor_id, normalize(r.value)), []).append(f)
+            if f.expected_type == "text" and isinstance(r.value, str):
+                boxes.setdefault(("text", f.anchor_id, normalize(r.value)), []).append(f)
+            elif f.expected_type in TYPED_TYPES:
+                boxes.setdefault(("typed", _unit(f), normalize(str(r.value))), []).append(f)
     demoted: dict[str, MissingReason] = {}
     for group in boxes.values():
         if len(group) < 2 or len({normalize(f.label) for f in group}) < 2:

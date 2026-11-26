@@ -150,16 +150,19 @@ async def test_mapping_run_populates_misses_and_conflicts(
     run_id = posted.json()["mapping_run_id"]
 
     llm = FakeLLM(
-        # slide 1 holds two loose fields: one batch call; slide 2's lone field is mapped alone
+        # slide 1 holds two loose fields: one batch call; slide 2's `customers` shares a batch
+        # with the code-made field for its uncovered `{{incident_date}}` token
         batch([candidate("Substation fire", chunk_id(source, 0), SUMMARY_QUOTE)], []),
-        extraction(
+        batch(
             [
                 candidate("12,000", chunk_id(source, 1), "12,000 customers lost power"),
                 candidate("15,000", chunk_id(source, 2), "15,000 customers lost power"),
-            ]
+            ],
+            [],
         ),
         # the fixture's empty stakeholder table gets a fill_table_rows field from code
         json.dumps({"rows": [], "not_found": True}),
+        extraction([], not_found=True),  # slide 3's code-made `[note]` field, mapped alone
     )
     await drain_one(migrated_db, vector_store, llm)
 
@@ -172,12 +175,12 @@ async def test_mapping_run_populates_misses_and_conflicts(
     assert body["summary"] == {
         "populated": 1,
         "partial": 0,
-        "missing": 2,
+        "missing": 4,  # + the code-made incident_date and note fields
         "conflict": 1,
         "warnings": [],
     }
-    assert len(llm.calls) == 3
-    assert seen == {fid: [f"Sib {fid}"] for fid in seen} and len(seen) == 3  # handler wiring
+    assert len(llm.calls) == 4
+    assert seen == {fid: [f"Sib {fid}"] for fid in seen} and len(seen) == 5  # handler wiring
 
     summary = body["results"]["incident_summary"]
     assert summary["status"] == "populated"
