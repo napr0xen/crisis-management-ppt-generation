@@ -7,7 +7,14 @@ from io import BytesIO
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling_core.types.doc import ListItem, SectionHeaderItem, TableItem, TextItem, TitleItem
+from docling_core.types.doc import (
+    ListItem,
+    SectionHeaderItem,
+    TableData,
+    TableItem,
+    TextItem,
+    TitleItem,
+)
 
 from doc_intel.ingestion.schemas import ParsedDocument, ParsedElement
 
@@ -51,6 +58,37 @@ def drop_repeated(elements: list[ParsedElement]) -> list[ParsedElement]:
     return kept
 
 
+def _table_rows(data: TableData) -> list[list[str]]:
+    """Each cell's text once, at its top-left slot; `data.grid` repeats it in every spanned slot."""
+    rows = [[""] * data.num_cols for _ in range(data.num_rows)]
+    for cell in data.table_cells:
+        r, c = cell.start_row_offset_idx, cell.start_col_offset_idx
+        if r < data.num_rows and c < data.num_cols:
+            rows[r][c] = _clean(cell.text)
+    return rows
+
+
+def join_split_tables(elements: list[ParsedElement]) -> list[ParsedElement]:
+    """Merge a table into the one right before it when it continues on the next page
+    (same header row), so a table split across pages is one table."""
+    out: list[ParsedElement] = []
+    last_page: int | None = None  # page of the newest rows in out[-1]; chains span 3+ pages
+    for e in elements:
+        prev = out[-1] if out else None
+        if (
+            prev is not None
+            and prev.element_type == e.element_type == "table"
+            and last_page is not None
+            and e.page_number == last_page + 1
+            and prev.rows[0] == e.rows[0]
+        ):
+            out[-1] = prev.model_copy(update={"rows": prev.rows + e.rows[1:]})
+        else:
+            out.append(e)
+        last_page = e.page_number
+    return out
+
+
 def _parse(data: bytes, ext: str) -> ParsedDocument:
     # The name only tells Docling the format; the real filename never reaches the parser.
     # Over MAX_PAGES Docling raises, so the document fails instead of holding the single worker
@@ -73,7 +111,7 @@ def _parse(data: bytes, ext: str) -> ParsedDocument:
                     )
                 )
         elif isinstance(item, TableItem):
-            rows = [[_clean(cell.text) for cell in row] for row in item.data.grid]
+            rows = _table_rows(item.data)
             if any(any(row) for row in rows):
                 elements.append(
                     ParsedElement(
@@ -89,7 +127,8 @@ def _parse(data: bytes, ext: str) -> ParsedDocument:
                 )
             )
     return ParsedDocument(
-        elements=drop_repeated(elements), page_count=doc.num_pages() if ext != "docx" else None
+        elements=join_split_tables(drop_repeated(elements)),
+        page_count=doc.num_pages() if ext != "docx" else None,
     )
 
 

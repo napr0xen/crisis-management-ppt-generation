@@ -1,0 +1,166 @@
+{
+  "finance_statement": {
+    "fields": {
+      "opening_balance": {
+        "status": "populated",
+        "value": 12450.0
+      },
+      "net_movement": {
+        "status": "populated",
+        "value": 1219.5
+      },
+      "closing_balance": {
+        "status": "populated",
+        "value": 13669.5
+      },
+      "transactions_table": {
+        "status": "populated",
+        "value": [
+          [
+            "03/03/2025",
+            "Salary March",
+            "4,000.00",
+            "",
+            "16,450.00"
+          ],
+          [
+            "07/03/2025",
+            "Office rent",
+            "",
+            "2,200.00",
+            "14,250.00"
+          ],
+          [
+            "15/03/2025",
+            "Invoice 7741",
+            "1,200.00",
+            "",
+            "15,450.00"
+          ],
+          [
+            "21/03/2025",
+            "Utilities",
+            "",
+            "1,780.50",
+            "13,669.50"
+          ]
+        ]
+      },
+      "account_manager": {
+        "status": "missing"
+      }
+    },
+    "row_groups": []
+  },
+  "procurement_review": {
+    "fields": {
+      "vendor_1": {
+        "status": "populated",
+        "value": "Northwind Systems"
+      },
+      "price_1": {
+        "status": "populated",
+        "value": 48000
+      },
+      "score_1": {
+        "status": "populated",
+        "value": 78
+      },
+      "vendor_2": {
+        "status": "populated",
+        "value": "Contoso Build"
+      },
+      "price_2": {
+        "status": "populated",
+        "value": 52500
+      },
+      "score_2": {
+        "status": "populated",
+        "value": 81
+      },
+      "vendor_3": {
+        "status": "populated",
+        "value": "Fabrikam Works"
+      },
+      "price_3": {
+        "status": "populated",
+        "value": 44900
+      },
+      "score_3": {
+        "status": "populated",
+        "value": 71
+      },
+      "recommended_vendor": {
+        "status": "populated",
+        "value": "Contoso Build"
+      },
+      "scoring_method": {
+        "status": "populated",
+        "value": "60% technical score + 40% price score"
+      }
+    },
+    "row_groups": [
+      [
+        "vendor_1",
+        "price_1",
+        "score_1"
+      ],
+      [
+        "vendor_2",
+        "price_2",
+        "score_2"
+      ],
+      [
+        "vendor_3",
+        "price_3",
+        "score_3"
+      ]
+    ]
+  },
+  "multilingual": {
+    "fields": {
+      "opening_balance": {
+        "status": "populated",
+        "value": 10750.0
+      },
+      "total_credits": {
+        "status": "populated",
+        "value": 8500.0
+      },
+      "closing_balance": {
+        "status": "populated",
+        "value": 14814.94
+      },
+      "movements_table": {
+        "status": "populated",
+        "value": [
+          [
+            "02/04/2025",
+            "Nómina abril",
+            "8.500,00",
+            "",
+            "19.250,00"
+          ],
+          [
+            "10/04/2025",
+            "Alquiler local",
+            "",
+            "3.200,50",
+            "16.049,50"
+          ],
+          [
+            "18/04/2025",
+            "Pago proveedor",
+            "",
+            "1.234,56",
+            "14.814,94"
+          ]
+        ]
+      },
+      "overdraft_limit": {
+        "status": "missing"
+      }
+    },
+    "row_groups": []
+  }
+}

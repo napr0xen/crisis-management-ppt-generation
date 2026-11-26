@@ -119,6 +119,18 @@ Phase 15 results (2026-11-22; 75 fields: slot grid, cell grid and two row tables
 
 Phase 16 results (2026-11-22; 85 fields: summary/findings fields in four sources, one Spanish, added; the mapping summary now also reports `synthesized` and `length_violations`): fabricated 0 / 0, verification 100% / 100%, seeded conflicts 100% / 100%, absent fields 100% / 100%, field accuracy 93.3% / 95.0%, length violations 3 after (not measured before), synthesized 0 in the recorded run.
 
+### Regression bench (`tests/eval/bench/`, Phase 22)
+
+Synthetic real-shaped cases (`cases/finance_statement.json`, `procurement_review.json`, `multilingual.json`) share the `mapping.jsonl` case shape (`name`, `template.fields`, `sources`; no `expected`). `gold.json` holds `{case: {"fields": {field_id: {status, value?}}, "row_groups": [[field_id, ...]]}}`; a row group lists the numbered slot fields that form one template row. `score.py` is pure (no services; unit-tested in `tests/unit/test_bench_score.py`, which also checks that each gold fed back as results scores 1.0).
+
+| Metric | Definition |
+|---|---|
+| `field_accuracy` | gold fields whose result has the gold status and, when gold has a value, a matching value |
+| `populated_but_wrong_rate` | `populated` results whose value does not match gold (a gold `missing`/`conflict` or an absent gold field counts as wrong; gold `partial` with a matching value does not); 0.0 with no populated results |
+| `row_alignment_accuracy` | populated rows (each row of a populated table, each row group whose fields are all populated/partial) whose non-empty cells all occur in one single source pipe row; 1.0 with no rows (the `rows` count shows n) |
+
+Reports carry the counts next to each rate. Run: `uv run pytest tests/eval/bench -m eval`; results go to `report.json["bench"]`. Only `fabricated_citations == 0` is gated; the three metrics are recorded as the regression baseline.
+
 ## 6. Template fidelity tests (`tests/integration/test_writers_*.py`)
 
 For each fixture template × format:

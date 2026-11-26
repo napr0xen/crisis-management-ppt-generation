@@ -1,0 +1,94 @@
+{
+  "name": "multilingual",
+  "template": {
+    "fields": [
+      {
+        "field_id": "opening_balance",
+        "anchor_id": "pptx:opening_balance",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Opening Balance",
+        "description": "Balance at the start of the statement period.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Opening Balance]"
+        }
+      },
+      {
+        "field_id": "total_credits",
+        "anchor_id": "pptx:total_credits",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Total money in",
+        "description": "Total of credits (abonos) in the period.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Total money in]"
+        }
+      },
+      {
+        "field_id": "closing_balance",
+        "anchor_id": "pptx:closing_balance",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Closing Balance",
+        "description": "Balance at the end of the statement period.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Closing Balance]"
+        }
+      },
+      {
+        "field_id": "movements_table",
+        "anchor_id": "pptx:movements_table",
+        "section_path": [
+          "Movements"
+        ],
+        "label": "Movements",
+        "description": "One row per movement: date, description, credit, debit and balance.",
+        "expected_type": "table",
+        "required": true,
+        "write_mode": "fill_table_rows",
+        "constraints": {
+          "columns": [
+            "Fecha",
+            "Concepto",
+            "Abonos",
+            "Cargos",
+            "Saldo"
+          ]
+        }
+      },
+      {
+        "field_id": "overdraft_limit",
+        "anchor_id": "pptx:overdraft_limit",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Overdraft limit",
+        "description": "Agreed overdraft limit of the account.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Overdraft limit]"
+        }
+      }
+    ]
+  },
+  "sources": [
+    {
+      "filename": "estado_abril.md",
+      "text": "Estado de cuenta, del 1 al 30 de abril de 2025, Comercial Sol SA\n\nSaldo inicial: 10.750,00\nTotal de abonos: 8.500,00\nTotal de cargos: 4.435,06\nSaldo final: 14.814,94\n\nMovimientos\n\n| Fecha | Concepto | Abonos | Cargos | Saldo |\n| --- | --- | --- | --- | --- |\n| 02/04/2025 | Nómina abril | 8.500,00 |  | 19.250,00 |\n| 10/04/2025 | Alquiler local |  | 3.200,50 | 16.049,50 |\n| 18/04/2025 | Pago proveedor |  | 1.234,56 | 14.814,94 |"
+    }
+  ]
+}

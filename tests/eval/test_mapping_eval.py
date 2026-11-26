@@ -10,6 +10,7 @@ import statistics
 import time
 import uuid
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -24,6 +25,7 @@ from doc_intel.mapping.retriever import Retriever
 from doc_intel.mapping.schemas import FieldMappingResult
 from doc_intel.mapping.verifier import normalize
 from doc_intel.templates.schemas import IRField
+from tests.eval.bench.score import matches
 
 pytestmark = [pytest.mark.integration, pytest.mark.llm, pytest.mark.eval, pytest.mark.slow]
 
@@ -42,6 +44,30 @@ def _quotes(result: FieldMappingResult) -> list:
     return [*result.evidence, *(e for c in candidates for e in c.evidence)]
 
 
+async def ingest(ctx, sources, embedder, vector_store) -> tuple[list[UUID], dict[UUID, str]]:
+    """Chunk each source on blank lines, embed and upsert; returns doc ids and their full texts."""
+    doc_ids, texts = [], {}
+    for source in sources:
+        doc_id = uuid.uuid4()
+        doc_ids.append(doc_id)
+        texts[doc_id] = source["text"]
+        paragraphs = [p for p in source["text"].split("\n\n") if p.strip()]
+        chunks = [
+            ChunkPayload(
+                document_id=doc_id,
+                filename=source["filename"],
+                page_number=None,
+                section_heading=None,
+                element_type="text",
+                chunk_index=i,
+                text=p,
+            )
+            for i, p in enumerate(paragraphs)
+        ]
+        await vector_store.upsert_chunks(ctx, chunks, await embedder.embed_documents(paragraphs))
+    return doc_ids, texts
+
+
 def _fits(field: IRField, result: FieldMappingResult) -> bool | None:
     """Whether a populated/partial list value fits the field's max_items / max_chars."""
     c, value = field.constraints, result.value
@@ -52,33 +78,6 @@ def _fits(field: IRField, result: FieldMappingResult) -> bool | None:
     too_many = c.max_items is not None and len(value) > c.max_items
     too_long = c.max_chars is not None and len("\n".join(map(str, value))) > c.max_chars
     return not (too_many or too_long)
-
-
-def _row_matches(actual: list, expected: list) -> bool:
-    return len(actual) == len(expected) and all(
-        normalize(str(e)) in normalize(str(a)) for a, e in zip(actual, expected, strict=True)
-    )
-
-
-def _matches(actual, expected) -> bool:
-    if isinstance(expected, list) and expected and isinstance(expected[0], list):
-        # a table: same row count, each expected row matches its own actual row (row order
-        # across documents is not defined)
-        if not isinstance(actual, list) or len(actual) != len(expected):
-            return False
-        left = [r for r in actual if isinstance(r, list)]
-        for row in expected:
-            hit = next((a for a in left if _row_matches(a, row)), None)
-            if hit is None:
-                return False
-            left.remove(hit)
-        return True
-    if isinstance(expected, list):
-        joined = normalize(" ".join(actual)) if isinstance(actual, list) else ""
-        return all(normalize(item) in joined for item in expected)
-    if isinstance(expected, str):
-        return isinstance(actual, str) and normalize(expected) in normalize(actual)
-    return isinstance(actual, int | float) and float(actual) == float(expected)
 
 
 async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_store):
@@ -95,27 +94,7 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
         retriever, llm = Retriever(embedder, vector_store), make_llm_client(settings, http)
         for case in cases:
             ctx = TenantContext(f"eval_{uuid.uuid4().hex[:8]}", uuid.uuid4())
-            doc_ids, texts = [], {}
-            for source in case["sources"]:
-                doc_id = uuid.uuid4()
-                doc_ids.append(doc_id)
-                texts[doc_id] = source["text"]
-                paragraphs = [p for p in source["text"].split("\n\n") if p.strip()]
-                chunks = [
-                    ChunkPayload(
-                        document_id=doc_id,
-                        filename=source["filename"],
-                        page_number=None,
-                        section_heading=None,
-                        element_type="text",
-                        chunk_index=i,
-                        text=p,
-                    )
-                    for i, p in enumerate(paragraphs)
-                ]
-                await vector_store.upsert_chunks(
-                    ctx, chunks, await embedder.embed_documents(paragraphs)
-                )
+            doc_ids, texts = await ingest(ctx, case["sources"], embedder, vector_store)
 
             fields = [IRField.model_validate(raw) for raw in case["template"]["fields"]]
             started = time.perf_counter()
@@ -143,7 +122,7 @@ async def test_mapping_eval_no_fabrication_conflicts_and_absent_fields(vector_st
                         "fits": _fits(field, result),
                         "fabricated_citations": len(fabricated),
                         "value_correct": (
-                            _matches(result.value, expected["value"])
+                            matches(result.value, expected["value"])
                             if expected["status"] == "populated"
                             and result.status in ("populated", "partial")
                             else None

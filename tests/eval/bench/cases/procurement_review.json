@@ -1,0 +1,178 @@
+{
+  "name": "procurement_review",
+  "template": {
+    "fields": [
+      {
+        "field_id": "vendor_1",
+        "anchor_id": "pptx:vendor_1",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Vendor 1",
+        "description": "Name of the first vendor listed in the scoring table.",
+        "expected_type": "text",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Vendor 1]"
+        }
+      },
+      {
+        "field_id": "price_1",
+        "anchor_id": "pptx:price_1",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Price 1",
+        "description": "Price quoted by the first vendor listed in the scoring table.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Price 1]"
+        }
+      },
+      {
+        "field_id": "score_1",
+        "anchor_id": "pptx:score_1",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Total score 1",
+        "description": "Total score of the first vendor listed in the scoring table.",
+        "expected_type": "number",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Total score 1]"
+        }
+      },
+      {
+        "field_id": "vendor_2",
+        "anchor_id": "pptx:vendor_2",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Vendor 2",
+        "description": "Name of the second vendor listed in the scoring table.",
+        "expected_type": "text",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Vendor 2]"
+        }
+      },
+      {
+        "field_id": "price_2",
+        "anchor_id": "pptx:price_2",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Price 2",
+        "description": "Price quoted by the second vendor listed in the scoring table.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Price 2]"
+        }
+      },
+      {
+        "field_id": "score_2",
+        "anchor_id": "pptx:score_2",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Total score 2",
+        "description": "Total score of the second vendor listed in the scoring table.",
+        "expected_type": "number",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Total score 2]"
+        }
+      },
+      {
+        "field_id": "vendor_3",
+        "anchor_id": "pptx:vendor_3",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Vendor 3",
+        "description": "Name of the third vendor listed in the scoring table.",
+        "expected_type": "text",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Vendor 3]"
+        }
+      },
+      {
+        "field_id": "price_3",
+        "anchor_id": "pptx:price_3",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Price 3",
+        "description": "Price quoted by the third vendor listed in the scoring table.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Price 3]"
+        }
+      },
+      {
+        "field_id": "score_3",
+        "anchor_id": "pptx:score_3",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Total score 3",
+        "description": "Total score of the third vendor listed in the scoring table.",
+        "expected_type": "number",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Total score 3]"
+        }
+      },
+      {
+        "field_id": "recommended_vendor",
+        "anchor_id": "pptx:recommended_vendor",
+        "section_path": [
+          "Recommendation"
+        ],
+        "label": "Recommended vendor",
+        "description": "Vendor the evaluation recommends awarding the contract to.",
+        "expected_type": "text",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Recommended vendor]"
+        }
+      },
+      {
+        "field_id": "scoring_method",
+        "anchor_id": "pptx:scoring_method",
+        "section_path": [
+          "Method"
+        ],
+        "label": "Scoring method",
+        "description": "How the total score is computed and the rejection threshold.",
+        "expected_type": "text",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Scoring method]"
+        }
+      }
+    ]
+  },
+  "sources": [
+    {
+      "filename": "vendor_evaluation.md",
+      "text": "Vendor evaluation: Warehouse management system tender\n\nScoring method: total = 60% technical score + 40% price score; vendors with a total below 70 are rejected.\n\nScoring table\n\n| Vendor | Price | Technical score | Total |\n| --- | --- | --- | --- |\n| Northwind Systems | 48,000 | 82 | 78 |\n| Contoso Build | 52,500 | 90 | 81 |\n| Fabrikam Works | 44,900 | 74 | 71 |\n\nRecommendation: award the contract to Contoso Build, the highest total."
+    }
+  ]
+}

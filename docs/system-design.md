@@ -46,6 +46,8 @@ Outside the package: `integrations/openwebui/doc_intel_pipe.py` (the Pipe Functi
 | txt | plain text, split on blank lines | null | null |
 | md | plain text, split on `#` headings | null | heading text |
 
+Docling tables (Phase 22): each cell is written once at its top-left slot from `table_cells` (spanned slots stay empty; `data.grid` would repeat the text), and a table that starts on the next page with the same header row as the table right before it is merged into it (first table's page and heading; chains join).
+
 3. Write the parser output to `parsed/{document_id}.json` with `overwrite=True`, so a retry after a crash can rewrite it.
    Headings (Docling section headers/titles, Markdown `#` lines) set `section_heading` **and** are emitted as text, because the layout model sometimes labels body text as a header.
 4. **Chunker** (`chunker.py`):

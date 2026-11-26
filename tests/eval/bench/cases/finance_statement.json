@@ -1,0 +1,94 @@
+{
+  "name": "finance_statement",
+  "template": {
+    "fields": [
+      {
+        "field_id": "opening_balance",
+        "anchor_id": "pptx:opening_balance",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Opening Balance",
+        "description": "Balance at the start of the statement period.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Opening Balance]"
+        }
+      },
+      {
+        "field_id": "net_movement",
+        "anchor_id": "pptx:net_movement",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Net Movement",
+        "description": "Net movement over the period (money in minus money out), not a balance.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Net Movement]"
+        }
+      },
+      {
+        "field_id": "closing_balance",
+        "anchor_id": "pptx:closing_balance",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Closing Balance",
+        "description": "Balance at the end of the statement period.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Closing Balance]"
+        }
+      },
+      {
+        "field_id": "transactions_table",
+        "anchor_id": "pptx:transactions_table",
+        "section_path": [
+          "Transactions"
+        ],
+        "label": "Transactions",
+        "description": "One row per transaction: date, description, money in, money out and balance.",
+        "expected_type": "table",
+        "required": true,
+        "write_mode": "fill_table_rows",
+        "constraints": {
+          "columns": [
+            "Date",
+            "Description",
+            "Money in",
+            "Money out",
+            "Balance"
+          ]
+        }
+      },
+      {
+        "field_id": "account_manager",
+        "anchor_id": "pptx:account_manager",
+        "section_path": [
+          "Statement"
+        ],
+        "label": "Relationship manager",
+        "description": "Name of the bank relationship manager.",
+        "expected_type": "text",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Relationship manager]"
+        }
+      }
+    ]
+  },
+  "sources": [
+    {
+      "filename": "statement_march.md",
+      "text": "Account statement, 1 March 2025 to 31 March 2025, Harbor Trading Ltd\n\nOpening balance: 12,450.00\nTotal money in: 5,200.00\nTotal money out: 3,980.50\nNet movement: 1,219.50\nClosing balance: 13,669.50\n\nTransactions\n\n| Date | Description | Money in | Money out | Balance |\n| --- | --- | --- | --- | --- |\n| 03/03/2025 | Salary March | 4,000.00 |  | 16,450.00 |\n| 07/03/2025 | Office rent |  | 2,200.00 | 14,250.00 |\n| 15/03/2025 | Invoice 7741 | 1,200.00 |  | 15,450.00 |\n| 21/03/2025 | Utilities |  | 1,780.50 | 13,669.50 |"
+    }
+  ]
+}
