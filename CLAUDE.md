@@ -78,22 +78,21 @@ Work **only** on the current phase in `docs/implementation-roadmap.md`. Don't bu
 ## Session Learnings (auto-updated by handoff)
 
 ### Implicit Rules
-- Gate: .venv/bin on PATH; ruff check ., ruff format --check ., alembic check, full pytest (~11 min, Postgres+Qdrant+live MLX :8080)
-- LLM: openai_compat mlx-community/Qwen3-14B-4bit; FakeLLM in tests routes structured replies by schema title (now BatchReply for IR)
-- Never print DB URL: make_engine(settings.database_url), not settings object
-- Diagnostics print shapes/booleans only, never document text
-- Commit only when user asks; never stage .env, data/, .venv, .handoff
+- Gate: .venv/bin on PATH; uv run ruff check ., ruff format --check ., alembic check, pytest tests/unit tests/integration tests/security (~1.5 min, needs Postgres+Qdrant)
+- Live bench: uv run pytest tests/eval/bench -m eval (needs MLX :8080), results in tests/eval/report.json["bench"] (git-ignored)
+- Phase branches phase-<N>-<slug>, never deleted; commit only when user asks; main ff only on approval
+- Reason codes are free strings: row_label_mismatch, row_mixed added; logs carry codes only, never text
+- Old Qdrant points lack rows/block_ids → checks are no-ops until re-ingest
 
 ### Key Decisions
-- Decision: typed values verified only against verified quotes, never whole retrieved context — Reason: guardrail 2, matching context would let a value cite a quote that never states it
-- Decision: quote side reads ambiguous numbers both ways (one thousands group, DR/CR or trailing minus either sign), value side one way — Reason: value must state exactly one number
-- Decision: RETRIEVAL_CONTEXT_TOKENS default stays 4500 — Reason: at 3072 mapping eval lost a seeded conflict
-- Decision: curate tiers pinned opening chunks, then scored hits, then 0.0-score neighbors — Reason: neighbors crowded out ranked hits; cover chunks must survive
-- Decision: IRField.mode default extractive stored, required with description in ir_builder.BatchReply/LLMIRField — Reason: optional mode set on 0/116 fields by Qwen3-14B
-- Decision: synthesis text/list slots skip extraction and heading check, mapped alone outside batches — Reason: verbatim lookup and heading check fail written summaries
-- Decision: synthesis item with word share under 0.6 kept only if it states >=1 number all quoted, slot partial — Reason: table-row quotes share few words; number-free items had nothing verified
-- Decision: derived synthesis numbers (sum/diff of two quoted) always partial — Reason: no quote states them, flag for review
-- Decision: no high_score_miss escalation for synthesis slots or all-synthesis groups — Reason: thinking retry cannot find a verbatim value that does not exist
-- Decision: IR_BUILDER_VERSION 2->3 — Reason: build_ir output gained mode
+- Decision: provenance ids never in chunk text — Reason: keeps embeddings, BM25 and number parsing clean; id digits must never verify a number.
+- Decision: LLMQuote strips only displayed row ids ([P1-T2-R04]), not [B..] — Reason: [B12] is a real reference marker in documents.
+- Decision: row_label_mismatch conservative, reject only when no value cell matches slot label AND another labelled cell states a value of slot type — Reason: avoids false rejects (multilingual, text-only rows).
+- Decision: check lives in engine._rejection — Reason: it is the real acceptance gate (called by _candidates), so gate, log and retry note agree.
+- Decision: _stray_cells only for multi-row record groups — Reason: keyed cards (one-row groups) take slots from different source rows by design.
+- Decision: bench metrics recorded, not gated; only fabricated_citations==0 gated — Reason: guardrail 2.
+- Decision: gold partial with matching value not counted populated-but-wrong — Reason: status mismatch already in field_accuracy.
+- Decision: bench and test_mapping_eval share matches() and ingest() — Reason: avoid drift.
+- Decision: Docling cell text once at top-left slot from table_cells; join same-header tables on consecutive pages after drop_repeated — Reason: avoid duplicated cell text and split-table row loss.
 
 <!-- handoff:learnings:end -->
