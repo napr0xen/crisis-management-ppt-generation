@@ -169,3 +169,18 @@ async def test_a_short_numbered_list_not_found_stays_missing():
     out = await map_fields(CTX, _findings(12), DOCS, FakeRetriever([hit]), llm)
     assert {r.missing_reason for r in out.values()} == {"not_found_by_llm"}
     assert len(llm.calls) == 1
+
+
+async def test_weak_synthesized_items_never_overwrite_verbatim_populated_slots():
+    d = DOMAINS["museum"]
+    hit = _hit(d["text"])
+    verbatim = [([q], [(hit, q)]) for q in d["quotes"]]
+    weak = [WEAK["museum"], "Long stays overall: 118 minutes", "Third overall point: 62% rated"]
+    llm = FakeLLM(
+        _seq(verbatim), _synth(*[(w, hit, d["quotes"][k % 2]) for k, w in enumerate(weak)])
+    )
+    out = await map_fields(CTX, _findings(89), DOCS, FakeRetriever([hit]), llm)
+    got = [out[f"key_finding_{i}"] for i in range(1, 5)]
+    assert [(r.status, r.value) for r in got[:2]] == [("populated", q) for q in d["quotes"]]
+    assert [e.quote for e in got[0].evidence] == [d["quotes"][0]]
+    assert got[2].status == "partial"

@@ -460,6 +460,8 @@ def _token_cells(amap: AnchorMap, fields: list[IRField], used: set[str]) -> list
     to, so no bracket token stays literal in the output (the IR model sometimes skips cells and
     repeated text boxes). A copy of a token another field already maps on the same slide or
     sheet takes that field's label, description, type and mode."""
+    # shortcut: instruction-style bracket text in a text box ("[Add presenter name]") becomes a
+    # field and renders missing, upgrade if templates with author instruction boxes show up.
     owned = {_table_of(f.anchor_id) for f in fields if f.write_mode == "fill_table_rows"}
     covered = {
         (f.anchor_id, f.constraints.token) for f in fields if f.write_mode == "replace_token"

@@ -1237,6 +1237,11 @@ async def _list_results(
             filled[f.field_id] = _missing(f, "not_found_by_llm", docs)
             continue
         text, quotes, weak = items[k]
+        if weak and collapsed[f.field_id].status == "populated":
+            filled[f.field_id] = collapsed[
+                f.field_id
+            ]  # a weak item never replaces a verbatim value
+            continue
         filled[f.field_id] = FieldMappingResult(
             field_id=f.field_id,
             status="partial" if weak else "populated",
@@ -1644,7 +1649,8 @@ async def _retry_roles(
         retried.add(f.field_id)
         key = shared.get(f.field_id)
         for g in fields:  # the copies of its fact on other slides take the new answer
-            if g.field_id == f.field_id or (key and shared.get(g.field_id) == key):
+            same = g.field_id == f.field_id or (key and shared.get(g.field_id) == key)
+            if same and results[g.field_id].provenance == "rag":  # never a user-set value
                 results[g.field_id] = after.model_copy(update={"field_id": g.field_id})
     if retried:  # a retried value may collide with a third role
         await _check_slot_roles(llm, fields, results, shared, only=retried)
