@@ -756,7 +756,11 @@ def _llm_field_schema() -> dict:
 def test_the_llm_must_classify_every_field_mode():
     item = _llm_field_schema()
     assert "mode" in item["required"]
-    assert item["properties"]["mode"]["enum"] == ["extractive", "synthesis"]
+    assert item["properties"]["mode"]["enum"] == [
+        "extractive",
+        "synthesis",
+        "derived",
+    ]
     assert "default" not in item["properties"]["mode"]
     assert "synthesis" in item["properties"]["mode"]["description"]
 
@@ -1102,3 +1106,20 @@ async def test_a_sheet_cell_token_gets_no_replace_token_field():
     amap = AnchorMap(format="xlsx", anchors=[sheet, para])
     out = await _backfilled(amap, _field("n", "xlsx:S!A2", "fill_cell"))
     assert list(out) == ["n"]
+
+
+def test_derived_mode_and_hidden_derivation():
+    from doc_intel.templates.ir_builder import LLMIRField
+    from doc_intel.templates.schemas import IRField
+
+    assert _version() == 5
+    assert "derived" in LLMIRField.model_json_schema()["properties"]["mode"]["enum"]
+    assert "derivation" not in IRField.model_json_schema()["properties"]
+    assert "derivation" not in LLMIRField.model_json_schema()["properties"]
+    assert IRField.model_fields["derivation"].default is None
+
+
+def _version():
+    from doc_intel.templates.ir_builder import IR_BUILDER_VERSION
+
+    return IR_BUILDER_VERSION

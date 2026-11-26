@@ -92,3 +92,9 @@ def test_quote_strips_provenance_ids_and_keeps_other_brackets():
     assert q("see [B12] and [P1-B03] here") == "see [B12] and [P1-B03] here"
     assert q("a [P1-T2-R04] b") == "a b"
     assert q("[1] and [Note] stay") == "[1] and [Note] stay"
+
+
+def test_evidence_row_id_is_optional_provenance():
+    assert EV.row_id is None
+    assert EV.model_copy(update={"row_id": "P1-T2-R04"}).model_dump()["row_id"] == "P1-T2-R04"
+    assert Evidence(**{**EV.model_dump(), "row_id": "P1-T2-R04"}).row_id == "P1-T2-R04"

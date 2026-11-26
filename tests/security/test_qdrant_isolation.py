@@ -139,3 +139,13 @@ async def test_delete_cannot_remove_other_tenants_points(vector_store, tenants, 
     assert await visible_ids(vector_store, me.ctx) == set()
     for other in others:
         assert await visible_ids(vector_store, other.ctx) == set(other.ids)
+
+
+@pytest.mark.parametrize("caller", ["a1", "a2", "b1"])
+async def test_table_chunks_never_cross_tenants(vector_store, tenants, caller):
+    me = tenants[caller]
+    foreign = [t.document_id for k, t in tenants.items() if k != caller]
+
+    own = await vector_store.table_chunks(me.ctx, [me.document_id])
+    assert [h.chunk_id for h in own] == [me.ids[1]]  # the seeded table chunk
+    assert await vector_store.table_chunks(me.ctx, foreign) == []

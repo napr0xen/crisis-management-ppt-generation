@@ -30,7 +30,7 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 4  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 5  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -174,8 +174,9 @@ class LLMIRField(IRField):
         description="extractive: the value is copied verbatim from the source (names, ids, "
         "printed amounts and balances, dates, periods, list or table items). synthesis: the "
         "value is written from the source (a summary, trend, pattern, observation, commentary, "
-        "finding or note) or computed from two printed figures (a net movement = inflows - "
-        "outflows)."
+        "finding or note). derived: a total, net movement (inflows - outflows), count, "
+        "minimum, maximum or category breakdown computed over the rows of a source table "
+        "(computed in code, not written)."
     )
 
 

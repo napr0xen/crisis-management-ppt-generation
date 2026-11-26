@@ -314,3 +314,23 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 - Scan state is in memory and the lock is per process: a restart loses a running sync (the next start retries) and two backend processes would race.
 - Copies already adopted into a chat keep the IR they were adopted with; use a new chat to pick the re-extracted template.
 - Files skipped for duplicate bytes or a name clash show only in the log counts, not in the UI.
+
+## ADR-018 — `derived` fields: aggregates computed in Python over structured rows
+
+**Status:** Accepted (Phase 24). Narrows ADR-007 for computed figures: a value computed by code from complete, verified rows may be `populated`; an LLM-computed figure stays `partial`.
+
+**Context.** Totals, net movements, counts and category breakdowns are printed nowhere in a source, so a verbatim quote cannot state them. Before Phase 24 such a slot was `synthesis`: the LLM did the arithmetic and `derived_in_quotes` accepted only `a = b ± c` over two quoted numbers, always `partial`. A sum over 40 statement rows could not be filled at all, and LLM arithmetic is a fabrication risk. Phase 23 gave every table chunk its structured rows (`ChunkPayload.rows`, ids `P1-T2-R04`).
+
+**Decision.**
+- `IRField.mode` gains `derived`; `IRField.derivation` (optional) holds `{op, column, minus, where, tag, group_by, top_n, exclude_rows}` (`tag` keeps only `CR` or only `DR` cells) with `op` in `sum | diff | count | min | max | group_sum`. The IR builder only classifies `mode`; it cannot see source headers.
+- At mapping time a `derived` slot reads **every** table chunk of the run's documents (`QdrantStore.table_chunks`, tenant-filtered), not the retrieval top-k, so no row is lost to ranking. When the IR has no `derivation`, one schema-constrained LLM call binds it: it picks a table id and exact column headers from the real header list (with the first and last rows shown, row ids included). The LLM never sees or returns a computed number.
+- Python validates the binding (table and headers exist, `op` fits `expected_type`), parses each cell with the column's number convention (European `1.829.914,84 $`, US `1,829,914.84`; one ambiguous convention fails closed), treats `DR`/`CR` as tags, not signs (`diff` without `minus` is `Σ CR − Σ DR` and fails closed on an untagged cell; a column mixing `CR` and `DR` without a `tag` filter, and an accounting negative in parentheses, fail closed), and computes with `Decimal`; the exact `Decimal` is stored, never the rendered text re-parsed.
+- Fail closed to `missing` (existing reasons, log codes only): no table or column (`no_relevant_chunks`), binding not found (`not_found_by_llm`), row ids not contiguous `R01..Rn`, a cell with two numbers or unparseable digits, a plain-text-split table chunk adjacent to the bound table (`evidence_failed_verification`).
+- Every row used is cited: one `Evidence` per row, `quote` = the row's verbatim line in the chunk, new optional `Evidence.row_id` (`P1-T2-R04`). The result is `populated` with typed confidence.
+- `IR_BUILDER_VERSION` 4 → 5.
+
+**Trade-offs.**
+- The binding is an LLM choice (which table, which columns), checked only for existence, the same trust level as choosing which quote to extract. A wrong-but-real column gives a wrong-but-real total; the cited rows make it reviewable.
+- Printed total rows inside the table are summed unless the binding lists them in `exclude_rows`.
+- One table per slot: a logical table split into tables with different headers (not joined by Phase 22) is aggregated per table only.
+- Documents ingested before Phase 23 have no `rows`; their derived slots are `missing` until re-ingest.

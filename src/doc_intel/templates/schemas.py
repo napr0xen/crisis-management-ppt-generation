@@ -6,7 +6,7 @@ Phase 6 mapping and Phase 7 writers read these shapes; change them only with the
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 TemplateFormat = Literal["pptx", "docx", "xlsx"]
@@ -27,8 +27,8 @@ ExpectedType = Literal[
     "text", "paragraphs", "bullet_list", "number", "currency", "percent", "date", "table", "chart"
 ]
 # extractive: copied verbatim from a quote; synthesis: written (summary, trend, observation) or
-# computed (a net movement) from verified quotes
-FieldMode = Literal["extractive", "synthesis"]
+# computed from verified quotes; derived: an aggregate computed in code over a table's rows
+FieldMode = Literal["extractive", "synthesis", "derived"]
 
 MAX_ANCHORS = 400
 
@@ -89,6 +89,29 @@ class Constraints(_Strict):
     columns: list[str] | None = None
 
 
+class Derivation(_Strict):
+    """An aggregate over one source table's rows (ADR-018), computed by code, never by the LLM."""
+
+    op: Literal["sum", "diff", "count", "min", "max", "group_sum"]
+    column: str
+    minus: str | None = None  # diff: the column subtracted from `column`
+    where: dict[str, str] = {}  # header -> required cell value
+    tag: Literal["CR", "DR"] | None = None  # keep only cells tagged so
+    group_by: str | None = None  # group_sum: the label column
+    top_n: int | None = Field(None, ge=1)
+    exclude_rows: list[str] = []  # row ids left out (printed total rows)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "Derivation":
+        if (self.group_by is None) == (self.op == "group_sum"):
+            raise ValueError("group_by is required for group_sum and only for it")
+        if self.minus is not None and self.op != "diff":
+            raise ValueError("minus is only for diff")
+        if self.op == "diff" and self.minus is None and self.tag is not None:
+            raise ValueError("diff without minus uses both tags: no tag filter")
+        return self
+
+
 class IRField(_Strict):
     field_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     anchor_id: str
@@ -105,6 +128,9 @@ class IRField(_Strict):
     card: SkipJsonSchema[str | None] = None
     # a soft length hint for the extraction prompt, never a constraint or a warning
     fit_chars: SkipJsonSchema[int | None] = None
+    # mode == "derived": the aggregation, from the template or bound at mapping time; the IR
+    # builder only classifies the mode
+    derivation: SkipJsonSchema[Derivation | None] = None
 
 
 class IRDraft(_Strict):

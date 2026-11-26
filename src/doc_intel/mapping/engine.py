@@ -1,6 +1,7 @@
 """Per-field mapping: retrieve -> extract -> verify -> resolve (docs/system-design.md § 7)."""
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -12,7 +13,15 @@ import structlog
 from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
-from doc_intel.llm.gateway import LLMClient, LLMError, LLMInvalidOutput, prompt_tokens
+from doc_intel.llm.gateway import (
+    LLMClient,
+    LLMError,
+    LLMInvalidOutput,
+    complete_json,
+    prompt_tokens,
+)
+from doc_intel.llm.prompts import load_prompt
+from doc_intel.mapping.derived import Table, compute, named, row_line, tables
 from doc_intel.mapping.extractor import (
     MAX_CHART_POINTS,
     MAX_PRIMARY_HITS,
@@ -36,6 +45,7 @@ from doc_intel.mapping.schemas import (
     Evidence,
     FieldMappingResult,
     LLMCandidate,
+    LLMDerivation,
     LLMExtraction,
     LLMQuote,
     LLMRecord,
@@ -61,7 +71,7 @@ from doc_intel.mapping.verifier import (
     verify_quote,
 )
 from doc_intel.templates.anchors import find_tokens, has_letter
-from doc_intel.templates.schemas import Constraints, IRField
+from doc_intel.templates.schemas import Constraints, Derivation, IRField
 
 log = structlog.get_logger()
 
@@ -283,6 +293,8 @@ async def map_field(
     retry: tuple[LLMExtraction[Any], list[str]] | None = None,
 ) -> FieldMappingResult:
     """`retry`: an earlier reply and why it was rejected, sent with the first extraction."""
+    if field.mode == "derived":  # before the row types: a group_sum slot is a table or a list
+        return await _derived(ctx, field, document_ids, retriever, llm)
     if field.expected_type in _ROW_TYPES:
         group = await map_group(ctx, [[field]], document_ids, retriever, llm, other_headings)
         return group[field.field_id]
@@ -494,6 +506,135 @@ async def _synthesized(
         evidence=evidence,
         confidence=CONF_SYNTH if ok else CONF_PARTIAL,
         missing_reason=None if ok else "insufficient_evidence",
+        checked_documents=docs,
+        conflict_details=None,
+        provenance="rag",
+    )
+
+
+MAX_BIND_TABLES = 20  # shortcut: tables past the 20th are not offered to the binding, upgrade by
+# ranking the tables against the slot label when a source holds more.
+_BIND_ROWS = 3  # rows shown from each end of a table in the binding prompt
+
+
+def _bind_view(label: str, table: Table) -> str:
+    rows = (
+        table.rows
+        if len(table.rows) <= 2 * _BIND_ROWS
+        else (table.rows[:_BIND_ROWS] + table.rows[-_BIND_ROWS:])
+    )
+    lines = [f"[{r.id}] {ln}" for h, r in rows if (ln := row_line(h, r)) is not None]
+    return (
+        f"{label} | {table.rows[0][0].filename}\nheaders: "
+        f"{json.dumps(list(table.headers), ensure_ascii=False)}\n" + "\n".join(lines)
+    )
+
+
+async def _bound(
+    llm: LLMClient, field: IRField, found: list[Table]
+) -> tuple[Table, Derivation] | MissingReason:
+    """The one LLM call of a derived slot: which table and which exact headers. A bad or unusable
+    binding is a reason, never a guess."""
+    spec = bounded_field(field).model_dump_json(
+        include={"label", "description", "expected_type"}, exclude_none=True
+    )
+    views = "\n\n".join(_bind_view(f"t{i}", t) for i, t in enumerate(found[:MAX_BIND_TABLES], 1))
+    messages = [
+        {"role": "system", "content": load_prompt("derive_bind")},
+        {"role": "user", "content": f"Slot:\n{spec}\n\nTables:\n\n{views}"},
+    ]
+    try:
+        bind = await complete_json(llm, messages, LLMDerivation)
+    except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
+        return "llm_error"
+    labels = {f"t{i}": t for i, t in enumerate(found[:MAX_BIND_TABLES], 1)}
+    table = labels.get(bind.table.strip().lower())
+    if bind.not_found or table is None or bind.derivation is None:
+        return "not_found_by_llm"
+    return table, bind.derivation
+
+
+def _row_evidence(table: Table, cited: tuple[Any, ...]) -> list[Evidence] | None:
+    """One Evidence per cited row, its verbatim line in the chunk; None when a line does not
+    re-verify or does not fit the quote limits (fail closed)."""
+    out = []
+    for hit, row, item in cited:
+        quote = row_line(hit, row)
+        if (
+            quote is None
+            or not MIN_QUOTE_CHARS <= len(quote) <= MAX_QUOTE_CHARS
+            or verify_quote([hit], str(hit.chunk_id), quote) is None
+        ):
+            return None
+        out.append(
+            Evidence(
+                document_id=hit.document_id,
+                chunk_id=hit.chunk_id,
+                filename=hit.filename,
+                page_number=hit.page_number,
+                section_heading=hit.section_heading,
+                quote=quote,
+                item=item,
+                row_id=row.id,
+            )
+        )
+    return out
+
+
+async def _derived(
+    ctx: TenantContext,
+    field: IRField,
+    docs: list[uuid.UUID],
+    retriever: Retriever,
+    llm: LLMClient,
+) -> FieldMappingResult:
+    """A `derived` slot (ADR-018): the aggregate is computed by `derived.compute` over the rows of
+    one table; the LLM only binds the table and headers when the IR has no derivation."""
+    # shortcut: each derived slot re-reads all table chunks, cache per map_fields run if timing
+    # shows it
+    found = tables(await retriever.table_chunks(ctx, docs))
+    if not found:
+        return _missing(field, "no_relevant_chunks", docs)
+    if field.derivation:
+        fits = [t for t in found if all(h in t.headers for h in named(field.derivation))]
+        if not fits:
+            return _missing(field, "no_relevant_chunks", docs)
+        # shortcut: two tables with the headers fail closed, upgrade by asking the binding call.
+        if len(fits) > 1:
+            return _missing(field, "evidence_failed_verification", docs)
+        table, spec = fits[0], field.derivation
+    else:
+        bound = await _bound(llm, field, found)
+        if isinstance(bound, str):
+            return _missing(field, bound, docs)
+        table, spec = bound
+    out = compute(table, spec, field.expected_type)
+    if isinstance(out, str):
+        log.info("derived_rejected", slot_id=field.field_id, code=out)  # code only, never text
+        return _missing(
+            field,
+            "no_relevant_chunks"
+            if out in ("column_missing", "no_rows")
+            else ("evidence_failed_verification"),
+            docs,
+        )
+    evidence = _row_evidence(table, out.cited)
+    if out.number is not None:  # the exact Decimal, never the rendered text re-parsed
+        n = out.number
+        stored = (int(n) if n == n.to_integral_value() else float(n),)
+    else:
+        stored = _convert(out.value, field.expected_type)
+    if not evidence or stored is None:
+        log.info("derived_rejected", slot_id=field.field_id, code="evidence")
+        return _missing(field, "evidence_failed_verification", docs)
+    typed = field.expected_type in TYPED_TYPES
+    return FieldMappingResult(
+        field_id=field.field_id,
+        status="populated",
+        value=stored[0],
+        evidence=evidence,
+        confidence=CONF_TYPED if typed else CONF_TEXT,
+        missing_reason=None,
         checked_documents=docs,
         conflict_details=None,
         provenance="rag",
@@ -1457,6 +1598,7 @@ async def _check_slot_roles(
             and r.status in ("populated", "partial")
             and r.provenance == "rag"
             and r.value is not None
+            and f.mode != "derived"  # computed from rows, not a value one quote states
         ):
             if f.expected_type == "text" and isinstance(r.value, str):
                 boxes.setdefault(("text", f.anchor_id, normalize(r.value)), []).append(f)
@@ -1646,13 +1788,19 @@ async def map_fields(
     MAX_BATCH_SLOTS, `map_batch`), one per lone loose field and per fact shared across slides.
     `on_field(done, field_id)` runs before each unit with its first field, and
     `on_field(done, "")` after it. A group or batch is mapped at its first field in the IR."""
-    groups = {f.field_id: g for g in row_groups(fields) for row in g for f in row}
+    # a derived slot is mapped alone by `map_field`: never in a group, a batch or a shared fact
+    plain = [f for f in fields if f.mode != "derived"]
+    groups = {f.field_id: g for g in row_groups(plain) for row in g for f in row}
     shared = shared_facts(fields)
     siblings = sibling_headings(fields)
     loose: dict[object, list[IRField]] = {}
     for f in fields:  # a native table's cells are their own batch, apart from the text slots
         # a synthesis slot is mapped alone: its own retrieval and a synthesis call
-        if f.field_id not in groups and f.expected_type not in _ROW_TYPES and f.mode != "synthesis":
+        if (
+            f.field_id not in groups
+            and f.expected_type not in _ROW_TYPES
+            and f.mode not in ("synthesis", "derived")
+        ):
             table = m[1] if (m := _CELL.match(f.anchor_id)) else None
             loose.setdefault((_unit(f), table), []).append(f)
     batches = {
@@ -1668,7 +1816,9 @@ async def map_fields(
             continue
         if on_field:
             await on_field(len(results), field.field_id)  # template-derived: progress only
-        if field.field_id in groups:
+        if field.mode == "derived":
+            results[field.field_id] = await map_field(ctx, field, document_ids, retriever, llm)
+        elif field.field_id in groups:
             results |= await map_group(
                 ctx,
                 groups[field.field_id],

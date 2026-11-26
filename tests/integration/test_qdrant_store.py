@@ -265,3 +265,21 @@ async def test_a_point_without_the_new_keys_loads_with_defaults(vector_store):
     )
     (hit,) = await vector_store.retrieve(ctx, [chunk_id(doc, 0)])
     assert hit.rows is None and hit.block_ids == []
+
+
+async def test_table_chunks_returns_every_table_chunk_of_the_documents(vector_store):
+    ctx, doc, other = tenant(), uuid.uuid4(), uuid.uuid4()
+    kinds = ("text", "table", "table") + ("text", "table") * 120  # more than one scroll page
+    await seed(vector_store, ctx, doc, kinds)
+    await seed(vector_store, ctx, other, ("table", "text"))
+
+    hits = await vector_store.table_chunks(ctx, [doc])
+
+    expected = [i for i, k in enumerate(kinds) if k == "table"]
+    assert [h.chunk_index for h in hits] == expected
+    assert {h.document_id for h in hits} == {doc} and all(h.element_type == "table" for h in hits)
+    assert await vector_store.table_chunks(ctx, []) == []
+    both = await vector_store.table_chunks(ctx, [other, doc])
+    assert [(h.document_id, h.chunk_index) for h in both] == sorted(
+        [(h.document_id, h.chunk_index) for h in both], key=lambda t: (t[0], t[1])
+    ) and len(both) == len(expected) + 1

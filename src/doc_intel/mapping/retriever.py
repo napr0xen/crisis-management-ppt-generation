@@ -12,6 +12,7 @@ from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.reranker import BGEReranker
 from doc_intel.embeddings.schemas import Embedder, Hit
 from doc_intel.ingestion.pipeline import count_tokens
+from doc_intel.mapping.derived import row_lines
 from doc_intel.vector.qdrant_store import QdrantStore, chunk_id
 
 log = structlog.get_logger()
@@ -29,8 +30,8 @@ def format_hit(hit: Hit) -> str:
     section = _inline(hit.section_heading or "") or "-"
     header = f"[{hit.chunk_id} | {_inline(hit.filename)} | p.{page} | {section}]"
     lines = hit.text.split("\n")
-    if hit.rows and len(lines) - 2 == len(hit.rows):  # header + separator, then one line per row
-        lines[2:] = [f"[{r.id}] {ln}" for r, ln in zip(hit.rows, lines[2:], strict=True)]
+    if by_id := row_lines(hit):
+        lines[2:] = [f"[{i}] {ln}" for i, ln in by_id.items()]
     return f"{header}\n" + "\n".join(lines)
 
 
@@ -109,6 +110,10 @@ class Retriever:
         if self._reranker is None:
             return hits[:top_n]
         return await asyncio.to_thread(self._reranker.rerank, query, hits, top_n)
+
+    async def table_chunks(self, ctx: TenantContext, document_ids: list[UUID]) -> list[Hit]:
+        """Every table chunk of the documents (derived slots read whole tables, not top-k)."""
+        return await self._store.table_chunks(ctx, document_ids)
 
     async def with_neighbors(self, ctx: TenantContext, hits: list[Hit], budget: int) -> list[Hit]:
         """`hits` plus the chunks next to them in their document, `budget` chunks at most, in

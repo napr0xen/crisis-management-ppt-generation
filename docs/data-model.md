@@ -163,7 +163,7 @@ From then on everything is the caller's own data. Mapping runs, artifacts and la
 | `edits` | jsonb NULL | the edit ops applied, for `trigger = 'edit'` |
 | `created_at`, `finished_at` | timestamptz | `finished_at` nullable; set at `completed` or `failed` |
 
-Constraints and indexes: `UNIQUE (template_ir_id, version)`; index `(user_id, project_id, created_at DESC)`. Rows are immutable once `completed`. `results` keeps quotes and filenames as a snapshot; deleting a source document does not rewrite earlier runs.
+Constraints and indexes: `UNIQUE (template_ir_id, version)`; index `(user_id, project_id, created_at DESC)`. Rows are immutable once `completed`. `results` keeps quotes and filenames as a snapshot (each evidence entry may carry an optional `row_id`, the `P1-T2-R04` id of the table row a `derived` value used); deleting a source document does not rewrite earlier runs.
 
 ### `artifacts`
 

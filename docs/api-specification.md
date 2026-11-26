@@ -321,6 +321,7 @@ Every `conflict` result of the run, in IR field order: `{"items": [Conflict]}`.
 - `field_key` is the IR `field_id`; `field_label` is its `label`.
 - `slide_number` comes from a pptx anchor id (`pptx:s<N>:`), else `null`.
 - `section_title` is the field's `context` (card heading or row label) if it has one; otherwise the slide title (pptx: the `section_path` element after `Slide N`, if the slide has a title) or the last `section_path` element (docx, xlsx); else `null`.
+- Evidence entries in results may carry an optional `row_id` (provenance id of the table row, e.g. `P1-T2-R04`, set for `derived` values; absent or `null` otherwise).
 - `candidates[].index` is the `candidate_index` to send back; `source_filename`, `page_number` and `verbatim_quote` are the first evidence entry of that candidate.
 - Fields that share one fact (one edit, see [system-design.md § 10](system-design.md#10-conversational-edits-chateditspy)) appear once, as the first of them in IR order.
 - Errors: `404` unknown run or another tenant's run.

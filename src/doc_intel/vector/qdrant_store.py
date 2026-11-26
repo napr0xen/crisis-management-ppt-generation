@@ -182,3 +182,30 @@ class QdrantStore:
             self._collection, scroll_filter=flt, limit=len(chunk_ids), with_payload=True
         )
         return [_hit(r.id, r.payload, 0.0) for r in records]
+
+    async def table_chunks(self, ctx: TenantContext, document_ids: list[UUID]) -> list[Hit]:
+        """Every table chunk of `document_ids` (all scroll pages) under the tenant filter, ordered
+        by (document, chunk index); another tenant's document returns nothing."""
+        if not document_ids:
+            return []
+        flt = _tenant_filter(
+            ctx,
+            m.FieldCondition(
+                key="document_id", match=m.MatchAny(any=[str(d) for d in document_ids])
+            ),
+            _match("element_type", "table"),
+        )
+        hits: list[Hit] = []
+        offset = None
+        while True:
+            records, offset = await self._client.scroll(
+                self._collection,
+                scroll_filter=flt,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+            )
+            hits += [_hit(r.id, r.payload, 0.0) for r in records]
+            if offset is None:
+                break
+        return sorted(hits, key=lambda h: (h.document_id, h.chunk_index or 0))

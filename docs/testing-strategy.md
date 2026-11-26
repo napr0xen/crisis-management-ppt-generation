@@ -65,6 +65,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 - Template → `extract_template` (FakeLLM IR) → `run_mapping` → artifact row + file on disk.
 - `tests/integration/test_generation_e2e.py`: round trip per format (FakeLLM IR + extraction → render → signed download → reopen).
 - `tests/integration/test_pipe_api.py`: `/v1/pipe/chat` SSE event sequence (`status*` → `delta*` → `error`? → `done`); `X-OWUI-Chat-Id` validation (422); files dedup on `sha256` with the file id appended; the same chat id for another user is another project; unknown and failed files warn and continue; the 51-message limit.
+- `tests/integration/test_derived_e2e.py`: synthetic bank statements (European `$` cells; a single `Amount` column of `CR`/`DR` cells) through real parsing and Qdrant; `derived` slots (sum, diff, group_sum) get hand-computed literals, every evidence quote verbatim in its chunk with a `row_id`, and a binding to an absent column stays `missing` (Phase 24).
 - `tests/integration/test_pipe_e2e.py`: the real Pipe against the real app over ASGI: upload, template fill, signed download (opens and holds the filled slides), and a cited answer. The LLM is scripted, the embedder is a seeded fake, and Open WebUI's file read is stubbed.
 
 ## 4. Security tests (`tests/security/`), hard gate at every phase exit

@@ -10,6 +10,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from doc_intel.mapping.verifier import MIN_QUOTE_CHARS
+from doc_intel.templates.schemas import Derivation
 
 FieldStatus = Literal["populated", "partial", "missing", "conflict"]
 MissingReason = Literal[
@@ -162,6 +163,7 @@ class Evidence(_Strict):
     section_heading: str | None
     quote: str = Field(min_length=MIN_QUOTE_CHARS, max_length=MAX_QUOTE_CHARS)
     item: int | None = Field(None, ge=0)  # synthesized values: index in `value` the quote backs
+    row_id: str | None = None  # derived values: provenance id of the table row, e.g. P1-T2-R04
 
 
 class Candidate(_Strict):
@@ -216,3 +218,11 @@ class MappingSummary(_Strict):
     missing: int
     conflict: int
     warnings: list[MappingWarning]
+
+
+class LLMDerivation(_Strict):
+    """The binding of a derived slot (ADR-018): a table label and exact headers, never a number."""
+
+    table: str = ""  # the label shown in the prompt, e.g. "t1"
+    not_found: bool = False
+    derivation: Derivation | None = None
