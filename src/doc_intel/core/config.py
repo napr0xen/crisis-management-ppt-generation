@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,12 +55,23 @@ class Settings(BaseSettings):
     # openai_compat only: reasoning-heavy calls think up to the budget, else a non-thinking pass
     llm_hybrid_thinking: bool = False
     llm_thinking_budget_tokens: int = Field(default=160, ge=1)  # reasoning tokens before the cut
+    # mapping: a conflict, a verification failure or a high-score miss gets one more extraction
+    # with thinking on, up to THINK_ESCALATION_MAX_TOKENS reasoning tokens (on top of the reply)
+    think_on_escalation: bool = True
+    think_escalation_max_tokens: int = 2048  # clamped to 512..4096
+    # a `missing` field escalates only if a retrieved chunk scored at least this (Hit.score)
+    think_escalation_score_threshold: float = 0.65
     # tokens of retrieved chunks (headers included) handed to the LLM per call
     retrieval_context_tokens: int = Field(default=4500, ge=512)
     qdrant_collection: str = "doc_chunks"  # tests use their own collection
     # 0 = no in-process worker (tests drive jobs directly). shortcut: max 1 worker, the 24 GB
     # RAM budget fits one Docling/LLM job at a time (ADR-010); revisit with more memory.
     job_concurrency: int = Field(default=1, ge=0, le=1)
+
+    @field_validator("think_escalation_max_tokens")
+    @classmethod
+    def _clamp_think_tokens(cls, v: int) -> int:
+        return min(max(v, 512), 4096)
 
 
 @lru_cache

@@ -48,6 +48,7 @@ def draft_reply() -> str:
             "label": fid.replace("_", " ").title(),
             "description": f"The {fid}.",
             "expected_type": etype,
+            "mode": "extractive",
             "required": True,
             "write_mode": "replace_text",
             "constraints": {},

@@ -3,6 +3,7 @@ import re
 import uuid
 
 import pytest
+from pydantic import ValidationError
 from structlog.testing import capture_logs
 
 from doc_intel.core.errors import IRInvalid
@@ -11,6 +12,7 @@ from doc_intel.llm.prompts import load_prompt
 from doc_intel.templates.ir_builder import (
     MAX_BATCH_CHARS,
     BatchDraft,
+    BatchReply,
     _batches,
     _compact,
     _loggable,
@@ -193,7 +195,7 @@ async def test_build_ir_happy_path():
     assert (ir.template_id, ir.version, ir.format) == (TID, 1, "pptx")
     assert [f.field_id for f in ir.fields] == ["a"]
     ((messages, schema),) = llm.calls
-    assert schema == BatchDraft.model_json_schema()
+    assert schema == BatchReply.model_json_schema()
     assert messages[0] == {"role": "system", "content": load_prompt("template_ir")}
     user = messages[1]["content"]
     assert "a1" in user and "{{t}}" in user and "y" * 200 in user and "y" * 201 not in user
@@ -281,7 +283,7 @@ class EchoLLM:
         self.name = name
         self.first_cells = first_cells
 
-    async def complete(self, messages, json_schema=None, think=False):
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None):
         self.calls.append((list(messages), json_schema))
         ids = [
             a["anchor_id"]
@@ -742,6 +744,36 @@ async def test_a_date_token_with_a_day_stays_a_date(token):
     )
     ir = await build_ir(FakeLLM(_reply(field)), amap, TID)
     assert [f.expected_type for f in ir.fields] == ["date"]
+
+
+def _llm_field_schema() -> dict:
+    schema = BatchReply.model_json_schema()
+    ref = schema["properties"]["fields"]["items"]["$ref"].rsplit("/", 1)[-1]
+    return schema["$defs"][ref]
+
+
+def test_the_llm_must_classify_every_field_mode():
+    item = _llm_field_schema()
+    assert "mode" in item["required"]
+    assert item["properties"]["mode"]["enum"] == ["extractive", "synthesis"]
+    assert "default" not in item["properties"]["mode"]
+    assert "synthesis" in item["properties"]["mode"]["description"]
+
+
+def test_a_reply_without_mode_is_invalid_but_a_stored_ir_without_it_reads_extractive():
+    raw = _field("a", "a1").model_dump(mode="json", exclude={"mode"})
+    with pytest.raises(ValidationError):
+        BatchReply.model_validate({"fields": [raw]})
+    assert IRField.model_validate(raw).mode == "extractive"
+
+
+async def test_a_synthesis_mode_the_llm_chose_is_kept():
+    amap = AnchorMap(format="pptx", anchors=[_anchor("a1", tokens=["[Region]"])])
+    field = _field("a", "a1", "replace_token", token="[Region]").model_copy(
+        update={"mode": "synthesis"}
+    )
+    ir = await build_ir(FakeLLM(_reply(field)), amap, TID)
+    assert [f.mode for f in ir.fields] == ["synthesis"]
 
 
 def _grid(table, headers, body_rows, body_text=""):

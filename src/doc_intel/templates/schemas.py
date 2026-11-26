@@ -26,6 +26,9 @@ WriteMode = Literal[
 ExpectedType = Literal[
     "text", "paragraphs", "bullet_list", "number", "currency", "percent", "date", "table", "chart"
 ]
+# extractive: copied verbatim from a quote; synthesis: written (summary, trend, observation) or
+# computed (a net movement) from verified quotes
+FieldMode = Literal["extractive", "synthesis"]
 
 MAX_ANCHORS = 400
 
@@ -93,6 +96,7 @@ class IRField(_Strict):
     label: str = Field(min_length=1, max_length=120)
     description: str = Field(max_length=500)
     expected_type: ExpectedType
+    mode: FieldMode = "extractive"  # an IR stored before Phase 19 reads as extractive
     required: bool
     write_mode: WriteMode
     constraints: Constraints

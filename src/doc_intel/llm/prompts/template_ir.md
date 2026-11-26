@@ -21,6 +21,7 @@ Rules:
 - `section_path`: the anchor's `path`.
 - `label`: at most 120 characters. `description`: at most 500 characters, what content belongs there.
 - `expected_type`: one of text, paragraphs, bullet_list, number, currency, percent, date, table, chart. Use `date` only for a full calendar date (day, month, year); a month-and-year or quarter slot such as `[Month YYYY]` or `Q3 2026` is `text`, so the source text is copied verbatim, never a guessed day.
+- `mode`: `synthesis` for a slot whose value is written or computed from the source rather than copied: a summary, trend, pattern, observation, commentary or finding, or a figure the source may not print but that follows from two printed ones (a net movement = inflows - outflows). Otherwise `extractive` (the default): names, account numbers and ids, printed amounts and balances, dates, periods, items of a list or table.
 - `required`: true unless the template marks the field optional.
 - `constraints`: `{}` when none apply.
 

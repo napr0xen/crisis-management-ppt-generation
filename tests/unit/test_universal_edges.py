@@ -328,7 +328,7 @@ async def test_row_check_all_other_leaves_the_table_missing_and_transport_error_
     assert out["t"].status == "missing"
 
     class Boom(FakeLLM):
-        async def complete(self, messages, json_schema=None, think=False):
+        async def complete(self, messages, json_schema=None, think=False, think_budget=None):
             if self.calls:
                 raise LLMError("down")
             return await super().complete(messages, json_schema)

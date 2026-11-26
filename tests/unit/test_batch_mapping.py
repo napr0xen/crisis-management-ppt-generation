@@ -244,6 +244,18 @@ async def test_a_slides_table_cells_get_their_own_batch_apart_from_its_text_slot
     assert specs == [["Lead", "Region"], ["Cell 1", "Cell 2"]]
 
 
+async def test_unscored_opening_chunks_survive_a_tight_token_budget(monkeypatch):
+    from doc_intel.mapping import retriever as retriever_mod
+
+    monkeypatch.setattr(retriever_mod, "count_tokens", lambda text, model: 3072)  # one fits
+    cover = _hit("Account holder: Acme Corp").model_copy(update={"score": 0.0})  # retrieve()
+    retriever = FakeRetriever([_hit(TEXT)])
+    retriever.opening_hits = [cover]
+    llm = FakeLLM(_reply())
+    await map_fields(CTX, [_slot(1, slide=1)], DOCS, retriever, llm)
+    assert str(cover.chunk_id) in llm.calls[0][0][1]["content"]
+
+
 async def test_the_opening_chunks_alone_still_feed_the_cover_when_no_search_hits():
     cover = _hit("Prepared by: Acme Corp")
     retriever = FakeRetriever([])

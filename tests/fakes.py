@@ -61,12 +61,18 @@ class FakeLLM:
         self.replies = list(replies)
         self.calls: list[tuple[list[dict[str, str]], dict | None]] = []
         self.thinks: list[bool] = []
+        self.budgets: list[int | None] = []
 
     async def complete(
-        self, messages: list[dict[str, str]], json_schema: dict | None = None, think: bool = False
+        self,
+        messages: list[dict[str, str]],
+        json_schema: dict | None = None,
+        think: bool = False,
+        think_budget: int | None = None,
     ) -> str:
         self.calls.append((list(messages), json_schema))
         self.thinks.append(think)
+        self.budgets.append(think_budget)
         return self.replies.pop(0)
 
 

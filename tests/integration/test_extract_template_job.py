@@ -51,6 +51,7 @@ def draft_reply(anchor, field_id: str) -> str:
         "label": "First field",
         "description": "The first fillable location.",
         "expected_type": "text" if text else "number",
+        "mode": "extractive",
         "required": True,
         "write_mode": "replace_text" if text else "fill_cell",
         "constraints": {},

@@ -15,6 +15,7 @@ Rules:
 - `fit_chars`, when given, is about how many characters fit the slot's box: prefer the shortest verbatim sentence or phrase that states the value within it; never cut, join or paraphrase a quote to fit.
 - Never return text from the field spec or template placeholders (anything in [brackets]) as a value.
 - Each quote should be the whole sentence or table row that states the value, not only the value itself.
+- When the field's `mode` is `synthesis` and its `expected_type` is `number`, `currency` or `percent`, and no chunk states the figure itself, you may compute it as the sum or difference of exactly two figures the chunks state (for example net movement = total deposits - total withdrawals): write the computed value and quote both figures. A figure the chunks state is always copied, never recomputed.
 - If the chunks do not contain the field, set `not_found` to true and return an empty `candidates` list.
 - Set `incomplete` to true when the chunks support only part of the field.
 - Value formats by `expected_type`:

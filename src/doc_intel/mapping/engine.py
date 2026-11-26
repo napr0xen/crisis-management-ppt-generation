@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
@@ -11,7 +12,7 @@ import structlog
 from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
-from doc_intel.llm.gateway import LLMClient, LLMInvalidOutput, prompt_tokens
+from doc_intel.llm.gateway import LLMClient, LLMError, LLMInvalidOutput, prompt_tokens
 from doc_intel.mapping.extractor import (
     MAX_CHART_POINTS,
     MAX_PRIMARY_HITS,
@@ -51,6 +52,7 @@ from doc_intel.mapping.verifier import (
     MIN_QUOTE_CHARS,
     TYPED_TYPES,
     canonical_value,
+    derived_in_quotes,
     normalize,
     source_text,
     supported,
@@ -64,6 +66,7 @@ log = structlog.get_logger()
 
 _BULLET = re.compile(r"^(?:[-*\u2022]|\d+[.)])\s+")
 CONF_TYPED, CONF_TEXT, CONF_SYNTH, CONF_PARTIAL = 0.9, 0.8, 0.7, 0.5
+MIN_PROSE_SUPPORT = 0.5  # word share a number-free synthesis item needs to be kept as partial
 _LISTS = ("paragraphs", "bullet_list")
 _ROW_TYPES = ("table", "chart")  # fields mapped by one structured row call
 
@@ -284,6 +287,11 @@ async def map_field(
     hits = await _retrieve(ctx, field_query(field), document_ids, retriever, heading)
     if not hits:
         return _missing(field, "no_relevant_chunks", document_ids)
+    if field.mode == "synthesis" and field.expected_type not in TYPED_TYPES:
+        # a narrative slot is written from the chunks, never looked up verbatim first
+        # no heading check: a written summary never sits under the slot's heading in the source
+        first = _missing(field, "not_found_by_llm", document_ids)
+        return await _synthesized(llm, field, hits, first, document_ids)
     try:
         extraction = await extract(llm, field, hits)
         if notes := _rule_notes(field, hits, extraction):  # one corrective retry, never a loop
@@ -295,8 +303,71 @@ async def map_field(
         return _missing(field, "llm_error", document_ids)
     result = resolve(field, hits, extraction, checked_documents=document_ids)
     if field.expected_type in _LISTS and _needs_synthesis(field, result):
-        return await _synthesized(llm, field, hits, result, document_ids)
-    return result
+        result = await _synthesized(llm, field, hits, result, document_ids)
+    return await _escalated(llm, field, hits, result, document_ids, other_headings)
+
+
+def _escalation_reason(field: IRField, result: FieldMappingResult, hits: list[Hit]) -> str | None:
+    """Why a first-pass result earns one thinking retry, or None (`populated` and `partial`
+    never do, nor a miss with no well-scored chunk, an LLM error or no chunks at all, nor a
+    synthesis slot's miss: no verbatim value is what it expects)."""
+    if result.status == "conflict":
+        return "conflict"
+    if result.status != "missing":
+        return None
+    if result.missing_reason == "evidence_failed_verification":
+        return "verification_failed"
+    threshold = get_settings().think_escalation_score_threshold
+    if result.missing_reason != "not_found_by_llm" or field.mode == "synthesis":
+        return None
+    return "high_score_miss" if any(h.score >= threshold for h in hits) else None
+
+
+async def _escalated(
+    llm: LLMClient,
+    field: IRField,
+    hits: list[Hit],
+    first: FieldMappingResult,
+    docs: list[uuid.UUID],
+    other_headings: Sequence[str] = (),
+) -> FieldMappingResult:
+    """At most one more extraction, thinking on, for a conflict, a verification failure or a
+    high-score miss. Verified like the first pass, a list re-checked against its length limits;
+    a `missing` reply, a list that still overflows or an LLM error keeps the first result, so a
+    verified conflict is never dropped and nothing loops. Groups: `_escalated_group`."""
+    s = get_settings()
+    if not s.think_on_escalation or (reason := _escalation_reason(field, first, hits)) is None:
+        return first
+    start, after, error = time.monotonic(), first, None
+    lists = field.expected_type in _LISTS
+    try:
+        budget = s.think_escalation_max_tokens
+        extraction = await extract(llm, field, hits, think_budget=budget)
+        if other_headings:  # the same heading check as the first pass
+            extraction = await check_candidates(llm, field, hits, extraction, other_headings)
+        after = resolve(field, hits, extraction, checked_documents=docs)
+        if lists and after.status != "missing" and _needs_synthesis(field, after):
+            after = await _synthesized(llm, field, hits, after, docs)  # the first pass's check
+    except LLMError as exc:  # best effort: a slow or invalid thinking call leaves the first pass
+        error = type(exc).__name__
+    overflow = isinstance(after.value, list) and not _fits(field, [str(i) for i in after.value])
+    kept = first if after.status == "missing" or (lists and overflow) else after
+    _log_escalation(field.field_id, reason, first.status, kept.status, start, error)
+    return kept
+
+
+def _log_escalation(
+    slot_id: str, reason: str, before: str, after: str, start: float, error: str | None
+) -> None:
+    log.info(
+        "think_escalation",
+        slot_id=slot_id,  # a slug (IRField pattern), loggable as in ir_invalid
+        reason=reason,
+        before_status=before,
+        after_status=after,
+        elapsed_ms=round((time.monotonic() - start) * 1000),
+        error=error,  # the type only, never the message
+    )
 
 
 def _fits(field: IRField, items: list[str]) -> bool:
@@ -322,31 +393,43 @@ async def _synthesized(
     first: FieldMappingResult,
     docs: list[uuid.UUID],
 ) -> FieldMappingResult:
-    """Items written by the LLM, each kept only if `supported` by its own verified quotes. Any
-    failure, or nothing kept, returns the first-pass result unchanged."""
+    """Items written by the LLM, each kept only if `supported` by its own verified quotes (a text
+    field gets them joined into one string, every quote backing item 0). A `synthesis` field also
+    keeps an item that shares few of its quotes' words but states only their numbers, or that
+    states no number and shares half its words, and is then `partial`. Any failure, or nothing
+    kept, returns the first-pass result unchanged."""
     try:
         draft = await synthesize(llm, field, hits)
     except LLMInvalidOutput:
         return first
+    lists = field.expected_type in _LISTS
     values: list[str] = []
     evidence: list[Evidence] = []
+    weak = False  # an item kept on its numbers alone: the slot needs review
     for cand in draft.items:
         quotes = _evidence(hits, cand.quotes)
         text = _BULLET.sub("", cand.value.strip())
-        if text and supported(text, [e.quote for e in quotes]):
-            evidence += [e.model_copy(update={"item": len(values)}) for e in quotes]
+        said = [e.quote for e in quotes]
+        strong = bool(text) and supported(text, said)
+        # a summary of table rows shares few of their words: kept if every number it states is
+        # quoted, a number-free item if half its words are
+        floor = 0.0 if any(map(str.isdigit, text)) else MIN_PROSE_SUPPORT
+        if strong or (field.mode == "synthesis" and text and supported(text, said, floor)):
+            weak |= not strong
+            evidence += [e.model_copy(update={"item": len(values) if lists else 0}) for e in quotes]
             values.append(text)
     if draft.not_found or not values:
         return first
     c = field.constraints
-    whole = len(values) == len(draft.items) and _fits(field, values)
+    value: Value = values if lists else " ".join(values)
+    whole = len(values) == len(draft.items) and _fits(field, values if lists else [str(value)])
     if first.status == "populated" and not whole:
         return first  # a populated verbatim value is replaced only by a complete, fitting one
-    ok = whole and (c.min_items is None or len(values) >= c.min_items)
+    ok = whole and not weak and (c.min_items is None or len(values) >= c.min_items)
     return FieldMappingResult(
         field_id=field.field_id,
         status="populated" if ok else "partial",
-        value=values,
+        value=value,
         evidence=evidence,
         confidence=CONF_SYNTH if ok else CONF_PARTIAL,
         missing_reason=None if ok else "insufficient_evidence",
@@ -556,8 +639,13 @@ def _candidates(
             continue
         if _rule_note(field, cand.value, evidence, hits):
             continue
-        if field.expected_type in TYPED_TYPES and not value_in_quotes(
-            cand.value, field.expected_type, [e.quote for e in evidence]
+        quotes = [e.quote for e in evidence]
+        if field.expected_type in TYPED_TYPES and not (
+            value_in_quotes(cand.value, field.expected_type, quotes)
+            or (
+                field.mode == "synthesis"
+                and derived_in_quotes(cand.value, field.expected_type, quotes)
+            )
         ):
             continue
         value, key = converted
@@ -624,10 +712,19 @@ def resolve(
             ),
         )
     value, evidence = found[0]
-    partial = _is_partial(field, value, extraction.incomplete) or not _extractive(
-        field.expected_type, value, [e.quote for e in evidence]
-    )
+    quotes = [e.quote for e in evidence]
     typed = field.expected_type in TYPED_TYPES
+    # a computed figure no quote states is flagged for review
+    derived = (
+        typed
+        and field.mode == "synthesis"
+        and not value_in_quotes(value, field.expected_type, quotes)
+    )
+    partial = (
+        _is_partial(field, value, extraction.incomplete)
+        or not _extractive(field.expected_type, value, quotes)
+        or derived
+    )
     return FieldMappingResult(
         **base,
         status="partial" if partial else "populated",
@@ -672,18 +769,34 @@ async def map_group(
     other_headings: Sequence[str] = (),
 ) -> dict[str, FieldMappingResult]:
     """One retrieval and one structured call for all rows of a group, verified row by row."""
-    fields = [f for row in group for f in row]
-
-    def all_missing(reason: MissingReason) -> dict[str, FieldMappingResult]:
-        return {f.field_id: _missing(f, reason, document_ids) for f in fields}
-
     hits = await _retrieve(ctx, _group_query(group), document_ids, retriever, _group_heading(group))
     if not hits:
-        return all_missing("no_relevant_chunks")
+        return {f.field_id: _missing(f, "no_relevant_chunks", document_ids) for f in _flat(group)}
+    first = await _group_pass(llm, group, hits, document_ids, other_headings)
+    return await _escalated_group(llm, group, hits, first, document_ids, other_headings)
+
+
+def _flat(group: list[list[IRField]]) -> list[IRField]:
+    return [f for row in group for f in row]
+
+
+async def _group_pass(
+    llm: LLMClient,
+    group: list[list[IRField]],
+    hits: list[Hit],
+    document_ids: list[uuid.UUID],
+    other_headings: Sequence[str],
+    think_budget: int | None = None,
+) -> dict[str, FieldMappingResult]:
+    """The group's structured call and its row-by-row verification (`think_budget`: escalated)."""
+
+    def all_missing(reason: MissingReason) -> dict[str, FieldMappingResult]:
+        return {f.field_id: _missing(f, reason, document_ids) for f in _flat(group)}
+
     first = group[0][0]
     try:  # a transport LLMError propagates: the worker retries
         if first.expected_type in _ROW_TYPES:
-            rows = await extract_rows(llm, first, hits, other_headings)
+            rows = await extract_rows(llm, first, hits, other_headings, think_budget)
             if first.expected_type == "table":
                 rows = rows.model_copy(
                     update={
@@ -695,11 +808,11 @@ async def map_group(
                 return all_missing("not_found_by_llm")
             build = _chart_result if first.expected_type == "chart" else _table_result
             return {first.field_id: build(first, hits, rows, document_ids)}
-        records = await extract_records(llm, group, hits, other_headings)
+        records = await extract_records(llm, group, hits, other_headings, think_budget)
         # shortcut: a list or grid is checked only beside sibling headings, add the check for a
         # lone heading when direction slips show up there; a keyed card (one row) is checked too.
         if other_headings and (len(group) == 1 or not _keyed(group)):
-            head = next((f.context for row in group for f in row if has_letter(f.context)), None)
+            head = next((f.context for f in _flat(group) if has_letter(f.context)), None)
             kept = await _own_rows(llm, head, other_headings, hits, records.records)
             records = records.model_copy(update={"records": kept})
     except LLMInvalidOutput:
@@ -713,6 +826,78 @@ async def map_group(
     if all(len(row) == 1 for row in group):  # a list: duplicates collapse, gaps may be synthesized
         return await _list_results(llm, group, hits, results, document_ids)
     return results
+
+
+def _filled_grid(
+    group: list[list[IRField]], results: dict[str, FieldMappingResult]
+) -> list[list[bool]]:
+    """Which cells a group filled, row by row: a table's or chart's value cells, else its slots."""
+    first = group[0][0]
+    if first.expected_type in _ROW_TYPES:
+        r = results[first.field_id]
+        rows = r.value if r.status in ("populated", "partial") and isinstance(r.value, list) else []
+        return [[bool(str(c).strip()) for c in row] for row in rows]
+    return [[results[f.field_id].status in ("populated", "partial") for f in row] for row in group]
+
+
+def _group_reason(
+    group: list[list[IRField]], results: dict[str, FieldMappingResult], hits: list[Hit]
+) -> str | None:
+    """Why a group's first pass earns one thinking retry: a conflict or a verification failure,
+    or with a chunk scored >= the threshold, nothing filled or a column empty in every filled
+    row (a `ratings` column the fast pass dropped)."""
+    rs = [results[f.field_id] for f in _flat(group)]
+    if any(r.status == "conflict" for r in rs):
+        return "conflict"
+    if any(r.missing_reason == "evidence_failed_verification" for r in rs):
+        return "verification_failed"
+    if not any(h.score >= get_settings().think_escalation_score_threshold for h in hits):
+        return None
+    filled = [row for row in _filled_grid(group, results) if any(row)]
+    if not filled:
+        empty = all(r.missing_reason == "not_found_by_llm" for r in rs)
+        synthesis = all(f.mode == "synthesis" for f in _flat(group))  # no verbatim value expected
+        return "high_score_miss" if empty and not synthesis else None
+    # rows of a tile group may differ in length: compare the columns all filled rows have
+    return "missing_column" if any(not any(c) for c in zip(*filled, strict=False)) else None
+
+
+def _group_status(results: list[FieldMappingResult]) -> str:
+    statuses = {r.status for r in results}
+    return statuses.pop() if len(statuses) == 1 else "partial"
+
+
+async def _escalated_group(
+    llm: LLMClient,
+    group: list[list[IRField]],
+    hits: list[Hit],
+    first: dict[str, FieldMappingResult],
+    docs: list[uuid.UUID],
+    other_headings: Sequence[str],
+) -> dict[str, FieldMappingResult]:
+    """`_escalated` for a table, chart or record group: one more pass, thinking on, kept whole
+    only if it fills more cells than the first, so a miss or an LLM error keeps the first."""
+    s = get_settings()
+    if not s.think_on_escalation or (reason := _group_reason(group, first, hits)) is None:
+        return first
+    start, after, error = time.monotonic(), first, None
+    try:
+        budget = s.think_escalation_max_tokens
+        after = await _group_pass(llm, group, hits, docs, other_headings, budget)
+    except LLMError as exc:  # best effort, as for one slot
+        error = type(exc).__name__
+    more = sum(map(sum, _filled_grid(group, after))) > sum(map(sum, _filled_grid(group, first)))
+    kept = after if more else first  # the whole group: rows never mix the two passes
+    fields = _flat(group)
+    _log_escalation(
+        fields[0].field_id,
+        reason,
+        _group_status([first[f.field_id] for f in fields]),
+        _group_status([kept[f.field_id] for f in fields]),
+        start,
+        error,
+    )
+    return kept
 
 
 async def _own_rows[R: (LLMRow, LLMRecord)](
@@ -1152,7 +1337,8 @@ async def _retrieve_batch(
         return select_context(first, _batch_tokens()) if first else []
     wide = await retriever.with_neighbors(ctx, merged, 2 * _chunk_budget())
     lead = {h.chunk_id for h in first}
-    return select_context([*first, *(h for h in wide if h.chunk_id not in lead)], _batch_tokens())
+    context = [*first, *(h for h in wide if h.chunk_id not in lead)]
+    return select_context(context, _batch_tokens(), pinned=len(first))
 
 
 def _slot_extraction(field: IRField, entry: LLMSlotValue | None) -> LLMExtraction[Any]:
@@ -1230,6 +1416,11 @@ async def map_batch(
                 continue
             if checked.not_found:
                 results[f.field_id] = _missing(f, "not_found_by_llm", document_ids)
+    for f in fields:  # fields mapped alone escalated in map_field already
+        if f.field_id in extractions:
+            first = results[f.field_id]
+            sibs = siblings.get(f.field_id, ())
+            results[f.field_id] = await _escalated(llm, f, hits, first, document_ids, sibs)
     return results
 
 
@@ -1250,7 +1441,8 @@ async def map_fields(
     siblings = sibling_headings(fields)
     loose: dict[object, list[IRField]] = {}
     for f in fields:  # a native table's cells are their own batch, apart from the text slots
-        if f.field_id not in groups and f.expected_type not in _ROW_TYPES:
+        # a synthesis slot is mapped alone: its own retrieval and a synthesis call
+        if f.field_id not in groups and f.expected_type not in _ROW_TYPES and f.mode != "synthesis":
             table = m[1] if (m := _CELL.match(f.anchor_id)) else None
             loose.setdefault((_unit(f), table), []).append(f)
     batches = {
@@ -1284,7 +1476,7 @@ async def map_fields(
                 else:
                     todo.append(f)
             first_unit = bool(todo) and _unit(todo[0]) == opening
-            if len(todo) == 1 and not first_unit:
+            if len(todo) == 1 and (not first_unit or todo[0].mode == "synthesis"):
                 results[todo[0].field_id] = await map_field(
                     ctx, todo[0], document_ids, retriever, llm, siblings.get(todo[0].field_id, ())
                 )

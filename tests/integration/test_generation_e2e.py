@@ -37,7 +37,13 @@ TOKENS = {"pptx": "{{incident_date}}", "docx": "{{client_name}}"}
 
 def draft_reply(fmt: str) -> str:
     anchor_id, mode, etype, _, missing_anchor = CASES[fmt]
-    base = {"section_path": ["S"], "description": "A field.", "required": True, "constraints": {}}
+    base = {
+        "section_path": ["S"],
+        "description": "A field.",
+        "mode": "extractive",
+        "required": True,
+        "constraints": {},
+    }
     found_constraints = {"token": TOKENS[fmt]} if fmt in TOKENS else {}
     fields = [
         {**base, "field_id": "found", "anchor_id": anchor_id, "label": "Found field",

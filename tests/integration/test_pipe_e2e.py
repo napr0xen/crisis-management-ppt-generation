@@ -39,7 +39,7 @@ class ScriptedLLM:
         self.intent = "map_template"
         self.extractions = 0
 
-    async def complete(self, messages, json_schema=None, think=False) -> str:
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None) -> str:
         system, user = messages[0]["content"], messages[-1]["content"]
         if system == load_prompt("router"):
             tpl = next(ln.split(" | ")[0] for ln in user.splitlines() if "update.pptx" in ln)

@@ -36,27 +36,35 @@ NEAR_DUPLICATE = 0.9  # Jaccard overlap of the word sets
 
 
 def curate(
-    hits: list[Hit], budget_tokens: int, count: Callable[[str], int]
+    hits: list[Hit], budget_tokens: int, count: Callable[[str], int], pinned: int = 0
 ) -> tuple[list[Hit], int]:
-    """`hits` in their order minus near-duplicates, cut where the formatted chunks would exceed
-    `budget_tokens` (the first is always kept), and the kept chunks' token total."""
-    kept: list[Hit] = []
+    """`hits` in their order minus near-duplicates, within `budget_tokens` of formatted chunks, and
+    the kept chunks' token total. The first `pinned` hits (a source's opening chunks) claim the
+    budget first, then scored hits in order, then the 0.0-score neighbors fill what is left; each
+    pass stops at the first chunk that does not fit, and the first claimed chunk is always kept."""
+    unique: list[tuple[int, Hit]] = []
     seen: list[set[str]] = []
-    used = 0
-    for h in hits:
+    for i, h in enumerate(hits):
         words = set(_WORDS.findall(h.text.lower()))
         if any(len(words & o) / len(words | o) >= NEAR_DUPLICATE for o in seen if words | o):
             continue
-        tokens = count(format_hit(h))
-        if kept and used + tokens > budget_tokens:
-            break
-        used += tokens
-        kept.append(h)
+        unique.append((i, h))
         seen.append(words)
-    return kept, used
+    keep: set[int] = set()
+    used = 0
+    for tier in range(3):
+        for i, h in unique:
+            if (0 if i < pinned else 1 if h.score > 0 else 2) != tier:
+                continue
+            tokens = count(format_hit(h))
+            if keep and used + tokens > budget_tokens:
+                break
+            used += tokens
+            keep.add(i)
+    return [h for i, h in unique if i in keep], used
 
 
-def select_context(hits: list[Hit], budget_tokens: int | None = None) -> list[Hit]:
+def select_context(hits: list[Hit], budget_tokens: int | None = None, pinned: int = 0) -> list[Hit]:
     """`curate` with the configured token budget (or `budget_tokens`); logs ids, scores and counts
     only."""
     s = get_settings()
@@ -64,6 +72,7 @@ def select_context(hits: list[Hit], budget_tokens: int | None = None) -> list[Hi
         hits,
         budget_tokens or s.retrieval_context_tokens,
         lambda t: count_tokens(t, s.chunk_tokenizer),
+        pinned,
     )
     log.info(
         "retrieval",

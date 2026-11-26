@@ -179,6 +179,24 @@ def test_curate_stops_at_the_token_budget_but_keeps_the_first():
     assert curate([], 100, len) == ([], 0)
 
 
+def test_curate_spends_the_budget_on_scored_hits_before_context_chunks():
+    from doc_intel.mapping.retriever import curate
+
+    neighbor = _text_hit("heading chunk above the table").model_copy(update={"score": 0.0})
+    a, b = _text_hit("first scored hit alpha"), _text_hit("second scored hit beta")
+    assert curate([neighbor, a, b], 20, lambda t: 10) == ([a, b], 20)
+    assert curate([neighbor, a, b], 30, lambda t: 10) == ([neighbor, a, b], 30)  # order kept
+    assert curate([neighbor], 5, lambda t: 10) == ([neighbor], 10)  # the first is always kept
+
+
+def test_curate_pinned_opening_chunks_claim_the_budget_first():
+    from doc_intel.mapping.retriever import curate
+
+    opening = _text_hit("cover page with the account holder").model_copy(update={"score": 0.0})
+    a, b = _text_hit("first scored hit alpha"), _text_hit("second scored hit beta")
+    assert curate([opening, a, b], 20, lambda t: 10, pinned=1) == ([opening, a], 20)
+
+
 def test_select_context_logs_only_ids_scores_and_counts(monkeypatch):
     import structlog
 

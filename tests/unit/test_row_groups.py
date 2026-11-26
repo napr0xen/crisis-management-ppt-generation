@@ -454,7 +454,7 @@ async def test_not_found_no_hits_and_invalid_output_miss_every_field():
 
 async def test_transport_error_propagates():
     class Boom:
-        async def complete(self, messages, json_schema=None, think=False):
+        async def complete(self, messages, json_schema=None, think=False, think_budget=None):
             raise LLMError("down")
 
     fields, hit, _, _ = _setup("slots")

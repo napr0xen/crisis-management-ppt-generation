@@ -92,10 +92,16 @@ class LLMInvalidOutput(LLMError):
 
 class LLMClient(Protocol):
     async def complete(
-        self, messages: Messages, json_schema: dict | None = None, think: bool = False
+        self,
+        messages: Messages,
+        json_schema: dict | None = None,
+        think: bool = False,
+        think_budget: int | None = None,
     ) -> str:
         """The reply text; `json_schema` constrains it to JSON of that shape; `think` asks for
-        bounded reasoning where the provider supports it."""
+        bounded reasoning where the provider supports it. `think` with a `think_budget` is an
+        escalation: reasoning on for every provider, up to that many reasoning tokens on top of
+        the reply cap, so the JSON reply is never starved."""
         ...
 
 
@@ -131,16 +137,25 @@ class OllamaClient:
         self._num_ctx, self._think = num_ctx, think
 
     async def complete(
-        self, messages: Messages, json_schema: dict | None = None, think: bool = False
+        self,
+        messages: Messages,
+        json_schema: dict | None = None,
+        think: bool = False,
+        think_budget: int | None = None,
     ) -> str:
         # shortcut: hybrid bounded thinking is openai_compat (MLX) only, add an Ollama streaming
         # guard if Ollama needs it.
+        escalated = think and think_budget is not None
         num_predict = reply_tokens(self._num_ctx, self._think)
+        if think and think_budget is not None:
+            # shortcut: Ollama cannot cut reasoning at the budget, reasoning and reply share
+            # num_predict; the budget is added on top of the reply cap so the JSON keeps its room.
+            num_predict = max(num_predict, reply_tokens(self._num_ctx, False) + think_budget)
         body: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "stream": False,
-            "think": self._think,
+            "think": self._think or escalated,
             "options": {"num_ctx": self._num_ctx, "temperature": 0, "num_predict": num_predict},
         }
         if json_schema is not None:
@@ -202,7 +217,7 @@ class OpenAICompatClient:
             self._headers,
         )
 
-    async def _stream(self, body: dict[str, Any]) -> tuple[str, str, int, bool]:
+    async def _stream(self, body: dict[str, Any], budget: int) -> tuple[str, str, int, bool]:
         """(reasoning, answer, reasoning tokens, over budget); stops reading once over budget."""
         reasoning: list[str] = []
         content, tokens = "", 0
@@ -226,21 +241,23 @@ class OpenAICompatClient:
                         # shortcut: one SSE event ~ one token (mlx_lm streams per token), count
                         # with the tokenizer if a server batches deltas.
                         tokens += 1
-                    if tokens > self._budget:
+                    if tokens > budget:
                         break  # leaving the context closes the connection
         except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"LLM request failed ({type(exc).__name__}).") from exc
-        over = tokens > self._budget
+        over = tokens > budget
         partial = "".join(reasoning) + (re.sub(r"\A\s*<think>", "", content) if over else "")
         return partial, strip_think(content), tokens, over
 
-    async def _bounded(self, messages: Messages, json_schema: dict | None) -> tuple[str, int, bool]:
+    async def _bounded(
+        self, messages: Messages, json_schema: dict | None, budget: int
+    ) -> tuple[str, int, bool]:
         cap = reply_tokens(self._num_ctx, False)
-        body = self._body(messages, json_schema, True, cap + self._budget)
+        body = self._body(messages, json_schema, True, cap + budget)
         body["stream"] = True
         if self._template_kwargs:  # mlx_lm 0.32.2 ignores it, servers that support it honour it
-            body["thinking_budget"] = self._budget
-        partial, answer, tokens, over = await self._stream(body)
+            body["thinking_budget"] = budget
+        partial, answer, tokens, over = await self._stream(body, budget)
         if not over:
             return answer, tokens, False
         # mlx_lm cannot continue an assistant turn: one non-thinking pass, never the bounded path
@@ -255,17 +272,23 @@ class OpenAICompatClient:
         return await self._post_body(self._body(asked, json_schema, False, cap)), tokens, True
 
     async def complete(
-        self, messages: Messages, json_schema: dict | None = None, think: bool = False
+        self,
+        messages: Messages,
+        json_schema: dict | None = None,
+        think: bool = False,
+        think_budget: int | None = None,
     ) -> str:
         tokens, capped = 0, False
+        escalated = think and think_budget is not None
         if self._think:
             mode = "think"
-        elif self._hybrid and think:
+        elif escalated or (self._hybrid and think):
             mode = "bounded-think"
         else:
             mode = "fast"
         if mode == "bounded-think":
-            reply, tokens, capped = await self._bounded(messages, json_schema)
+            budget = self._budget if think_budget is None else think_budget
+            reply, tokens, capped = await self._bounded(messages, json_schema, budget)
         else:
             body = self._body(
                 messages, json_schema, self._think, reply_tokens(self._num_ctx, self._think)
@@ -305,13 +328,19 @@ def strip_think(text: str) -> str:
 
 
 async def complete_json[M: BaseModel](
-    llm: LLMClient, messages: Messages, model: type[M], think: bool = False
+    llm: LLMClient,
+    messages: Messages,
+    model: type[M],
+    think: bool = False,
+    think_budget: int | None = None,
 ) -> M:
     """Schema-constrained call validated by `model`; one retry, then `LLMInvalidOutput`."""
     schema = model.model_json_schema()
     attempt = messages
     for _ in range(2):
-        reply = strip_think(await llm.complete(attempt, schema, think=think))
+        reply = strip_think(
+            await llm.complete(attempt, schema, think=think, think_budget=think_budget)
+        )
         try:
             return model.model_validate_json(reply)
         except ValidationError as exc:

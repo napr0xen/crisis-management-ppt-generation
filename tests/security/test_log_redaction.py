@@ -106,7 +106,7 @@ class ScriptedLLM:
     def __init__(self, **handlers) -> None:
         self.handlers = handlers
 
-    async def complete(self, messages, json_schema=None, think=False) -> str:
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None) -> str:
         handler = self.handlers[json_schema["title"].split("[")[0]]
         reply = handler(messages) if callable(handler) else handler.pop(0)
         if isinstance(reply, Exception):
@@ -138,6 +138,7 @@ def ir_reply() -> str:
                 "label": f"{fid.title()} {S}",
                 "description": f"A field about {S}.",
                 "expected_type": "text",
+                "mode": "extractive",
                 "required": True,
                 "write_mode": "replace_token" if fid == "alpha" else "replace_text",
                 "constraints": {"token": TOKEN} if fid == "alpha" else {},
@@ -188,7 +189,7 @@ async def map_template(ac, app, user, fault=None) -> tuple[list, str, uuid.UUID]
         _LLMIntent=lambda m: json.dumps(
             {"intent": "map_template", "template_document_id": tpl["document_id"]}
         ),
-        BatchDraft=lambda m: ir_reply(),
+        BatchReply=lambda m: ir_reply(),
         # one slide holds every field: an invalid batch reply sends each field to its own call
         LLMSlotValues=lambda m: f"not json {S}",
         LLMExtraction=extraction_reply(source_id, fault),
@@ -212,7 +213,7 @@ async def test_every_handler_and_chat_path_logs_no_sentinel(
 ):
     llm = ScriptedLLM(
         _LLMIntent=[],
-        BatchDraft=[],
+        BatchReply=[],
         LLMExtraction=[],
         LLMCandidateCheck=lambda _: '{"checks": [{"about": "x", "match": true}]}',
         _LLMAnswer=[],
@@ -315,7 +316,7 @@ async def test_failed_ingest_invalid_ir_and_unreadable_template_log_no_sentinel(
                 f"<not-xml {S}" if item.filename == "ppt/slides/slide1.xml" else src.read(item),
             )
 
-    llm = ScriptedLLM(_LLMIntent=[], BatchDraft=lambda m: json.dumps(bad_ir))
+    llm = ScriptedLLM(_LLMIntent=[], BatchReply=lambda m: json.dumps(bad_ir))
     async with live_app(migrated_db, vector_store, llm, start=False) as (ac, sm, app):
         await api_file(ac, user_a, "pdf", f"bad_{S}.pdf", b"%PDF-1.7 " + S.encode())
         tpl = await api_file(ac, user_a, "tpl", f"tpl_{S}.pptx", sentinel_pptx())
@@ -348,7 +349,7 @@ async def test_render_and_mapping_failures_log_no_sentinel(
 
     if fault.startswith("render"):
         monkeypatch.setattr("doc_intel.writers.render", render)
-    llm = ScriptedLLM(_LLMIntent=[], BatchDraft=[], LLMExtraction=[])
+    llm = ScriptedLLM(_LLMIntent=[], BatchReply=[], LLMExtraction=[])
     async with live_app(migrated_db, vector_store, llm) as (ac, _, app):
         frames, _, _ = await map_template(ac, app, user_a, fault)
         assert events(frames)[-2:] == ["error", "done"], frames

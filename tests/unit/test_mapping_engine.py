@@ -571,7 +571,7 @@ def test_a_candidate_repeating_a_quote_keeps_one_evidence():
 
 
 class RaisingLLM:
-    async def complete(self, messages, json_schema=None, think=False):
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None):
         raise LLMError("down")
 
 
@@ -910,7 +910,7 @@ async def test_slot_roles_invalid_twice_marks_the_group_llm_error():
 
 async def test_slot_roles_transport_error_propagates():
     class Down(FakeLLM):
-        async def complete(self, messages, json_schema=None, think=False):
+        async def complete(self, messages, json_schema=None, think=False, think_budget=None):
             if len(self.calls) == 1:
                 raise LLMError("down")
             return await super().complete(messages, json_schema)

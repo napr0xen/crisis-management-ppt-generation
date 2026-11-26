@@ -49,7 +49,7 @@ class ScriptedLLM:
         self.extractions = 0
         self.ir_calls = 0
 
-    async def complete(self, messages, json_schema=None, think=False) -> str:
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None) -> str:
         system, user = messages[0]["content"], messages[-1]["content"]
         if system == load_prompt("router"):
             reply = dict(self.route)
@@ -103,7 +103,7 @@ class _IRLLM:
     def __init__(self, reply: str) -> None:
         self.reply = reply
 
-    async def complete(self, messages, json_schema=None, think=False) -> str:
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None) -> str:
         return self.reply
 
 

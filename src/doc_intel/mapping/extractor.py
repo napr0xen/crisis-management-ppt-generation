@@ -44,6 +44,7 @@ _SPEC_FIELDS = {
     "description",
     "section_path",
     "expected_type",
+    "mode",
     "constraints",
     "context",
     "fit_chars",
@@ -97,9 +98,11 @@ async def extract(
     field: IRField,
     hits: list[Hit],
     retry: tuple[LLMExtraction[Any], list[str]] | None = None,
+    think_budget: int | None = None,
 ) -> LLMExtraction[Any]:
     """One schema-constrained call; `hits` must be the hits later used for verification. `retry`
-    is an earlier reply and why its values break the slot's rules, for one corrective call."""
+    is an earlier reply and why its values break the slot's rules, for one corrective call.
+    `think_budget` makes it an escalated call: thinking on, up to that many reasoning tokens."""
     spec = bounded_field(field).model_dump_json(include=_SPEC_FIELDS, exclude_none=True)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
@@ -118,11 +121,14 @@ async def extract(
                 "not_found.",
             },
         ]
-    return await complete_json(llm, messages, EXTRACTION_MODELS[field.expected_type])
+    model = EXTRACTION_MODELS[field.expected_type]
+    think = think_budget is not None
+    return await complete_json(llm, messages, model, think=think, think_budget=think_budget)
 
 
 async def synthesize(llm: LLMClient, field: IRField, hits: list[Hit]) -> LLMSynthesis:
-    """One call writing short items for a list field; `hits` must be those used for verification."""
+    """One call writing short items for a list field or a synthesis-mode text field; `hits` must
+    be those used for verification."""
     spec = bounded_field(field).model_dump_json(include=_SPEC_FIELDS, exclude_none=True)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
@@ -186,16 +192,21 @@ def _by_label(cells: list[LLMCell], labels: list[str]) -> list[LLMCell]:
 
 
 async def extract_rows(
-    llm: LLMClient, field: IRField, hits: list[Hit], other_headings: Sequence[str] = ()
+    llm: LLMClient,
+    field: IRField,
+    hits: list[Hit],
+    other_headings: Sequence[str] = (),
+    think_budget: int | None = None,
 ) -> LLMRows:
-    """One schema-constrained call for a `fill_table_rows` field; `hits` verify it later."""
+    """One schema-constrained call for a `fill_table_rows` field; `hits` verify it later.
+    `think_budget` makes it an escalated call, as in `extract`."""
     spec = json.dumps(_rows_spec(field, other_headings), ensure_ascii=False)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("table_rows")},
         {"role": "user", "content": f"Table:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
-    rows = await complete_json(llm, messages, LLMRows, think=True)
+    rows = await complete_json(llm, messages, LLMRows, think=True, think_budget=think_budget)
     labels = [c["label"] for c in _rows_spec(field)["columns"]]
     for row in rows.rows:
         row.value = _by_label(row.value, labels)
@@ -265,8 +276,10 @@ async def extract_records(
     group: list[list[IRField]],
     hits: list[Hit],
     other_headings: Sequence[str] = (),
+    think_budget: int | None = None,
 ) -> LLMRecords:
-    """One schema-constrained call for a slot group (tiles, grids, lists); `hits` verify it."""
+    """One schema-constrained call for a slot group (tiles, grids, lists); `hits` verify it.
+    `think_budget` makes it an escalated call, as in `extract`."""
     spec = json.dumps(_records_spec(group, other_headings), ensure_ascii=False)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
@@ -274,7 +287,8 @@ async def extract_records(
         {"role": "user", "content": f"Records:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
     # several rows are several entities to tell apart: that is where reasoning pays
-    records = await complete_json(llm, messages, LLMRecords, think=len(group) >= 2)
+    think = len(group) >= 2 or think_budget is not None
+    records = await complete_json(llm, messages, LLMRecords, think=think, think_budget=think_budget)
     for record in records.records:
         if 1 <= record.n <= len(group):
             labels = [bounded_field(f).label for f in group[record.n - 1]]

@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from itertools import groupby
 
 import structlog
+from pydantic import Field
 
 from doc_intel.core.errors import IRInvalid
 from doc_intel.llm.gateway import RETRY_ECHO_CHARS, LLMClient, Messages, complete_json
@@ -21,6 +22,7 @@ from doc_intel.templates.schemas import (
     Anchor,
     AnchorMap,
     Constraints,
+    FieldMode,
     IRDraft,
     IRField,
     TemplateIR,
@@ -28,7 +30,7 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 2  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 3  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -164,10 +166,34 @@ def _size(a: Anchor) -> int:
 _SLIDE = re.compile(r"^pptx:s(\d+):")
 
 
+class LLMIRField(IRField):
+    """A field as the IR model writes it: `mode` has no default, so every slot is classified
+    (Phase 19 finance run: with a default the model set it on none of 116 fields)."""
+
+    mode: FieldMode = Field(
+        description="extractive: the value is copied verbatim from the source (names, ids, "
+        "printed amounts and balances, dates, periods, list or table items). synthesis: the "
+        "value is written from the source (a summary, trend, pattern, observation, commentary, "
+        "finding or note) or computed from two printed figures (a net movement = inflows - "
+        "outflows)."
+    )
+
+
 class BatchDraft(IRDraft):
     """One batch's reply: a slide of finished text has no fields, so none are forced."""
 
     fields: list[IRField]
+
+
+class BatchReply(BatchDraft):
+    """`BatchDraft` as the IR model must write it (the schema it is given and validated by)."""
+
+    fields: list[LLMIRField]  # type: ignore[assignment]
+
+
+async def _reply(llm: LLMClient, messages: Messages) -> BatchDraft:
+    reply = await complete_json(llm, messages, BatchReply)
+    return BatchDraft.model_validate(reply.model_dump())
 
 
 def _group_of(fmt: str, anchor_id: str) -> str:
@@ -313,7 +339,7 @@ async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
         {"role": "system", "content": load_prompt("template_ir")},
         {"role": "user", "content": f"Template anchors:\n\n{_compact(sub)}"},
     ]
-    draft = _repair(await complete_json(llm, messages, BatchDraft), sub)
+    draft = _repair(await _reply(llm, messages), sub)
     errors = validate(draft, sub)
     if errors:
         listing = "\n".join(f"- {e}" for e in errors)
@@ -327,7 +353,7 @@ async def _build_batch(llm: LLMClient, sub: AnchorMap) -> BatchDraft:
                 "Reply with the corrected full JSON.",
             },
         ]
-        draft = _repair(await complete_json(llm, messages, BatchDraft), sub)
+        draft = _repair(await _reply(llm, messages), sub)
         errors = validate(draft, sub)
         if errors:
             log.warning("ir_invalid", errors=_loggable(errors), anchor_count=len(sub.anchors))

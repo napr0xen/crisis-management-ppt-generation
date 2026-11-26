@@ -61,6 +61,8 @@ os.environ.setdefault("QDRANT_URL", DEV_ENV.get("QDRANT_URL", "http://127.0.0.1:
 # Tests never write into ./data.
 # Tests drive jobs with `run_one`; a background worker would race them for queued jobs.
 os.environ["JOB_CONCURRENCY"] = "0"
+# Scripted fakes pin the fast path's exact calls; escalation tests switch it on themselves.
+os.environ["THINK_ON_ESCALATION"] = "false"
 # Like the throwaway test DB: tests never touch the dev `doc_chunks` collection.
 os.environ["QDRANT_COLLECTION"] = f"doc_chunks_test{_RUN_SUFFIX}"
 os.environ["STORAGE_ROOT"] = tempfile.mkdtemp(prefix="doc_intel_test_storage_")

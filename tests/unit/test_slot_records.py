@@ -473,7 +473,7 @@ async def test_not_found_invalid_output_and_transport_errors(name):
     assert {x.missing_reason for x in r.values()} == {"llm_error"}
 
     class Boom:
-        async def complete(self, messages, json_schema=None, think=False):
+        async def complete(self, messages, json_schema=None, think=False, think_budget=None):
             raise LLMError("down")
 
     with pytest.raises(LLMError):

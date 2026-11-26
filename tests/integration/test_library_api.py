@@ -22,7 +22,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("one_ir_batch", "
 class SlowLLM(FakeLLM):
     """Holds the reply for a moment so a test can see the `scanning` state."""
 
-    async def complete(self, messages, json_schema=None, think=False) -> str:
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None) -> str:
         await asyncio.sleep(0.4)
         return await super().complete(messages, json_schema)
 
@@ -247,7 +247,7 @@ def test_delete_removes_row_and_file(client, user_a):
 
 
 class HangingLLM(FakeLLM):
-    async def complete(self, messages, json_schema=None, think=False) -> str:
+    async def complete(self, messages, json_schema=None, think=False, think_budget=None) -> str:
         await asyncio.Event().wait()  # never replies
         return ""
 

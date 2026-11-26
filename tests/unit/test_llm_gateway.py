@@ -503,3 +503,42 @@ async def test_complete_json_passes_think_on_every_attempt():
     llm = FakeLLM("nope", '{"answer": "x"}')
     await complete_json(llm, MESSAGES, Out, think=True)
     assert llm.thinks == [True, True]
+
+
+async def test_ollama_escalation_thinks_with_the_budget_on_top_of_the_reply_cap():
+    requests: list[httpx.Request] = []
+    http = _mock(requests, {"message": {"content": "x"}})
+    await _ollama(http).complete(MESSAGES, SCHEMA, think=True, think_budget=2048)
+    body = json.loads(requests[0].content)
+    assert body["think"] is True
+    assert body["options"]["num_predict"] == 4096 + 2048 >= 2048
+
+
+async def test_openai_compat_escalation_bounds_thinking_without_hybrid():
+    requests: list[httpx.Request] = []
+    http = _streaming(requests, _sse({"reasoning": "a"}, {"content": '{"answer": "x"}'}))
+    client = _openai(http, template_kwargs=True)  # hybrid off: only the escalation thinks
+    assert await client.complete(MESSAGES, SCHEMA, think=True, think_budget=2048) == (
+        '{"answer": "x"}'
+    )
+    body = json.loads(requests[0].content)
+    assert body["stream"] is True and body["thinking_budget"] == 2048
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert body["max_tokens"] == 4096 + 2048  # the reply cap is never eaten by reasoning
+
+
+async def test_complete_json_passes_the_think_budget_and_defaults_to_fast():
+    llm = FakeLLM('{"answer": "x"}', '{"answer": "y"}')
+    await complete_json(llm, MESSAGES, Out)
+    await complete_json(llm, MESSAGES, Out, think=True, think_budget=2048)
+    assert llm.thinks == [False, True] and llm.budgets == [None, 2048]
+
+
+@pytest.mark.parametrize("raw, clamped", [(100, 512), (2048, 2048), (10_000, 4096)])
+def test_think_escalation_budget_is_clamped(raw, clamped):
+    assert Settings(think_escalation_max_tokens=raw).think_escalation_max_tokens == clamped
+
+
+def test_think_escalation_defaults():
+    s = Settings(_env_file=None)
+    assert (s.think_escalation_max_tokens, s.think_escalation_score_threshold) == (2048, 0.65)

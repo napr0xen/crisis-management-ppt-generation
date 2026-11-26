@@ -105,6 +105,7 @@ async def test_prompt_has_the_spec_and_every_chunk_header():
         "description": "How many customers lost power",
         "section_path": ["Slide 1", "Impact"],
         "expected_type": "text",
+        "mode": "extractive",
         "constraints": {"max_chars": 40},
     }
 
@@ -167,7 +168,8 @@ async def test_pathological_field_spec_is_bounded():
     assert (len(c.unit), len(c.date_format), len(c.token)) == (80, 80, 80)
     llm = FakeLLM(EMPTY)
     await extract(llm, field, [_hit("w" * 2000) for _ in range(hit_budget(8192, 512))])
-    assert sum(len(m["content"]) for m in llm.calls[0][0]) <= 22_500
+    # the derived-figure rule (Phase 19) added ~400 chars; still inside PROMPT_OVERHEAD_TOKENS
+    assert sum(len(m["content"]) for m in llm.calls[0][0]) <= 23_000
 
 
 async def test_llm_error_propagates():
