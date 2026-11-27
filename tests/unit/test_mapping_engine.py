@@ -1112,3 +1112,19 @@ def test_role_key_drops_filler_only_at_the_end_and_keeps_numbers():
     assert _role_key("Total deposits value") == _role_key("Total Deposits")
     assert _role_key("Value date") != _role_key("Date")
     assert _role_key("Payment 1") != _role_key("Payment 2")
+
+
+def test_period_copies_share_one_answer_across_slide_headings():
+    """Phase 29 item 3a: `[Reporting Period]` under each slide's own subtitle is one fact, so the
+    first copy's answer (the cover) fills the others instead of a per-slide conflict."""
+    a = _ctx_field("a", "pptx:s1:sp8", "Financial Overview", "[Reporting Period]")
+    b = _ctx_field("b", "pptx:s3:sp8", "Money In / Deposits during", "[Reporting Period]")
+    c = _ctx_field("c", "pptx:s4:sp8", "Money Out", "[Periodo]")
+    keys = shared_facts([a, b, c])
+    assert keys["a"] == keys["b"] and "c" not in keys
+    # review fix: "period" must be the token's head word, a period total is per heading
+    t1 = _ctx_field("t1", "pptx:s2:sp4", "Revenue", "[Period total]")
+    t2 = _ctx_field("t2", "pptx:s3:sp4", "Costs", "[Period total]")
+    assert shared_facts([t1, t2]) == {}
+    other = _ctx_field("d", "pptx:s2:sp8", "Outpatient clinic", "[Count]")
+    assert share_key(other) != share_key(other.model_copy(update={"context": "Emergency"}))

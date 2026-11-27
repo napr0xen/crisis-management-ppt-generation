@@ -1113,7 +1113,7 @@ def test_derived_mode_and_hidden_derivation():
     from doc_intel.templates.ir_builder import LLMIRField
     from doc_intel.templates.schemas import IRField
 
-    assert _version() == 8
+    assert _version() == 9
     assert "derived" in LLMIRField.model_json_schema()["properties"]["mode"]["enum"]
     assert "derivation" not in IRField.model_json_schema()["properties"]
     assert "derivation" not in LLMIRField.model_json_schema()["properties"]
@@ -1143,7 +1143,7 @@ async def test_a_net_movement_label_is_forced_to_derived_whatever_the_llm_said()
     ]
     ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
     got = {f.field_id: f.mode for f in ir.fields}
-    assert got == {"net": "derived", "es": "derived", "close": "extractive", "txt": "extractive"}
+    assert got == {"net": "derived", "es": "derived", "close": "extractive", "txt": "synthesis"}
     assert all(f.derivation is None for f in ir.fields)
 
 
@@ -1345,3 +1345,46 @@ def test_ranking_inheritance_stays_on_the_slide():
         for a, i, label, t in spec
     ]
     assert _ranking_slots(fields) == {"summary_largest_deposit_1"}
+
+
+async def test_note_insight_and_recommendation_slots_are_forced_to_synthesis():
+    """Phase 29 item 1a: no source states a slot's note or recommendation verbatim, so a
+    narrative text slot is written from the chunks (grounded synthesis), not copied."""
+    got = await _modes(
+        ("obn", "Opening Balance Note", "text", "Notes", "Slide 2"),
+        ("rec", "Actionable Recommendations", "text", "", "Slide 4"),
+        ("obs", "Overall Financial Observation", "text", "", "Slide 8"),
+        ("es", "Comentario del saldo", "text", "", "Slide 2"),
+        ("ins", "Key insight", "bullet_list", "", "Slide 3"),
+        ("name", "Account holder", "text", "Notes", "Slide 1"),  # context alone never decides
+        ("amt", "Note amount", "currency", "", "Slide 2"),  # typed: stays strict
+        ("key_finding_1", "Key Finding 1", "text", "", "Slide 8"),  # numbered: list synthesis
+    )
+    assert {k for k, v in got.items() if v == "synthesis"} == {"obn", "rec", "obs", "es", "ins"}
+
+
+@pytest.mark.parametrize(
+    ("fid", "label", "ctx", "want"),
+    [
+        (
+            "credit_transaction_count",
+            "Credit Transaction Count",
+            "NUMBER OF CREDITS",
+            ("count", "CR"),
+        ),
+        ("t", "Number of debits", "NUMBER OF DEBITS", ("count", "DR")),
+        ("t", "Count", "NUMBER OF CREDITS", None),  # only the label and id name the direction
+        ("t", "Number of employees", "", None),
+        ("payment_number", "Payment number", "", None),  # an id
+        ("t", "Payment No.", "", None),
+    ],
+)
+async def test_a_directional_count_is_counted_over_the_rows(fid, label, ctx, want):
+    """Phase 29 item 3b: partial-page "N items" lines name no direction (a conflict), so a
+    count of one direction is derived from the joined table's rows."""
+    from doc_intel.templates.ir_builder import derivation_intent
+
+    f = _typed_field(fid, label, "number").model_copy(update={"context": ctx})
+    assert derivation_intent(f) == want
+    got = await _modes((fid, label, "number", ctx, "Slide 3"))
+    assert got[fid] == ("derived" if want else "extractive")

@@ -10,7 +10,7 @@ from uuid import UUID
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.ingestion.schemas import TableRow
 from doc_intel.mapping.verifier import _NUMBER, normalize
-from doc_intel.templates.ir_builder import _direction
+from doc_intel.templates.ir_builder import _direction, _words
 from doc_intel.templates.schemas import Derivation, ExpectedType
 
 _ROW_ID = re.compile(r"^(.+)-R(\d+)$")
@@ -243,22 +243,32 @@ def _numeric(table: Table, header: str) -> bool:
     )
 
 
-def _both_tags(table: Table, header: str) -> bool:
+def both_tags(table: Table, header: str) -> bool:
     """The column holds CR and DR cells (a one-sided suffix, e.g. a balance's "Cr", is no tag
     column)."""
     cells = [_parse(t) for t in _data(table, header)]
     return {c.tag for c in cells if isinstance(c, _Cell)} >= {"CR", "DR"}
 
 
+# shortcut: English/Spanish words only, add words per language when a source needs them.
+_BALANCE_WORDS = frozenset("balance balances saldo saldos".split())
+
+
 def _amount(table: Table, spec: Derivation, tag: str | None) -> str:
     """The amount column: the numeric column whose header names the wanted direction, else the one
-    holding both CR and DR tags, else the only numeric one (unless the LLM named another real
-    header), else the LLM's when numeric; code `column_ambiguous` otherwise."""
+    holding both CR and DR tags (also for an untagged group_sum), else the only numeric one (unless
+    the LLM named another real header), else the LLM's when numeric; code `column_ambiguous`
+    otherwise. A sum, group_sum, top or count never takes a balance column (the LLM naming one
+    counts as naming none)."""
     nums = [h for h in table.headers if _numeric(table, h)]
     llm = _real(table, spec.column)
-    if tag or (spec.op == "diff" and not spec.minus):
+    if spec.op in ("sum", "group_sum", "top", "count"):  # a running balance: never aggregated
+        balances = [h for h in nums if _BALANCE_WORDS & _words((h,))[0]]
+        nums = [h for h in nums if h not in balances]
+        llm = None if llm in balances else llm
+    if tag or spec.op == "group_sum" or (spec.op == "diff" and not spec.minus):
         named = [h for h in nums if tag and _direction((h,)) == tag]
-        tagged = [h for h in nums if _both_tags(table, h)]
+        tagged = [h for h in nums if both_tags(table, h)]
         for found in (named, tagged):
             if len(found) == 1:
                 return found[0]
@@ -281,26 +291,36 @@ def _sep(table: Table, header: str) -> str | None:
     )
 
 
+# a header that names the group: a printed summary has one row per category, all distinct
+# shortcut: English/Spanish words only, add words per language when a source needs them.
+_GROUP_HEADER = frozenset("category categories categoria categorias type tipo".split())
+
+
+def _repeats(table: Table, header: str) -> bool:
+    return len(set(_data(table, header))) < len(_data(table, header))
+
+
 def _group(table: Table, spec: Derivation) -> str:
-    """The group column: the LLM's when it names a header, else the one non-numeric column whose
-    values repeat; code `group_ambiguous` otherwise."""
+    """The group column: the LLM's when it names a header whose values repeat or share a
+    delimiter (`_sep`), else the one non-numeric column whose values repeat; code
+    `group_ambiguous` otherwise (an all-distinct column, unless its header names the group,
+    makes every row its own group)."""
     if spec.group_by and (real := _real(table, spec.group_by)):
-        return real
-    rep = [
-        h
-        for h in table.headers
-        if not _numeric(table, h) and len(set(_data(table, h))) < len(_data(table, h))
-    ]
+        grouped = _repeats(table, real) or _sep(table, real) or _GROUP_HEADER & _words((real,))[0]
+        return real if grouped else "group_ambiguous"
+    rep = [h for h in table.headers if not _numeric(table, h) and _repeats(table, h)]
     return rep[0] if len(rep) == 1 else "group_ambiguous"
 
 
 def resolve_columns(table: Table, spec: Derivation, tag: str | None) -> Derivation | str:
     """`spec` with every named header replaced by the table's real one (equal after `normalize`),
-    the amount column and group column found from the table's structure (`_amount`, `_group`), and
-    `group_sep` set from the group column's values; a failure code `column_missing`,
+    the amount column (also of a count with a tag) and group column found from the table's
+    structure (`_amount`, `_group`), and `group_sep` set from the group column's values; a
+    failure code `column_missing`,
     `column_ambiguous` or `group_ambiguous`. `spec.op` is the op the slot means."""
     fixed: dict[str, object] = {}
-    heads = {"column": spec.column if spec.op == "count" else None}
+    counted = spec.op == "count" and not tag  # a directional count's column is found below
+    heads = {"column": spec.column if counted else None}
     heads |= {"minus": spec.minus, "pick": spec.pick} if spec.op in ("diff", "top") else {}
     for name, header in heads.items():
         if header is None:
@@ -308,7 +328,7 @@ def resolve_columns(table: Table, spec: Derivation, tag: str | None) -> Derivati
         if (real := _real(table, header)) is None:
             return "column_missing"
         fixed[name] = real
-    if spec.op != "count":
+    if not counted:
         if (column := _amount(table, spec, tag)) == "column_ambiguous":
             return column
         fixed["column"] = column

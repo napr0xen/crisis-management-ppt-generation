@@ -7,7 +7,7 @@ import time
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Hashable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
 from typing import Any, Literal
 
@@ -28,6 +28,7 @@ from doc_intel.llm.prompts import load_prompt
 from doc_intel.mapping.derived import (
     Computed,
     Table,
+    both_tags,
     compute,
     named,
     resolve_columns,
@@ -65,6 +66,7 @@ from doc_intel.mapping.schemas import (
     LLMRecord,
     LLMRecords,
     LLMRow,
+    LLMRowCategories,
     LLMRows,
     LLMSlotValue,
     MappingSummary,
@@ -113,6 +115,7 @@ _LISTS = ("paragraphs", "bullet_list")
 _ROW_TYPES = ("table", "chart")  # fields mapped by one structured row call
 
 
+# shortcut: English/Spanish head words only ("... period", "periodo ..."), add per language.
 def share_key(field: IRField) -> tuple[str, str, str]:
     """Fields with an equal key are one fact: they share one answer and one edit. A named
     placeholder (`{{x}}`, `[x]`, `<x>`) is a variable, so the same name is the same fact and the
@@ -122,7 +125,10 @@ def share_key(field: IRField) -> tuple[str, str, str]:
     token = field.constraints.token if field.write_mode == "replace_token" else None
     named = token.strip("{}[]<> ") if token and token.startswith(("{{", "[", "<")) else ""
     fact = normalize(named or field.label).replace("_", " ").replace("-", " ")
-    context = " ".join(normalize(field.context or "").split())
+    # a named period is the document's: every slide's subtitle states the same one
+    words = fact.split()
+    period = bool(named and words) and (words[-1] == "period" or words[0] == "periodo")
+    context = "" if period else " ".join(normalize(field.context or "").split())
     return " ".join(fact.split()), field.expected_type, context
 
 
@@ -365,7 +371,8 @@ async def map_field(
         return _missing(field, "llm_error", document_ids)
     result = resolve(field, hits, extraction, checked_documents=document_ids)
     result = await _filled_by_synthesis(llm, field, hits, result, document_ids)
-    return await _escalated(llm, field, hits, result, document_ids, other_headings, extraction)
+    result = await _escalated(llm, field, hits, result, document_ids, other_headings, extraction)
+    return await _paraphrased(llm, field, hits, result, document_ids)
 
 
 MIN_PROSE_CHARS = 40  # a slot this many characters wide holds a sentence, not a label or figure
@@ -393,6 +400,27 @@ async def _filled_by_synthesis(
     if field.expected_type in _LISTS and _needs_synthesis(field, result):
         return await _synthesized(llm, field, hits, result, docs)
     if field.mode == "extractive" and result.missing_reason == "not_found_by_llm" and _prose(field):
+        loose = field.model_copy(update={"mode": "synthesis"})
+        return await _synthesized(llm, loose, hits, result, docs)
+    return result
+
+
+async def _paraphrased(
+    llm: LLMClient,
+    field: IRField,
+    hits: list[Hit],
+    result: FieldMappingResult,
+    docs: list[uuid.UUID],
+) -> FieldMappingResult:
+    """An extractive prose slot whose candidates still all fail verification after the thinking
+    retry (a note no source states verbatim) gets one grounded synthesis attempt, at most
+    `partial` when weakly backed. After the retry, so a slightly misquoted name is copied, not
+    written."""
+    if (
+        field.mode == "extractive"
+        and result.missing_reason == "evidence_failed_verification"
+        and _prose(field)
+    ):
         loose = field.model_copy(update={"mode": "synthesis"})
         return await _synthesized(llm, loose, hits, result, docs)
     return result
@@ -616,10 +644,51 @@ async def _bound(
     if bind.not_found or table is None or bind.derivation is None:
         return "not_found_by_llm"
     spec = _with_intent(field, bind.derivation, table, intent)
+    if spec == "group_ambiguous":  # no column holds the group: the LLM sorts the rows
+        sorted_rows = await _categorized(llm, field, table)
+        if isinstance(sorted_rows, str):
+            return sorted_rows
+        table = sorted_rows
+        by_label = bind.derivation.model_copy(update={"group_by": ASSIGNED, "group_sep": None})
+        spec = _with_intent(field, by_label, table, intent)
     if isinstance(spec, str):
         log.info("derived_rejected", slot_id=field.field_id, code=spec)  # code only, never text
         return "no_relevant_chunks" if spec == "column_missing" else "evidence_failed_verification"
     return table, spec, bind
+
+
+ASSIGNED = "Category (assigned)"  # the header of LLM-assigned row categories, never a source one
+# shortcut: a table of more data rows is not sorted (the slot stays missing), upgrade by sorting
+# in batches when a source needs it.
+MAX_SORTED_ROWS = 150
+
+
+async def _categorized(llm: LLMClient, field: IRField, table: Table) -> Table | MissingReason:
+    """`table` with an `ASSIGNED` column: one LLM call names a category per data row from the
+    row's own line. A row it skips gets an empty label, so a breakdown using it fails closed
+    (`group_label_missing`). The labels are the model's, so the slot is at most `partial`."""
+    data = [(h, r) for h, r in table.rows if r.row_role == "data"]
+    if not data or len(data) > MAX_SORTED_ROWS or ASSIGNED in table.headers:
+        return "evidence_failed_verification"
+    spec = bounded_field(field).model_dump_json(
+        include={"label", "description", "section_path", "context"}, exclude_none=True
+    )
+    lines = [f"[{r.id}] {ln}" for h, r in data if (ln := row_line(h, r)) is not None]
+    heads = json.dumps(list(table.headers), ensure_ascii=False)
+    messages = [
+        {"role": "system", "content": load_prompt("row_categories")},
+        {"role": "user", "content": f"Slot:\n{spec}\n\nheaders: {heads}\n" + "\n".join(lines)},
+    ]
+    try:
+        reply = await complete_json(llm, messages, LLMRowCategories)
+    except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
+        return "llm_error"
+    got = {c.id.strip(): c.category.strip() for c in reply.rows}
+    rows = tuple(
+        (h, r.model_copy(update={"cells": r.cells | {ASSIGNED: got.get(r.id, "")}}))
+        for h, r in table.rows
+    )
+    return replace(table, headers=(*table.headers, ASSIGNED), rows=rows)
 
 
 def _with_intent(
@@ -644,6 +713,10 @@ def _with_intent(
         if not (bound.where or _direction((bound.column,)) == tag):
             return "intent_mismatch"
         tag = None
+    if op == "group_sum" and tag is None and both_tags(table, bound.column):
+        # shortcut: a breakdown that names no direction groups the money out (a spending
+        # breakdown), upgrade when a template asks for an untagged income breakdown.
+        tag = "DR"
     spec = bound.model_dump() | {"op": op, "tag": tag, "rank": None}
     for name, only in (("minus", "diff"), ("group_by", "group_sum"), ("pick", "top")):
         spec[name] = spec[name] if op == only else None
@@ -778,13 +851,14 @@ async def _derived(
         log.info("derived_rejected", slot_id=field.field_id, code="evidence")
         return _missing(field, "evidence_failed_verification", docs)
     typed = field.expected_type in TYPED_TYPES
+    assigned = spec.group_by == ASSIGNED  # model-made group labels: never verified, review them
     return FieldMappingResult(
         field_id=field.field_id,
-        status="populated",
+        status="partial" if assigned else "populated",
         value=stored[0],
         evidence=evidence,
-        confidence=CONF_TYPED if typed else CONF_TEXT,
-        missing_reason=None,
+        confidence=CONF_PARTIAL if assigned else (CONF_TYPED if typed else CONF_TEXT),
+        missing_reason="insufficient_evidence" if assigned else None,
         checked_documents=docs,
         conflict_details=None,
         provenance="rag",
@@ -2073,9 +2147,8 @@ async def map_batch(
             first = results[f.field_id]
             sibs = siblings.get(f.field_id, ())
             extraction = extractions[f.field_id]
-            results[f.field_id] = await _escalated(
-                llm, f, hits, first, document_ids, sibs, extraction
-            )
+            after = await _escalated(llm, f, hits, first, document_ids, sibs, extraction)
+            results[f.field_id] = await _paraphrased(llm, f, hits, after, document_ids)
     return results
 
 

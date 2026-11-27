@@ -435,7 +435,9 @@ async def test_intent_fixes_the_tag_of_paired_ranked_grids():
 
 async def test_intent_that_breaks_the_binding_fails_closed():
     cat = _named("category_1", "Category 1", "", ("S", "CATEGORY BREAKDOWN"), "text")
-    r = await map_field(CTX, cat, [DOC], Retr([_stmt_hit()]), FakeLLM(_amount(op="sum")))
+    # no group column: the row sort runs (Phase 29) and its invalid reply fails closed
+    llm = FakeLLM(_amount(op="sum"), "{}", "{}")
+    r = await map_field(CTX, cat, [DOC], Retr([_stmt_hit()]), llm)
     assert r.status == "missing" and r.value is None
 
 
@@ -461,3 +463,17 @@ async def test_a_top_intent_without_pick_on_a_text_slot_fails_closed():
     pay = _named("payment_payee_1", "Payee", "Payee", ("Slide 6", "LARGEST PAYMENTS"), "text")
     r = await map_field(CTX, pay, [DOC], Retr([_stmt_hit()]), FakeLLM(_amount(op="sum")), rank=1)
     assert (r.status, r.value) == ("missing", None)
+
+
+async def test_directional_counts_count_the_rows_of_their_own_direction():
+    """Phase 29 item 3b: the binder's column string does not matter, the CR/DR column does."""
+    cr = _named("credit_transaction_count", "Credit Transaction Count", expected_type="number")
+    dr = _named("debit_transaction_count", "Debit Transaction Count", expected_type="number")
+    llm = FakeLLM(_bind(op="count", column="Description"), _bind(op="count", column="Nope"))
+    out = await map_fields(CTX, [cr, dr], [DOC], Retr([_stmt_hit()]), llm)
+    assert (out["credit_transaction_count"].value, out["debit_transaction_count"].value) == (3, 4)
+    assert [e.row_id for e in out["credit_transaction_count"].evidence] == [
+        "T1-R02",
+        "T1-R04",
+        "T1-R07",
+    ]

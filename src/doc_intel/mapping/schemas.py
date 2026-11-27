@@ -220,6 +220,18 @@ class MappingSummary(_Strict):
     warnings: list[MappingWarning]
 
 
+class RowCategory(_Strict):
+    id: str  # a row id as shown in the prompt, e.g. P1-T2-R04
+    category: str = Field(min_length=1, max_length=40)
+
+
+class LLMRowCategories(_Strict):
+    """A category per table row, chosen by the LLM from the row's text when the source has no
+    category column (Phase 29); labels only, never a number."""
+
+    rows: list[RowCategory]
+
+
 class LLMDerivation(_Strict):
     """The binding of a derived slot (ADR-018): a table label and exact headers, never a number."""
 

@@ -33,7 +33,7 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 8  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 9  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -659,12 +659,49 @@ def _opening(names: tuple[str, ...]) -> bool:
     return bool(_OPENING_WORDS & words) or " brought forward " in text
 
 
+# shortcut: English/Spanish words only, add words per language when a template needs them.
+_NARRATIVE_WORDS = frozenset(
+    "note notes comment comments commentary observation observations insight insights finding "
+    "findings recommendation recommendations takeaway takeaways nota notas comentario "
+    "comentarios observacion observaciones hallazgo hallazgos recomendacion "
+    "recomendaciones".split()
+)
+
+
+def _is_narrative(f: IRField) -> bool:
+    """An un-numbered free-text slot whose label or id names a note, insight or recommendation:
+    no source states it verbatim, so it is written from the chunks. A numbered one is a list
+    (prose list synthesis); the context alone never decides (a value under a NOTES heading)."""
+    return (
+        f.expected_type in ("text", "paragraphs", "bullet_list")
+        and _slot_key(f) is None
+        and bool(_NARRATIVE_WORDS & _words((f.label, f.field_id))[0])
+    )
+
+
 def _is_total(f: IRField) -> bool:
     return (
         f.expected_type in ("currency", "number")
         and not _COUNT_WORDS & _words((f.label, f.field_id))[0]  # "Total number of deposits"
         and bool(_TOTAL_WORDS & _words(_names(f))[0])
         and _direction(_names(f)) is not None
+    )
+
+
+_TALLY_WORDS = frozenset("count counts cantidad conteo".split())
+
+
+def _is_count(f: IRField) -> bool:
+    """A number slot counting one direction ("Credit Transaction Count", "Number of debits"):
+    printed "N items" lines rarely say which direction they count, so code counts the rows."""
+    names = (f.label, f.field_id)
+    words, text = _words(names)
+    counts = bool(_TALLY_WORDS & words) or any(f" {w} of " in text for w in ("number", "numero"))
+    return (
+        f.expected_type == "number"
+        and _slot_key(f) is None
+        and counts  # "Payment number" / "Payment No." is an id, not a count
+        and _direction(names) is not None
     )
 
 
@@ -691,6 +728,8 @@ def derivation_intent(f: IRField) -> tuple[str, Literal["CR", "DR"] | None] | No
             return "group_sum", _direction(names)
         if _RANK_WORDS & words:
             return "top", _direction(names)
+    if _is_count(f):
+        return "count", _direction((f.label, f.field_id))
     if _is_total(f):
         return "sum", _direction(_names(f))
     if _is_largest(f):
@@ -756,7 +795,17 @@ async def build_ir(
     ranking = _ranking_slots(fields)
     fields = [
         f.model_copy(update={"mode": "derived"})
-        if _names_net_movement(f) or _is_total(f) or _is_largest(f) or f.field_id in ranking
+        if _names_net_movement(f)
+        or _is_total(f)
+        or _is_largest(f)
+        or _is_count(f)
+        or f.field_id in ranking
+        else f
+        for f in fields
+    ]
+    fields = [
+        f.model_copy(update={"mode": "synthesis"})
+        if f.mode == "extractive" and _is_narrative(f)
         else f
         for f in fields
     ]

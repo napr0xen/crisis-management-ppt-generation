@@ -158,7 +158,9 @@ async def test_ambiguous_grouping_is_missing_in_the_engine():
     f = _named("spend_label_1", "Category 1", path, "text")
     v = _named("spend_value_1", "Value 1", path)
     reply = _bind(op="group_sum", group_by="Nope")  # a failed binding is not shared: one each
-    out = await map_fields(CTX, [f, v], [DOC], Retr([_stmt_hit()]), FakeLLM(reply, reply))
+    bad = ("{}", "{}")  # the row sort (Phase 29) replies invalid twice: still missing
+    llm = FakeLLM(reply, *bad, reply, *bad)
+    out = await map_fields(CTX, [f, v], [DOC], Retr([_stmt_hit()]), llm)
     assert {r.status for r in out.values()} == {"missing"}
 
 
