@@ -168,8 +168,8 @@ async def test_pathological_field_spec_is_bounded():
     assert (len(c.unit), len(c.date_format), len(c.token)) == (80, 80, 80)
     llm = FakeLLM(EMPTY)
     await extract(llm, field, [_hit("w" * 2000) for _ in range(hit_budget(8192, 512))])
-    # the derived-figure rule (Phase 19) added ~400 chars; still inside PROMPT_OVERHEAD_TOKENS
-    assert sum(len(m["content"]) for m in llm.calls[0][0]) <= 23_000
+    # the derived-figure rule (Phase 19) and the slot-type line (Phase 30) added ~450 chars
+    assert sum(len(m["content"]) for m in llm.calls[0][0]) <= 23_100
 
 
 async def test_llm_error_propagates():

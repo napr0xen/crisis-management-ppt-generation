@@ -4,10 +4,8 @@ import json
 
 import pytest
 
-from doc_intel.core.config import get_settings
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.mapping.engine import _rule_note, map_fields
-from doc_intel.mapping.extractor import hit_budget
+from doc_intel.mapping.engine import BATCH_FIELD_HITS, _rule_note, map_fields
 from doc_intel.mapping.schemas import Evidence
 from doc_intel.templates.schemas import Constraints, IRField
 from tests.fakes import FakeLLM
@@ -265,19 +263,14 @@ async def test_the_opening_chunks_alone_still_feed_the_cover_when_no_search_hits
     assert (out["f1"].status, out["f1"].value) == ("populated", "Acme Corp")
 
 
-async def test_batch_retrieval_searches_each_field_and_heading_then_widens_the_neighbors():
+async def test_batch_retrieval_searches_each_field_and_heading_without_neighbors():
+    # Phase 30: unscored neighbor chunks are never sent, so their share goes to ranked hits
     h = _hit(TEXT)
     fields = [_slot(1, "Lead", context="Alpha card"), _slot(2, "Region", context="Beta card")]
     retriever = FakeRetriever([h])
     await map_fields(CTX, fields, DOCS, retriever, FakeLLM(_reply()))
-    s = get_settings()
-    chunks = min(
-        hit_budget(s.llm_num_ctx, s.chunk_max_tokens),
-        max(1, s.retrieval_context_tokens // s.chunk_max_tokens),
-    )
-    assert retriever.top_ns == [2, 2, 1, 1]
+    assert retriever.top_ns == [BATCH_FIELD_HITS, BATCH_FIELD_HITS, 1, 1]
     assert [c[1] for c in retriever.calls][2:] == ["Alpha card", "Beta card"]
-    assert retriever.budgets == [2 * chunks]
 
 
 async def test_fit_chars_is_a_soft_hint_beside_the_constraints_never_in_them():

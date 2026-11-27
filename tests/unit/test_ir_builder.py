@@ -1113,7 +1113,7 @@ def test_derived_mode_and_hidden_derivation():
     from doc_intel.templates.ir_builder import LLMIRField
     from doc_intel.templates.schemas import IRField
 
-    assert _version() == 9
+    assert _version() == 10
     assert "derived" in LLMIRField.model_json_schema()["properties"]["mode"]["enum"]
     assert "derivation" not in IRField.model_json_schema()["properties"]
     assert "derivation" not in LLMIRField.model_json_schema()["properties"]

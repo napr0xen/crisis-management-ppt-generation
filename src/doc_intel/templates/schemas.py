@@ -27,6 +27,10 @@ WriteMode = Literal[
 ExpectedType = Literal[
     "text", "paragraphs", "bullet_list", "number", "currency", "percent", "date", "table", "chart"
 ]
+# what a slot holds, set by the IR model from its placeholder and context (generic, no word lists)
+SlotType = Literal[
+    "currency", "number_count", "percentage", "date_period", "entity_name", "boolean", "free_text"
+]
 # extractive: copied verbatim from a quote; synthesis: written (summary, trend, observation) or
 # computed from verified quotes; derived: an aggregate computed in code over a table's rows
 FieldMode = Literal["extractive", "synthesis", "derived"]
@@ -94,34 +98,57 @@ class Constraints(_Strict):
 SLOT_NUMBER = re.compile(r"_(\d{1,3})(?:_[a-z][a-z0-9]*)?$")
 
 
+_UNSIGNED_OPS = ("count", "group_count", "lookup")  # no numeric column to take the sign of
+
+
 class Derivation(_Strict):
     """An aggregate over one source table's rows (ADR-018), computed by code, never by the LLM."""
 
-    op: Literal["sum", "diff", "count", "min", "max", "group_sum", "top"]
+    op: Literal[
+        "sum",
+        "diff",
+        "count",
+        "min",
+        "max",
+        "avg",
+        "argmax",
+        "argmin",
+        "group_sum",
+        "group_count",
+        "lookup",
+        "top",
+    ]
     column: str
     minus: str | None = None  # diff: the column subtracted from `column`
     where: dict[str, str] = {}  # header -> required cell value
     tag: Literal["CR", "DR"] | None = None  # keep only cells tagged so
-    group_by: str | None = None  # group_sum: the label column
-    group_sep: str | None = None  # group_sum: the label is the cell text before its first sep
+    group_by: str | None = None  # group_sum, group_count: the label column
+    group_sep: str | None = None  # the label is the cell text before its first sep
     top_n: int | None = Field(None, ge=1)
-    # group_sum, top: the k-th largest group or row; set by code from the slot number, never the LLM
+    # group_sum, group_count, top: the k-th largest group or row; set by code from the slot number
     rank: int | None = Field(None, ge=1)
-    pick: str | None = None  # top: the header whose cell the slot takes (default `column`)
+    # top, argmax, argmin, lookup: the header whose cell the slot takes (default `column`)
+    pick: str | None = None
+    filter: Literal["non_null", "positive", "negative"] | None = None  # rows kept by `column`
     exclude_rows: list[str] = []  # row ids left out (printed total rows)
 
     @model_validator(mode="after")
     def _consistent(self) -> "Derivation":
-        if (self.group_by is None) == (self.op == "group_sum"):
-            raise ValueError("group_by is required for group_sum and only for it")
+        grouped = self.op in ("group_sum", "group_count")
+        if (self.group_by is None) == grouped:
+            raise ValueError("group_by is required for group_sum and group_count and only for them")
         if self.minus is not None and self.op != "diff":
             raise ValueError("minus is only for diff")
-        if self.group_sep is not None and self.op != "group_sum":
-            raise ValueError("group_sep is only for group_sum")
-        if self.rank is not None and self.op not in ("group_sum", "top"):
-            raise ValueError("rank is only for group_sum and top")
-        if self.pick is not None and self.op != "top":
-            raise ValueError("pick is only for top")
+        if self.group_sep is not None and not grouped:
+            raise ValueError("group_sep is only for group_sum and group_count")
+        if self.rank is not None and not (grouped or self.op == "top"):
+            raise ValueError("rank is only for group_sum, group_count and top")
+        if self.pick is not None and self.op not in ("top", "argmax", "argmin", "lookup"):
+            raise ValueError("pick is only for top, argmax, argmin and lookup")
+        if self.op == "lookup" and not self.where:
+            raise ValueError("lookup needs a where")
+        if self.filter in ("positive", "negative") and self.op in _UNSIGNED_OPS:
+            raise ValueError("a sign filter needs a numeric aggregate")
         if self.op == "diff" and self.minus is None and self.tag is not None:
             raise ValueError("diff without minus uses both tags: no tag filter")
         return self
@@ -134,6 +161,8 @@ class IRField(_Strict):
     label: str = Field(min_length=1, max_length=120)
     description: str = Field(max_length=500)
     expected_type: ExpectedType
+    # an IR stored before Phase 30 reads None; ir_builder.slot_type derives it from expected_type
+    slot_type: SlotType | None = None
     mode: FieldMode = "extractive"  # an IR stored before Phase 19 reads as extractive
     required: bool
     write_mode: WriteMode

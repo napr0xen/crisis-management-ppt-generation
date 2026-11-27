@@ -28,12 +28,13 @@ from doc_intel.templates.schemas import (
     FieldMode,
     IRDraft,
     IRField,
+    SlotType,
     TemplateIR,
 )
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 9  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 10  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -737,6 +738,36 @@ def derivation_intent(f: IRField) -> tuple[str, Literal["CR", "DR"] | None] | No
     return None
 
 
+_TYPED_SLOT: dict[str, SlotType] = {
+    "currency": "currency",
+    "percent": "percentage",
+    "date": "date_period",
+}
+_TEXT_SLOTS: frozenset[str] = frozenset({"date_period", "entity_name", "boolean", "free_text"})
+SLOT_FORMAT: dict[str, str] = {
+    "date_period": "Return only the date or period, never a monetary amount or a count.",
+    "entity_name": "Return only the name of the person, organization, item or category, "
+    "never an amount or a date.",
+    "number_count": "Return only a whole count of items, never a monetary amount.",
+    "percentage": "Return only a percentage.",
+    "currency": "Return only the monetary amount with its currency sign or code as written.",
+    "boolean": "Return only yes/no as the source states it.",
+}
+
+
+def slot_type(field: IRField) -> SlotType | None:
+    """What the slot holds: fixed by a typed `expected_type`, else the IR model's choice among the
+    text kinds (default free_text); a number is a count only when the IR model says so (a rating
+    or ratio is no whole count); tables and charts have none."""
+    if field.expected_type == "number":
+        return "number_count" if field.slot_type == "number_count" else None
+    if field.expected_type in _TYPED_SLOT:
+        return _TYPED_SLOT[field.expected_type]
+    if field.expected_type in ("table", "chart"):
+        return None
+    return field.slot_type if field.slot_type in _TEXT_SLOTS else "free_text"
+
+
 def _retype_amounts(fields: list[IRField]) -> list[IRField]:
     """A numbered ranking slot named an amount but typed text becomes currency, so the grid has
     the numeric slot that `_ranking_slots` needs (the category-name slots stay text)."""
@@ -792,6 +823,7 @@ async def build_ir(
     by_id = {a.anchor_id: a for a in amap.anchors}
     fields = [_with_anchor_data(f, by_id[f.anchor_id]) for f in _caption_types(fields, by_id)]
     fields = _retype_amounts(fields)
+    fields = [f.model_copy(update={"slot_type": slot_type(f)}) for f in fields]
     ranking = _ranking_slots(fields)
     fields = [
         f.model_copy(update={"mode": "derived"})

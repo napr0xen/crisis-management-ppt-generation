@@ -48,9 +48,6 @@ class Retr:
         self.searches += 1
         return [_hit().model_copy(update={"element_type": "text", "rows": None})]
 
-    async def with_neighbors(self, ctx, hits, budget):
-        return hits
-
     async def opening(self, ctx, document_ids, n=2):
         return []
 
@@ -73,7 +70,7 @@ def _field(derivation=None, fid="total", expected_type="currency"):
 
 def _bind(table="t1", **kw):
     spec = {"op": "sum", "column": "Amount", **kw}
-    return json.dumps({"table": table, "not_found": False, "derivation": spec})
+    return json.dumps({"table": table, "feasible": True, "derivation": spec})
 
 
 SUM = Derivation(op="sum", column="Amount")
@@ -107,7 +104,7 @@ async def test_list_value_for_group_sum():
 
 
 async def test_not_found_and_unknown_table_are_missing():
-    for reply in (json.dumps({"not_found": True}), _bind(table="t9")):
+    for reply in (json.dumps({"feasible": False}), _bind(table="t9")):
         r = await map_field(CTX, _field(), [DOC], Retr([_hit()]), FakeLLM(reply))
         assert (r.status, r.missing_reason, r.value, r.evidence) == (
             "missing",

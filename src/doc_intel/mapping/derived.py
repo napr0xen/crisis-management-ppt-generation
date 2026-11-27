@@ -4,12 +4,12 @@ LLM. Every failure is a code string the caller maps to `missing`; a figure is ne
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from uuid import UUID
 
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.ingestion.schemas import TableRow
-from doc_intel.mapping.verifier import _NUMBER, normalize
+from doc_intel.mapping.verifier import _NUMBER, is_amount, normalize
 from doc_intel.templates.ir_builder import _direction, _words
 from doc_intel.templates.schemas import Derivation, ExpectedType
 
@@ -146,10 +146,10 @@ def _decimals(cell: _Cell, conv: str) -> int:
     return len(cell.num.rsplit(sep, 1)[1])
 
 
-def _render(total: Decimal, cells: list[_Cell], conv: str) -> str:
-    """`total` in the source convention: its separators, the most decimals of the cells, and an
-    affix (a currency sign) only when every cell has the same one."""
-    places = max(_decimals(c, conv) for c in cells)
+def _render(total: Decimal, cells: list[_Cell], conv: str, places: int | None = None) -> str:
+    """`total` in the source convention: its separators, the most decimals of the cells (or
+    `places`), and an affix (a currency sign) only when every cell has the same one."""
+    places = max(_decimals(c, conv) for c in cells) if places is None else places
     grouped = conv == "eu" or (conv == "us" and any("," in c.num for c in cells))
     out = f"{abs(total):,.{places}f}" if grouped else f"{abs(total):.{places}f}"
     if conv == "eu":
@@ -185,11 +185,17 @@ def _column(rows: list[Pair], header: str) -> list[tuple[Pair, _Cell]] | str:
 def compute(table: Table, spec: Derivation, expected_type: ExpectedType) -> Computed | str:
     """`spec` over the rows of `table`, or a failure code: op_type_mismatch, rows_incomplete,
     column_missing, no_rows, cell_unparseable, ambiguous_number_format, untagged_cell, mixed_tags,
-    group_label_missing, summary_row, exclude_unverified, rank_out_of_range, rank_tied."""
+    group_label_missing, summary_row, exclude_unverified, rank_out_of_range, rank_tied,
+    lookup_ambiguous."""
+    picked = _NUMERIC_TYPES | {"text", "date"}
     wanted = {
         "count": {"number"},
         "group_sum": {"text", "number", "currency"} if spec.rank else {"table", "bullet_list"},
-        "top": _NUMERIC_TYPES | {"text", "date"},
+        "group_count": {"text", "number"} if spec.rank else {"table", "bullet_list"},
+        "top": picked,
+        "argmax": picked,
+        "argmin": picked,
+        "lookup": picked,
     }.get(spec.op, _NUMERIC_TYPES)
     if expected_type not in wanted:
         return "op_type_mismatch"
@@ -204,21 +210,32 @@ def compute(table: Table, spec: Derivation, expected_type: ExpectedType) -> Comp
         - set(summary_rows(table, spec.model_copy(update={"exclude_rows": []})))
     ):
         return "exclude_unverified"  # only detected summary rows may be dropped
-    if summary_rows(table, spec):  # never auto-excluded: a genuine row would give a wrong total
+    # never auto-excluded: a genuine row would give a wrong total; a lookup aggregates nothing
+    if spec.op != "lookup" and summary_rows(table, spec):
         return "summary_row"
     rows = _kept(table, spec)
-    if spec.op == "count":
+    if spec.op == "lookup":
+        return _lookup(rows, spec, expected_type)
+    if spec.op in ("count", "group_count"):
         # shortcut: counts any non-blank cell (text too); no digits needed, upgrade if a count
         # over a numeric column must skip text cells.
         used = [
             p
             for p in rows
-            if p[1].cells[spec.column].strip() not in ("", "-")
+            if not _blank(p[1].cells[spec.column])
             and (not spec.tag or _tagged(p[1].cells[spec.column], spec.tag))
         ]
+        if not used:
+            return "no_rows"
+        if spec.op == "group_count":
+            return _groups([(p, Decimal(1), None) for p in used], spec, None, expected_type)
         cited = tuple((h, r, None) for h, r in used)
-        return Computed(str(len(used)), cited, Decimal(len(used))) if used else "no_rows"
+        return Computed(str(len(used)), cited, Decimal(len(used)))
     return _aggregate(rows, spec, expected_type)
+
+
+def _blank(text: str) -> bool:
+    return text.strip() in ("", "-")
 
 
 def _real(table: Table, name: str) -> str | None:
@@ -243,6 +260,22 @@ def _numeric(table: Table, header: str) -> bool:
     )
 
 
+def numeric_headers(table: Table) -> list[str]:
+    """The headers an amount may come from: every non-empty data cell one number, no balance."""
+    return [h for h in table.headers if _parses(table, h) and not _balance(h)]
+
+
+def _parses(table: Table, header: str) -> bool:
+    """Every non-empty data cell is one number, and a cell with a word in it reads as an amount
+    ("USD 5.00", never a reference such as "INV 12"). shortcut: a whole currency-word amount
+    ("USD 5") is not one, upgrade with a currency-code list if sources print them so."""
+    texts = [t for t in _data(table, header) if _parse(t) is not None]
+    return bool(texts) and all(
+        isinstance(_parse(t), _Cell) and (not any(ch.isalpha() for ch in t) or is_amount(t))
+        for t in texts
+    )
+
+
 def both_tags(table: Table, header: str) -> bool:
     """The column holds CR and DR cells (a one-sided suffix, e.g. a balance's "Cr", is no tag
     column)."""
@@ -254,16 +287,22 @@ def both_tags(table: Table, header: str) -> bool:
 _BALANCE_WORDS = frozenset("balance balances saldo saldos".split())
 
 
+def _balance(header: str) -> bool:
+    return bool(_BALANCE_WORDS & _words((header,))[0])
+
+
 def _amount(table: Table, spec: Derivation, tag: str | None) -> str:
     """The amount column: the numeric column whose header names the wanted direction, else the one
     holding both CR and DR tags (also for an untagged group_sum), else the only numeric one (unless
-    the LLM named another real header), else the LLM's when numeric; code `column_ambiguous`
-    otherwise. A sum, group_sum, top or count never takes a balance column (the LLM naming one
-    counts as naming none)."""
+    the LLM named another real header), else the LLM's when numeric or when every cell of it parses
+    as a number (a word affix, "USD 5", included; compute still fails closed on a bad cell); code
+    `column_ambiguous` otherwise. A sum, avg, group_sum, top, argmax, argmin or count never takes
+    a balance column (the LLM naming one counts as naming none)."""
     nums = [h for h in table.headers if _numeric(table, h)]
     llm = _real(table, spec.column)
-    if spec.op in ("sum", "group_sum", "top", "count"):  # a running balance: never aggregated
-        balances = [h for h in nums if _BALANCE_WORDS & _words((h,))[0]]
+    balance_ops = ("sum", "avg", "group_sum", "top", "argmax", "argmin", "count")
+    if spec.op in balance_ops:  # a running balance: never aggregated
+        balances = [h for h in nums if _balance(h)]
         nums = [h for h in nums if h not in balances]
         llm = None if llm in balances else llm
     if tag or spec.op == "group_sum" or (spec.op == "diff" and not spec.minus):
@@ -274,7 +313,9 @@ def _amount(table: Table, spec: Derivation, tag: str | None) -> str:
                 return found[0]
     if len(nums) == 1:
         return nums[0] if llm in (None, nums[0]) else "column_ambiguous"
-    return llm if llm is not None and llm in nums else "column_ambiguous"
+    if llm is not None and (llm in nums or (_parses(table, llm) and not _balance(llm))):
+        return llm
+    return "column_ambiguous"
 
 
 def _sep(table: Table, header: str) -> str | None:
@@ -319,9 +360,11 @@ def resolve_columns(table: Table, spec: Derivation, tag: str | None) -> Derivati
     failure code `column_missing`,
     `column_ambiguous` or `group_ambiguous`. `spec.op` is the op the slot means."""
     fixed: dict[str, object] = {}
-    counted = spec.op == "count" and not tag  # a directional count's column is found below
+    # a directional count's column is found below; a lookup's is a plain header
+    counted = (spec.op in ("count", "group_count") and not tag) or spec.op == "lookup"
     heads = {"column": spec.column if counted else None}
-    heads |= {"minus": spec.minus, "pick": spec.pick} if spec.op in ("diff", "top") else {}
+    if spec.op in ("diff", "top", "argmax", "argmin", "lookup"):
+        heads |= {"minus": spec.minus, "pick": spec.pick}
     for name, header in heads.items():
         if header is None:
             continue
@@ -332,7 +375,7 @@ def resolve_columns(table: Table, spec: Derivation, tag: str | None) -> Derivati
         if (column := _amount(table, spec, tag)) == "column_ambiguous":
             return column
         fixed["column"] = column
-    if spec.op == "group_sum":
+    if spec.op in ("group_sum", "group_count"):
         if (group := _group(table, spec)) == "group_ambiguous":
             return group
         fixed |= {"group_by": group, "group_sep": _sep(table, group)}
@@ -343,13 +386,14 @@ def resolve_columns(table: Table, spec: Derivation, tag: str | None) -> Derivati
 
 
 def _kept(table: Table, spec: Derivation) -> list[Pair]:
-    """The rows left after `exclude_rows` and `where`."""
+    """The rows left after `exclude_rows`, `where` and the `non_null` filter."""
     return [
         pair
         for pair in table.rows
         if pair[1].row_role == "data"  # carry-forward and total rows are never aggregated
         and pair[1].id not in spec.exclude_rows
         and all(normalize(pair[1].cells[h]) == normalize(v) for h, v in spec.where.items())
+        and not (spec.filter == "non_null" and _blank(pair[1].cells[spec.column]))
     ]
 
 
@@ -383,6 +427,11 @@ def _prepare(rows: list[Pair], spec: Derivation) -> tuple[_Cells, _Cells, str] |
         return "mixed_tags"
     if (conv := _convention([c for _, c in main + minus])) is None:
         return "ambiguous_number_format"
+    if spec.filter in ("positive", "negative"):  # the sign needs the convention
+        sign = 1 if spec.filter == "positive" else -1
+        main = [(p, c) for p, c in main if _value(c, conv) * sign > 0]
+        if not main and not minus:
+            return "no_rows"
     return main, minus, conv
 
 
@@ -412,7 +461,7 @@ def summary_rows(table: Table, spec: Derivation) -> list[str]:
     if isinstance(prepared, str):
         return []
     main, minus, conv = prepared
-    if spec.op == "count" and any(
+    if spec.op in ("count", "group_count") and any(
         (t := p[1].cells[spec.column].strip()) not in ("", "-") and _parse(t) is None for p in rows
     ):
         return []
@@ -432,37 +481,50 @@ def _aggregate(rows: list[Pair], spec: Derivation, expected_type: str) -> Comput
     main, minus, conv = prepared
     cells = [c for _, c in main + minus]
     if spec.op == "group_sum":
-        return _groups(main, spec, conv, expected_type)
+        return _groups([(p, _value(c, conv), c) for p, c in main], spec, conv, expected_type)
     if spec.op == "top":
         return _top(main, spec, conv, expected_type)
+    if spec.op in ("argmax", "argmin"):
+        return _extreme(main, spec, conv, expected_type)
     values = [_value(c, conv) for _, c in main]
+    places = None
     if spec.op == "diff" and spec.minus:
         total = sum(values) - sum(_value(c, conv) for _, c in minus)
     elif spec.op == "diff":
         if any(c.tag is None for c in cells):
             return "untagged_cell"
         total = sum(-v if c.tag == "DR" else v for v, (_, c) in zip(values, main, strict=True))
+    elif spec.op == "avg":  # at least two places, or the cells' own when more
+        places = max(2, *(_decimals(c, conv) for c in cells))
+        total = (sum(values) / len(values)).quantize(Decimal(1).scaleb(-places), ROUND_HALF_EVEN)
     else:
         total = {"sum": sum, "min": min, "max": max}[spec.op](values)
     used = {p[1].id for p, _ in main + minus}
     cited = tuple((h, r, None) for h, r in rows if r.id in used)
-    return Computed(_render(total, cells, conv), cited, total)
+    return Computed(_render(total, cells, conv, places), cited, total)
 
 
 def _groups(
-    main: list[tuple[Pair, _Cell]], spec: Derivation, conv: str, expected_type: str
+    items: list[tuple[Pair, Decimal, _Cell | None]], spec: Derivation, conv: str | None, kind: str
 ) -> Computed | str:
+    """The per-label totals of (row, amount, cell) `items`; a count's cells are None and `conv`
+    None."""
     sums: dict[str, Decimal] = {}
-    members: dict[str, list[tuple[Pair, _Cell]]] = defaultdict(list)
-    for pair, cell in main:
+    members: dict[str, list[tuple[Pair, _Cell | None]]] = defaultdict(list)
+    for pair, amount, cell in items:
         label = pair[1].cells[spec.group_by or ""]
         if spec.group_sep:
             label = label.split(spec.group_sep, 1)[0]
         label = label.strip()
         if not label:
             return "group_label_missing"
-        sums[label] = sums.get(label, Decimal(0)) + _value(cell, conv)
+        sums[label] = sums.get(label, Decimal(0)) + amount
         members[label].append((pair, cell))
+
+    def fmt(total: Decimal, keys: list[str]) -> str:
+        cells = [c for k in keys for _, c in members[k] if c is not None]
+        return _render(total, cells, conv) if conv else str(total)
+
     ranked = sorted(sums, key=lambda k: -sums[k])  # stable: ties by first seen
     if spec.rank:  # the k-th group alone: its label, or its sum
         if spec.rank > len(ranked):
@@ -471,19 +533,31 @@ def _groups(
         if any(sums[n] == sums[k] for n in ranked[max(spec.rank - 2, 0) : spec.rank + 1] if n != k):
             return "rank_tied"  # the rank order among equal sums would be arbitrary
         cited = tuple((h, r, None) for (h, r), _ in members[k])
-        if expected_type == "text":
+        if kind == "text":
             return Computed(k, cited)
-        return Computed(_render(sums[k], [c for _, c in members[k]], conv), cited, sums[k])
+        return Computed(fmt(sums[k], [k]), cited, sums[k])
     ranked = ranked[: spec.top_n]
-    cells = [c for k in ranked for _, c in members[k]]
-    amounts = [(k, _render(sums[k], cells, conv)) for k in ranked]
-    value = (
-        [[k, a] for k, a in amounts]
-        if expected_type == "table"
-        else [f"{k}: {a}" for k, a in amounts]
-    )
+    amounts = [(k, fmt(sums[k], ranked)) for k in ranked]
+    value = [[k, a] for k, a in amounts] if kind == "table" else [f"{k}: {a}" for k, a in amounts]
     cited = tuple((h, r, i) for i, k in enumerate(ranked) for (h, r), _ in members[k])
     return Computed(value, cited)
+
+
+def _take(pair: Pair, spec: Derivation, conv: str | None, expected_type: str) -> Computed | str:
+    """The `pick` (else `column`) cell of `pair` as the slot's value: verbatim for a text or date
+    slot, parsed and rendered for a numeric one (`conv`: `column`'s convention, None if unknown)."""
+    cited = ((pair[0], pair[1], None),)
+    header = spec.pick or spec.column
+    text = pair[1].cells[header].strip()
+    if expected_type not in _NUMERIC_TYPES:
+        return Computed(text, cited)
+    cell = _parse(text)
+    if not isinstance(cell, _Cell):
+        return cell or "cell_unparseable"
+    if (own := conv if conv and header == spec.column else _convention([cell])) is None:
+        return "ambiguous_number_format"
+    n = _value(cell, own)
+    return Computed(_render(n, [cell], own), cited, n)
 
 
 def _top(
@@ -496,15 +570,21 @@ def _top(
     ordered = sorted(main, key=lambda x: -abs(_value(x[1], conv)))
     if (spec.rank or 1) > len(ordered):
         return "rank_out_of_range"
-    pair, _ = ordered[(spec.rank or 1) - 1]
-    cited = ((pair[0], pair[1], None),)
-    text = pair[1].cells[spec.pick or spec.column].strip()
-    if expected_type not in _NUMERIC_TYPES:
-        return Computed(text, cited)
-    cell = _parse(text)
-    if not isinstance(cell, _Cell):
-        return cell or "cell_unparseable"
-    if (own := conv if spec.pick in (None, spec.column) else _convention([cell])) is None:
-        return "ambiguous_number_format"
-    n = _value(cell, own)
-    return Computed(_render(n, [cell], own), cited, n)
+    return _take(ordered[(spec.rank or 1) - 1][0], spec, conv, expected_type)
+
+
+def _extreme(
+    main: list[tuple[Pair, _Cell]], spec: Derivation, conv: str, expected_type: str
+) -> Computed | str:
+    """The row with the largest (argmax) or smallest (argmin) signed `column` value; a tie at the
+    extreme fails closed."""
+    best = (max if spec.op == "argmax" else min)(_value(c, conv) for _, c in main)
+    winners = [p for p, c in main if _value(c, conv) == best]
+    return "rank_tied" if len(winners) > 1 else _take(winners[0], spec, conv, expected_type)
+
+
+def _lookup(rows: list[Pair], spec: Derivation, expected_type: str) -> Computed | str:
+    """The `pick` (else `column`) cell of the one row `where` keeps."""
+    if len(rows) > 1:
+        return "lookup_ambiguous"
+    return _take(rows[0], spec, None, expected_type) if rows else "no_rows"

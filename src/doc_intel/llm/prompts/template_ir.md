@@ -22,6 +22,7 @@ Rules:
 - `label`: at most 120 characters. `description`: at most 500 characters, what content belongs there.
 - `expected_type`: one of text, paragraphs, bullet_list, number, currency, percent, date, table, chart. Use `date` only for a full calendar date (day, month, year); a month-and-year or quarter slot such as `[Month YYYY]` or `Q3 2026` is `text`, so the source text is copied verbatim, never a guessed day.
 - `mode`: `derived` for a slot whose value is a total, net movement (inflows - outflows), count, minimum, maximum or category breakdown over the rows of a source table: code computes it, also numbered slots that rank the largest rows (largest payments or receipts: date, party, amount) or list a category breakdown (Category N and its amount): code computes it. `synthesis` for a slot whose value is written from the source rather than copied: a summary, trend, pattern, observation, commentary or finding. Otherwise `extractive` (the default): names, account numbers and ids, printed amounts and balances, dates, periods, items of a list or table.
+- `slot_type`: what the slot holds, judged from its placeholder text and the surrounding slide or table context: `currency` (a monetary amount), `number_count` (a count of items), `percentage`, `date_period` (a date, month, quarter or period name), `entity_name` (a person, organization, item or category name), `boolean` (yes/no), `free_text` (anything else, also tables and charts).
 - `required`: true unless the template marks the field optional.
 - `constraints`: `{}` when none apply.
 

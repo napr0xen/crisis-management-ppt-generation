@@ -109,11 +109,13 @@ async def test_slots_with_the_same_intent_share_one_binding_and_citations():
     assert out["total_deposits"].evidence == out["total_inflow"].evidence
 
 
-async def test_a_failed_first_binding_is_not_reused():
+async def test_a_failed_first_binding_is_reused_without_a_call():
     a, b = _named("total_deposits", "Total Deposits"), _named("total_inflow", "Total Inflow")
-    llm = FakeLLM(json.dumps({"not_found": True}), _bind(column="Transaction amount"))
+    llm = FakeLLM(json.dumps({"feasible": False}), _bind(column="Transaction amount"))
     out = await map_fields(CTX, [a, b], [DOC], Retr([_stmt_hit()]), llm)
-    assert (out["total_deposits"].status, out["total_inflow"].status) == ("missing", "populated")
+    # a failed binding is the intent's too: the second slot makes no call (Phase 30)
+    assert (out["total_deposits"].status, out["total_inflow"].status) == ("missing", "missing")
+    assert len(llm.calls) == 1
 
 
 async def test_a_ranked_pair_binds_one_group_sum_once_per_series():

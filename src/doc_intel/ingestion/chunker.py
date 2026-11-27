@@ -64,9 +64,13 @@ def _table_texts(
     if count(full) <= max_tokens:
         return [(tuple(range(len(lines))), full)]
     if count(head) * 2 > max_tokens:
-        # shortcut: a header using over half the budget is not repeated and the table is split as
-        # plain text (rows lose their line breaks, no row ids); give such tables a per-row layout.
-        return [(None, t) for t in _split(full, max_tokens, count)]
+        # a header using over half the budget is not repeated: each row is written as
+        # `header: cell` pairs so every chunk keeps its column names. shortcut: no row ids
+        # (derived slots fail closed on such a table), upgrade if wide tables need aggregates.
+        names = [*rows[0], *(f"col{j + 1}" for j in range(len(rows[0]), max(map(len, rows))))]
+        pairs = ["; ".join(f"{n}: {c}" for n, c in zip(names, r, strict=False)) for r in rows[1:]]
+        pieces = [(None, p) for line in pairs for p in _split(line, max_tokens, count)]
+        return _pack(pieces, "\n", max_tokens, count)
 
     def with_head(t: str) -> int:
         return count(f"{head}\n{t}")

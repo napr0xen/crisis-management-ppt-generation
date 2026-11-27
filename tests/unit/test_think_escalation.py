@@ -332,3 +332,66 @@ async def test_an_escalated_list_that_still_overflows_keeps_the_first_result():
         r = await _list(llm, hit)
     assert (r.status, r.missing_reason) == ("missing", "not_found_by_llm")
     assert not llm.replies and _event(logs)["after_status"] == "missing"
+
+
+# ---- the retry says what went wrong, and an identical rejection is never retried ---------------
+
+
+def _escalated_text(llm):
+    return "\n".join(m["content"] for m in llm.calls[1][0])
+
+
+async def test_a_verification_failure_retry_names_the_rejected_value_and_code():
+    llm = FakeLLM(UNVERIFIED, ONE)
+    r = await _map(llm)
+    text = _escalated_text(llm)
+    assert "Your previous extraction '9000' was rejected because " in text
+    assert "Re-read the chunks and give a valid number for 'Customers'" in text
+    assert (r.status, r.value) == ("populated", 12000)
+    assert llm.budgets == [None, 2048]
+
+
+async def test_the_retry_names_the_rejection_code_of_a_dropped_quote():
+    wrong_chunk = _reply1(_cand("12000", (H2, Q1)))  # the quote is not in the chunk it cites
+    llm = FakeLLM(wrong_chunk, _reply1(_cand("15400", (H2, Q2))))  # narrowed to the cited chunk
+    r = await _map(llm)
+    assert "'12000' was rejected because quote_not_in_chunk" in _escalated_text(llm)
+    assert (r.status, r.value) == ("populated", 15400)
+
+
+async def test_a_candidate_dropped_without_a_code_still_gets_a_generic_note(monkeypatch):
+    from doc_intel.mapping import engine
+    from doc_intel.mapping.extractor import LLMExtraction
+
+    monkeypatch.setattr(engine, "_rejection", lambda *a: None)  # e.g. dropped by the heading check
+    extraction = LLMExtraction.model_validate_json(ONE)
+    [(value, code, _)] = engine._feedback(_field("number"), [H1], "verification_failed", extraction)
+    assert (value, code) == ("12000", "quote_not_verified")
+
+
+async def test_a_high_score_miss_retry_names_the_top_chunks_and_keeps_every_hit():
+    low = _hit("Unrelated chunk.").model_copy(update={"score": 0.1})
+    llm = FakeLLM(NOT_FOUND, ONE)
+    r = await _map(llm, [low, H2, HIGH])
+    text = _escalated_text(llm)
+    assert f"chunks {HIGH.chunk_id}, {H2.chunk_id}, {low.chunk_id} score highest" in text
+    assert "reply not_found only if the value appears nowhere" in text
+    assert str(low.chunk_id) in text  # not narrowed
+    assert (r.status, r.value) == ("populated", 12000)
+
+
+async def test_the_same_rejection_twice_in_one_run_thinks_once():
+    from doc_intel.mapping.engine import _ESCALATED
+
+    token = _ESCALATED.set(set())
+    try:
+        llm = FakeLLM(UNVERIFIED, INVALID, INVALID, UNVERIFIED)
+        with capture_logs() as logs:
+            first = await _map(llm)  # the thinking reply is invalid: the first result is kept
+            second = await _map(llm)
+    finally:
+        _ESCALATED.reset(token)
+    assert first.status == second.status == "missing"
+    assert llm.thinks == [False, True, True, False]  # the second run skips the thinking call
+    [skip] = [e for e in logs if e["event"] == "think_escalation_skipped"]
+    assert (skip["slot_id"], skip["reason"]) == ("f", "verification_failed")

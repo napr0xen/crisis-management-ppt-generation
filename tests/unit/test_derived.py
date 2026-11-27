@@ -495,3 +495,94 @@ def test_exclude_of_tagged_row_accepted():
 def test_untagged_arithmetic_total_still_summary_row():
     t = _roled([("A", "1,00", "data"), ("B", "2,00", "data"), ("Sum", "3,00", "data")])
     assert compute(t, _d(op="sum", column="Amount"), "currency") == "summary_row"
+
+
+# ---- universal ops (Phase 30) -------------------------------------------------------------------
+SPREAD = cells(("Rent", "10,00"), ("Fees", "4,50"), ("Tax", "1,00"))
+
+
+def test_avg_quantizes_to_two_places_half_even():
+    out = compute(_table(SPREAD), _d(op="avg", column="Amount"), "currency")
+    assert isinstance(out, Computed) and (out.value, str(out.number)) == ("5,17", "5.17")
+    assert [r.id for _, r, _ in out.cited] == ["P1-T1-R01", "P1-T1-R02", "P1-T1-R03"]
+    assert compute(_table(SPREAD), _d(op="avg", column="Amount"), "text") == "op_type_mismatch"
+
+
+def test_min_and_max_pick_the_extreme_value():
+    assert val(_table(SPREAD), op="min", column="Amount") == "1,00"
+    assert val(_table(SPREAD), op="max", column="Amount") == "10,00"
+
+
+def test_argmax_and_argmin_take_the_signed_extreme_rows_pick_cell():
+    t = _table(SPREAD)
+    assert val(t, "text", op="argmax", column="Amount", pick="Description") == "Rent"
+    assert val(t, "text", op="argmin", column="Amount", pick="Description") == "Tax"
+    assert val(t, op="argmax", column="Amount") == "10,00"
+    signed = _table(cells(("Out", "-90,00"), ("In", "10,00"), ("Mid", "3,00")))
+    assert val(signed, "text", op="argmax", column="Amount", pick="Description") == "In"
+    assert val(signed, "text", op="argmin", column="Amount", pick="Description") == "Out"
+
+
+def test_argmax_tie_fails_closed():
+    t = _table(cells(("A", "7,00"), ("B", "7,00"), ("C", "1,00")))
+    out = compute(t, _d(op="argmax", column="Amount", pick="Description"), "text")
+    assert out == "rank_tied"
+    assert compute(t, _d(op="argmax", column="Amount"), "table") == "op_type_mismatch"
+
+
+COUNTS = cells(("A", "1,00"), ("B", "5,00"), ("A", "7,00"), ("A", "9,50"), ("C", ""))
+
+
+def test_group_count_forms():
+    t = _table(COUNTS)
+    spec = {"op": "group_count", "column": "Amount", "group_by": "Description"}
+    assert val(t, "text", rank=1, **spec) == "A"
+    assert val(t, "number", rank=1, **spec) == "3"
+    assert val(t, "bullet_list", top_n=2, **spec) == ["A: 3", "B: 1"]
+    assert val(t, "table", top_n=2, **spec) == [["A", "3"], ["B", "1"]]
+    out = compute(t, _d(rank=1, **spec), "number")
+    assert isinstance(out, Computed) and out.number == 3 and len(out.cited) == 3
+    assert compute(t, _d(rank=3, **spec), "text") == "rank_out_of_range"  # blank C is no group
+    tied = _table(cells(("A", "1,00"), ("B", "5,00")))
+    assert compute(tied, _d(rank=1, **spec), "text") == "rank_tied"
+
+
+def test_lookup_returns_the_single_matching_rows_cell():
+    t = _table(SPREAD)
+    spec = {"op": "lookup", "column": "Amount", "where": {"Description": "Fees"}}
+    assert val(t, **spec) == "4,50"
+    assert val(t, "text", pick="Description", **spec) == "Fees"
+    out = compute(t, _d(op="lookup", column="Amount", where={"Description": "Nope"}), "currency")
+    assert out == "no_rows"
+    twice = _table(cells(("Fees", "4,50"), ("Fees", "6,00"), ("Tax", "1,00")))
+    assert compute(twice, _d(**spec), "currency") == "lookup_ambiguous"
+
+
+def test_lookup_needs_a_where_and_pick_belongs_to_four_ops():
+    with pytest.raises(ValueError):
+        _d(op="lookup", column="Amount")
+    with pytest.raises(ValueError):
+        _d(op="sum", column="Amount", pick="Description")
+    with pytest.raises(ValueError):
+        _d(op="group_count", column="Amount")
+    with pytest.raises(ValueError):
+        _d(op="count", column="Amount", filter="positive")
+
+
+def test_filter_positive_negative_and_non_null():
+    t = _table(cells(("Out", "-5,00"), ("In", "10,00"), ("Mid", "2,00"), ("Gap", "")))
+    assert val(t, op="sum", column="Amount", filter="positive") == "12,00"
+    assert val(t, op="sum", column="Amount", filter="negative") == "-5,00"
+    only = _table(cells(("In", "10,00"), ("Mid", "2,00")))
+    assert compute(only, _d(op="sum", column="Amount", filter="negative"), "currency") == "no_rows"
+    out = compute(t, _d(op="sum", column="Amount", filter="non_null"), "currency")
+    assert isinstance(out, Computed) and [r.id for _, r, _ in out.cited] == [
+        "P1-T1-R01",
+        "P1-T1-R02",
+        "P1-T1-R03",
+    ]
+
+
+def test_summary_rows_see_the_filtered_rows():
+    t = _table(cells(("A", "1,00"), ("B", "2,00"), ("Total", "3,00"), ("Neg", "-9,00")))
+    assert summary_rows(t, _d(op="sum", column="Amount", filter="positive")) == ["P1-T1-R03"]

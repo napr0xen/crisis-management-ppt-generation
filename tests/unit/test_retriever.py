@@ -102,61 +102,6 @@ async def test_search_top_n_defaults_to_eight_and_can_be_raised():
     assert len(await reranked.search(CTX, "q", top_n=12)) == 12
 
 
-async def test_with_neighbors_orders_documents_by_rank_and_chunks_by_index():
-    a, b = uuid.uuid4(), uuid.uuid4()
-    store = NeighborStore({a: 10, b: 10})
-    hits = [_hit_at(b, 5), _hit_at(a, 2), _hit_at(b, 4)]
-    got = await Retriever(FakeEmbedder(), store).with_neighbors(CTX, hits, 7)
-    assert [(h.document_id, h.chunk_index) for h in got] == [
-        (b, 3), (b, 4), (b, 5), (b, 6), (a, 1), (a, 2), (a, 3)
-    ]  # fmt: skip
-    assert store.retrieved == [
-        (CTX, [chunk_id(a, 1), chunk_id(b, 3), chunk_id(b, 6), chunk_id(a, 3)])
-    ]
-
-
-async def test_with_neighbors_previous_chunks_win_the_budget_over_next_chunks():
-    a, b = uuid.uuid4(), uuid.uuid4()
-    store = NeighborStore({a: 10, b: 10})
-    hits = [_hit_at(a, 5), _hit_at(b, 5)]
-    got = await Retriever(FakeEmbedder(), store).with_neighbors(CTX, hits, 4)
-    # the rank-2 hit's previous chunk (its heading) beats the rank-1 hit's next chunk
-    assert [(h.document_id, h.chunk_index) for h in got] == [(a, 4), (a, 5), (b, 4), (b, 5)]
-    assert (a, 6) not in [(h.document_id, h.chunk_index) for h in got]
-
-
-async def test_with_neighbors_skips_negative_index_and_present_chunks():
-    a = uuid.uuid4()
-    store = NeighborStore({a: 5})
-    hits = [_hit_at(a, 0), _hit_at(a, 1)]
-    got = await Retriever(FakeEmbedder(), store).with_neighbors(CTX, hits, 10)
-    assert [h.chunk_index for h in got] == [0, 1, 2]
-    assert store.retrieved == [(CTX, [chunk_id(a, 2)])]
-
-
-async def test_with_neighbors_calls_nothing_when_budget_is_spent_or_nothing_to_fetch():
-    a = uuid.uuid4()
-    store = NeighborStore({a: 5})
-    r = Retriever(FakeEmbedder(), store)
-    hits = [_hit_at(a, 1), _hit_at(a, 2)]
-    assert await r.with_neighbors(CTX, hits, 2) == hits
-    assert await r.with_neighbors(CTX, hits * 3, 1) == hits[:1]  # cut to budget
-    assert await r.with_neighbors(CTX, [], 5) == []
-    assert store.retrieved == []
-    legacy = _hits(2)
-    assert await r.with_neighbors(CTX, legacy, 5) == legacy  # no chunk_index: no ids
-    assert store.retrieved == []
-
-
-async def test_with_neighbors_keeps_hits_without_chunk_index_after_the_indexed_ones():
-    a = uuid.uuid4()
-    store = NeighborStore({a: 5})
-    legacy = _hits(1)[0]  # a point written before chunk_index was exposed
-    hits = [legacy, _hit_at(a, 2)]
-    got = await Retriever(FakeEmbedder(), store).with_neighbors(CTX, hits, 5)
-    assert got[-1] == legacy and [h.chunk_index for h in got[:-1]] == [1, 2, 3]
-
-
 def _text_hit(text: str) -> Hit:
     return _hits(1)[0].model_copy(update={"text": text})
 
@@ -179,14 +124,27 @@ def test_curate_stops_at_the_token_budget_but_keeps_the_first():
     assert curate([], 100, len) == ([], 0)
 
 
-def test_curate_spends_the_budget_on_scored_hits_before_context_chunks():
+def test_curate_drops_zero_score_chunks_when_any_chunk_scored():
     from doc_intel.mapping.retriever import curate
 
     neighbor = _text_hit("heading chunk above the table").model_copy(update={"score": 0.0})
     a, b = _text_hit("first scored hit alpha"), _text_hit("second scored hit beta")
     assert curate([neighbor, a, b], 20, lambda t: 10) == ([a, b], 20)
-    assert curate([neighbor, a, b], 30, lambda t: 10) == ([neighbor, a, b], 30)  # order kept
-    assert curate([neighbor], 5, lambda t: 10) == ([neighbor], 10)  # the first is always kept
+    assert curate([neighbor, a, b], 1_000, lambda t: 10) == ([a, b], 20)  # budget left over
+    # a reranker's negative score is a score, not an unscored neighbor
+    low = _text_hit("reranked below zero gamma").model_copy(update={"score": -1.5})
+    assert curate([neighbor, low], 1_000, lambda t: 10) == ([low], 10)
+
+
+def test_curate_keeps_zero_score_chunks_when_none_scored():
+    from doc_intel.mapping.retriever import curate
+
+    zeros = [
+        _text_hit(f"unscored chunk {i} delta{i}").model_copy(update={"score": 0.0})
+        for i in range(3)
+    ]
+    assert curate(zeros, 20, lambda t: 10) == (zeros[:2], 20)  # never an empty context
+    assert curate(zeros[:1], 5, lambda t: 10) == (zeros[:1], 10)  # the first is always kept
 
 
 def test_curate_pinned_opening_chunks_claim_the_budget_first():
@@ -195,6 +153,7 @@ def test_curate_pinned_opening_chunks_claim_the_budget_first():
     opening = _text_hit("cover page with the account holder").model_copy(update={"score": 0.0})
     a, b = _text_hit("first scored hit alpha"), _text_hit("second scored hit beta")
     assert curate([opening, a, b], 20, lambda t: 10, pinned=1) == ([opening, a], 20)
+    assert curate([opening, a, b], 1_000, lambda t: 10, pinned=1) == ([opening, a, b], 30)
 
 
 def test_select_context_logs_only_ids_scores_and_counts(monkeypatch):

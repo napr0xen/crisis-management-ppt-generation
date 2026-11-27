@@ -98,6 +98,22 @@ def test_oversized_header_still_fits():
     run(ParsedDocument(elements=[table(rows)]), 15)
 
 
+def test_oversized_header_table_keeps_column_value_pairs_in_every_chunk():
+    # a header too wide to repeat: each row is written as `header: cell` pairs instead, so a
+    # chunk after the first still says which column every value belongs to
+    rows = [[f"h{i}" for i in range(8)], [f"a{i}" for i in range(8)], [f"b{i}" for i in range(8)]]
+    chunks = run(ParsedDocument(elements=[table(rows)]), 12)
+    assert len(chunks) > 1
+    body = " ".join(c.text for c in chunks)
+    assert all(f"h{i}: a{i}" in body and f"h{i}: b{i}" in body for i in range(8))
+    assert all(": " in c.text and c.rows is None for c in chunks)
+    # a row wider than the header keeps its extra cells, named like the row keys (`col<j>`)
+    wide = [[f"h{i}" for i in range(8)], [*(f"a{i}" for i in range(8)), "extra9"]]
+    assert "col9: extra9" in " ".join(
+        c.text for c in run(ParsedDocument(elements=[table(wide)]), 12)
+    )
+
+
 def test_long_paragraph_split_on_sentences_then_words():
     sentences = "One two three four five. Six seven eight nine ten. Eleven twelve."
     chunks = run(ParsedDocument(elements=[text(sentences)]), 6)

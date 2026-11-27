@@ -236,5 +236,6 @@ class LLMDerivation(_Strict):
     """The binding of a derived slot (ADR-018): a table label and exact headers, never a number."""
 
     table: str = ""  # the label shown in the prompt, e.g. "t1"
-    not_found: bool = False
+    feasible: bool = True
+    reason: str = Field("", max_length=300)  # model text: never logged
     derivation: Derivation | None = None

@@ -67,7 +67,7 @@ def _hit(text, page=4, section="Impact", filename="ops.pdf"):
 class FakeRetriever:
     def __init__(self, hits=(), error=None):
         self.hits, self.error, self.calls = list(hits), error, []
-        self.top_ns, self.budgets, self.neighbors = [], [], []
+        self.top_ns = []
         self.opening_hits, self.opening_calls = [], []
 
     async def search(self, ctx, query, document_ids=None, k=20, top_n=8):
@@ -76,10 +76,6 @@ class FakeRetriever:
         if self.error:
             raise self.error
         return self.hits[:top_n]
-
-    async def with_neighbors(self, ctx, hits, budget):
-        self.budgets.append(budget)
-        return [*hits, *self.neighbors][:budget]
 
     async def opening(self, ctx, document_ids, n=2):
         self.opening_calls.append(list(document_ids))
@@ -240,8 +236,8 @@ async def test_hits_beyond_budget_are_neither_shown_nor_accepted(window):
     r = await map_field(CTX, _field("number"), DOCS, retriever, llm)
     assert str(extra.chunk_id) not in llm.calls[0][0][1]["content"]
     assert (r.status, r.missing_reason) == ("missing", "evidence_failed_verification")
-    # RETRIEVAL_CONTEXT_TOKENS (4500) // 512 = 8 leaves the 6-chunk budget, half primaries
-    assert retriever.top_ns == [3] and retriever.budgets == [6]
+    # RETRIEVAL_CONTEXT_TOKENS (4500) // 512 = 8 leaves the 6-chunk budget, all ranked hits
+    assert retriever.top_ns == [6]
 
 
 async def test_32k_window_budget_is_capped_by_the_retrieval_context_tokens(window):
@@ -249,7 +245,7 @@ async def test_32k_window_budget_is_capped_by_the_retrieval_context_tokens(windo
     retriever = FakeRetriever([_hit("text one")])
     await map_field(CTX, _field(), DOCS, retriever, FakeLLM(NOT_FOUND))
     assert hit_budget(32768, 512) == 26
-    assert (retriever.top_ns, retriever.budgets) == ([4], [8])
+    assert retriever.top_ns == [8]
     assert MAX_PRIMARY_HITS == 12
 
 
@@ -294,26 +290,6 @@ async def test_top_hit_late_in_the_document_survives_the_token_budget(window, mo
     prompt = llm.calls[0][0][1]["content"]
     assert str(chunk_id(doc, 40)) in prompt
     assert sum(str(h.chunk_id) in prompt for h in store.by_index.values()) == 7
-
-
-async def test_neighbor_chunks_are_shown_and_their_quotes_verify(window):
-    window(32768)
-    primary = _hit("The clinic opened in 2019.")
-    neighbor = _hit("The ward holds 48 beds in total.")
-    retriever = FakeRetriever([primary])
-    retriever.neighbors = [neighbor]
-    reply = json.dumps(
-        {
-            "candidates": [_cand("48", (neighbor, "The ward holds 48 beds in total."))],
-            "not_found": False,
-            "incomplete": False,
-        }
-    )
-    llm = FakeLLM(reply)
-    r = await map_field(CTX, _field("number"), DOCS, retriever, llm)
-    assert str(neighbor.chunk_id) in llm.calls[0][0][1]["content"]
-    assert (r.status, r.value) == ("populated", 48)
-    assert r.evidence[0].chunk_id == neighbor.chunk_id
 
 
 def test_field_query_includes_context_when_present():

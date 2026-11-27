@@ -7,6 +7,7 @@ import time
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Hashable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
 from typing import Any, Literal
@@ -31,6 +32,7 @@ from doc_intel.mapping.derived import (
     both_tags,
     compute,
     named,
+    numeric_headers,
     resolve_columns,
     row_line,
     summary_rows,
@@ -95,11 +97,13 @@ from doc_intel.templates.ir_builder import (
     _NET_TERMS,
     _OUT_WORDS,
     _TOTAL_WORDS,
+    SLOT_FORMAT,
     _direction,
     _opening,
     _padded,
     _ranking_slots,
     derivation_intent,
+    slot_type,
 )
 from doc_intel.templates.ir_builder import (
     _names as _slot_names,
@@ -309,15 +313,14 @@ async def _retrieve(
     retriever: Retriever,
     heading: str | None = None,
 ) -> list[Hit]:
-    # Sized before with_neighbors: it fills by rank, while curate trims its reading-order output.
-    budget = _chunk_budget()
-    top_n = min(max(1, budget // 2), MAX_PRIMARY_HITS)  # the rest: neighbors (headings)
+    # the whole chunk budget goes to ranked hits: unscored neighbor chunks are left out by curate
+    top_n = min(_chunk_budget(), MAX_PRIMARY_HITS)
     hits = await retriever.search(ctx, query, document_ids=document_ids, top_n=top_n)
     if has_letter(heading) and heading != query:  # a section lead-in rarely matches the label
         seen = {h.chunk_id for h in hits}
         lead = await retriever.search(ctx, heading or "", document_ids=document_ids, top_n=1)
         hits += [h for h in lead if h.chunk_id not in seen]
-    return select_context(await retriever.with_neighbors(ctx, hits, budget)) if hits else hits
+    return select_context(hits) if hits else hits
 
 
 Intent = tuple[str, Literal["CR", "DR"] | None]  # (op, tag), see `derivation_intent`
@@ -331,6 +334,8 @@ class _Shared:
 
     bound: dict[Hashable, tuple[Table, Derivation]] = dc_field(default_factory=dict)
     series: dict[str, tuple[IRField, Intent]] = dc_field(default_factory=dict)
+    # a refused binding per key: the other slots of the intent or series make no new call
+    failed: dict[Hashable, MissingReason] = dc_field(default_factory=dict)
 
 
 async def map_field(
@@ -455,6 +460,39 @@ def _log_rejected(slot_id: str, codes: list[str]) -> None:
     log.info("verification_rejected", slot_id=slot_id, codes=codes)  # codes only, never text
 
 
+_ESCALATED: ContextVar[set[Hashable] | None] = ContextVar("escalated", default=None)
+# the escalations one `map_fields` run made: the same rejection is never sent to the model twice
+
+
+def _feedback(
+    field: IRField, hits: list[Hit], reason: str, extraction: LLMExtraction[Any] | None
+) -> list[tuple[Value, str, str]]:
+    """(value, code, note) for each candidate of a failed first reply. A candidate dropped
+    with no `_rejection` code (heading check, quote not found) is a generic `quote_not_verified`."""
+    if reason != "verification_failed" or extraction is None:
+        return []
+    out = []
+    for c in extraction.candidates:
+        code, note = _rejection(field, hits, c.value, _evidence(hits, c.quotes)) or (
+            "quote_not_verified",
+            "it was not accepted for this slot: its quote did not verify or it belongs under "
+            "another heading",
+        )
+        out.append((c.value, code, note))
+    return out
+
+
+def _feedback_notes(field: IRField, notes: list[tuple[Value, str, str]]) -> list[str]:
+    kind = getattr(field, "slot_type", None) or field.expected_type
+    return [
+        f"Your previous extraction {str(v)[:40]!r} was rejected because {code}: {note}."
+        for v, code, note in notes
+    ] + [
+        f"Re-read the chunks and give a valid {kind} for {field.label!r} with quotes copied "
+        "exactly from the chunk they cite."
+    ]
+
+
 async def _escalated(
     llm: LLMClient,
     field: IRField,
@@ -466,10 +504,13 @@ async def _escalated(
 ) -> FieldMappingResult:
     """At most one more extraction, thinking on, for a conflict, a verification failure or a
     high-score miss. A verification failure of `extraction` (the first reply) logs its reason
-    codes and retries with that reply and one note per rejected candidate, over the cited chunks
-    and their neighbors. Verified like the first pass, a list re-checked against its length
-    limits; a `missing` reply, a list that still overflows or an LLM error keeps the first result,
-    so a verified conflict is never dropped and nothing loops. Groups: `_escalated_group`."""
+    codes and retries with that reply, each rejected value with its code and a closing note naming
+    the slot type (`_feedback_notes`), over the cited chunks and their neighbors when a candidate
+    has a code; a high-score miss retries naming the three best-scored chunks. One `map_fields`
+    run never repeats an escalation of the same slot, reason and rejections (`_ESCALATED`).
+    Verified like the first pass, a list re-checked against its length limits; a `missing`
+    reply, a list that still overflows or an LLM error keeps the first result, so a verified
+    conflict is never dropped and nothing loops. Groups: `_escalated_group`."""
     s = get_settings()
     failed = first.missing_reason == "evidence_failed_verification"
     rejected = _rejections(field, hits, extraction) if failed and extraction else []
@@ -479,10 +520,26 @@ async def _escalated(
         return first
     start, after, error = time.monotonic(), first, None
     lists = field.expected_type in _LISTS
-    retry = None
+    notes = _feedback(field, hits, reason, extraction)
+    key = (field.field_id, reason, frozenset((c, normalize(str(v))) for v, c, _ in notes))
+    if (memo := _ESCALATED.get()) is not None:
+        if key in memo:  # the same rejection again: another thinking call would answer the same
+            log.info("think_escalation_skipped", slot_id=field.field_id, reason=reason)
+            return first
+        memo.add(key)
+    retry = (extraction, _feedback_notes(field, notes)) if extraction and notes else None
     if rejected and extraction:
         hits = _near_cited(hits, extraction)
-        retry = (extraction, [f"{code}: {note}" for code, note in rejected])
+    if reason == "high_score_miss" and extraction:
+        top = ", ".join(str(h.chunk_id) for h in sorted(hits, key=lambda h: -h.score)[:3])
+        retry = (
+            extraction,
+            [
+                f"Your previous reply found no value, although chunks {top} score highest for "
+                "this slot: inspect every line of them, including table rows and footers, and "
+                "reply not_found only if the value appears nowhere in the provided chunks."
+            ],
+        )
     try:
         budget = s.think_escalation_max_tokens
         extraction = await extract(llm, field, hits, retry=retry, think_budget=budget)
@@ -641,9 +698,17 @@ async def _bound(
         return "llm_error"
     labels = {f"t{i}": t for i, t in enumerate(found[:MAX_BIND_TABLES], 1)}
     table = labels.get(bind.table.strip().lower())
-    if bind.not_found or table is None or bind.derivation is None:
-        return "not_found_by_llm"
+    if not bind.feasible or table is None or bind.derivation is None:
+        return "not_found_by_llm"  # `bind.reason` is model text: never logged
     spec = _with_intent(field, bind.derivation, table, intent)
+    if spec == "column_ambiguous" and retry is None:  # one correction, naming the usable columns
+        heads = json.dumps(numeric_headers(table), ensure_ascii=False)
+        note = (
+            f"column_ambiguous: {bind.derivation.column!r} is not one usable numeric column of "
+            f"{bind.table.strip().lower()}; set column to exactly one of {heads}, or reply "
+            "feasible false with a reason."
+        )
+        return await _bound(llm, field, found, (bind, [note]), intent)
     if spec == "group_ambiguous":  # no column holds the group: the LLM sorts the rows
         sorted_rows = await _categorized(llm, field, table)
         if isinstance(sorted_rows, str):
@@ -718,12 +783,17 @@ def _with_intent(
         # breakdown), upgrade when a template asks for an untagged income breakdown.
         tag = "DR"
     spec = bound.model_dump() | {"op": op, "tag": tag, "rank": None}
-    for name, only in (("minus", "diff"), ("group_by", "group_sum"), ("pick", "top")):
-        spec[name] = spec[name] if op == only else None
-    if op != "group_sum":
+    picking = ("top", "argmax", "argmin", "lookup")
+    for name, only in (
+        ("minus", ("diff",)),
+        ("group_by", ("group_sum", "group_count")),
+        ("pick", picking),
+    ):
+        spec[name] = spec[name] if op in only else None
+    if op not in ("group_sum", "group_count"):
         spec["group_sep"] = None
     numeric = field.expected_type in ("number", "currency", "percent")
-    if op == "top" and not numeric and spec["pick"] in (None, bound.column):
+    if op in ("top", "argmax", "argmin") and not numeric and spec["pick"] in (None, bound.column):
         return "intent_mismatch"  # a text slot would take the amount cell
     try:
         return Derivation.model_validate(spec)
@@ -805,9 +875,13 @@ async def _derived(
     elif memo:
         table, spec = memo
         out = run(table, spec)
+    elif shared and key is not None and key in shared.failed:
+        return _missing(field, shared.failed[key], docs)  # no new call for a refused binding
     else:
         bound = await _bound(llm, lead, found, intent=intent)
         if isinstance(bound, str):
+            if shared and key is not None:
+                shared.failed.setdefault(key, bound)
             return _missing(field, bound, docs)
         table, spec, bind = bound
         out = run(table, spec)
@@ -1176,6 +1250,29 @@ def _drop_running_balance(
     return [c for c, k in zip(found, sorts, strict=True) if k != "running"]
 
 
+_BARE_NUMBER = re.compile(r"[\d\s.,]*\d[\d\s.,]*")
+_YEAR = re.compile(r"\d{4}")
+
+
+def _slot_mismatch(field: IRField, value: Any) -> str | None:
+    """The constraint line when a date_period slot got an amount or bare number (a valid date, or
+    a bare year, is a period) or an entity_name slot an amount. Other slot types have no
+    universal check (the numeric ones are checked by expected_type)."""
+    # shortcut: a bare 4-digit number reads as a year, upgrade by checking the source's context.
+    # shortcut: boolean has no universal check, upgrade by checking the source's yes/no words.
+    kind = slot_type(field)
+    if kind not in ("date_period", "entity_name") or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if kind == "date_period" and (_YEAR.fullmatch(text) or _convert(text, "date")):
+        return None
+    bare = "".join(c for c in text if unicodedata.category(c) != "Sc").strip()
+    # a name may be all digits (an id, an account number), so it rejects only an amount
+    if is_amount(text) or (kind == "date_period" and _BARE_NUMBER.fullmatch(bare)):
+        return SLOT_FORMAT[kind]
+    return None
+
+
 def _rejection(
     field: IRField, hits: list[Hit], value: Any, evidence: list[Evidence]
 ) -> tuple[str, str] | None:
@@ -1189,6 +1286,8 @@ def _rejection(
             f"no quote given for {shown} is copied verbatim from the chunk it cites; copy the "
             "exact characters of that chunk."
         )
+    if line := _slot_mismatch(field, value):
+        return "slot_type_mismatch", f"{shown} does not fit this slot. {line}"
     if _amount_in_text(field.expected_type, field.context or field.label, str(value)):
         return _AMOUNT_CODE, _amount_note(field.context or field.label)
     if note := _rule_note(field, value, evidence, hits):
@@ -2036,6 +2135,9 @@ def _batch_tokens() -> int:
     return min(s.retrieval_context_tokens, prompt_tokens(s.llm_num_ctx) - PROMPT_OVERHEAD_TOKENS)
 
 
+BATCH_FIELD_HITS = 4  # ranked hits per slot of a batch (the 2 neighbor chunks each had before)
+
+
 async def _retrieve_batch(
     ctx: TenantContext,
     fields: list[IRField],
@@ -2044,12 +2146,12 @@ async def _retrieve_batch(
     opening: bool,
 ) -> list[Hit]:
     """One context for a unit's slots: each slot's own top hits and each distinct heading's top
-    hit, merged by rank, widened with neighbors, then cut by tokens. A source's opening chunks
-    (title, author, date) come first on the opening unit."""
+    hit, merged by rank, then cut by tokens. A source's opening chunks (title, author, date) come
+    first on the opening unit. No unscored neighbor chunks: `curate` would drop them."""
     headings = list(
         dict.fromkeys(h for f in fields if has_letter(h := bounded_field(f).context) and h)
     )
-    searches = [(field_query(f), 2) for f in fields] + [(h, 1) for h in headings]
+    searches = [(field_query(f), BATCH_FIELD_HITS) for f in fields] + [(h, 1) for h in headings]
     ranked = await asyncio.gather(
         *(retriever.search(ctx, q, document_ids=document_ids, top_n=n) for q, n in searches)
     )
@@ -2063,9 +2165,8 @@ async def _retrieve_batch(
     first = await retriever.opening(ctx, document_ids) if opening else []
     if not merged:
         return select_context(first, _batch_tokens()) if first else []
-    wide = await retriever.with_neighbors(ctx, merged, 2 * _chunk_budget())
     lead = {h.chunk_id for h in first}
-    context = [*first, *(h for h in wide if h.chunk_id not in lead)]
+    context = [*first, *(h for h in merged if h.chunk_id not in lead)]
     return select_context(context, _batch_tokens(), pinned=len(first))
 
 
@@ -2153,6 +2254,22 @@ async def map_batch(
 
 
 async def map_fields(
+    ctx: TenantContext,
+    fields: list[IRField],
+    document_ids: list[uuid.UUID],
+    retriever: Retriever,
+    llm: LLMClient,
+    on_field: Callable[[int, str], Awaitable[None]] | None = None,
+) -> dict[str, FieldMappingResult]:
+    """`_map_fields` with a fresh `_ESCALATED` memo for the run."""
+    token = _ESCALATED.set(set())
+    try:
+        return await _map_fields(ctx, fields, document_ids, retriever, llm, on_field)
+    finally:
+        _ESCALATED.reset(token)
+
+
+async def _map_fields(
     ctx: TenantContext,
     fields: list[IRField],
     document_ids: list[uuid.UUID],

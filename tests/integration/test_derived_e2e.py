@@ -58,7 +58,7 @@ def field(fid, expected_type="currency") -> IRField:
 
 
 def bind(**kw) -> str:
-    return json.dumps({"table": "t1", "not_found": False, "derivation": kw})
+    return json.dumps({"table": "t1", "feasible": True, "derivation": kw})
 
 
 async def ingest(vector_store, headers, rows):
@@ -143,9 +143,11 @@ async def test_cr_dr_tagged_single_column(vector_store):
 
 async def test_unknown_column_fails_closed(vector_store):
     ctx, doc, _, retriever = await ingest(vector_store, HEADERS, EU_ROWS)
-    llm = FakeLLM(bind(op="sum", column="Money Sideways"))
+    wrong = bind(op="sum", column="Money Sideways")
+    llm = FakeLLM(wrong, wrong)  # the first refusal gets one corrective re-binding
     r = (await map_fields(ctx, [field("total")], [doc], retriever, llm))["total"]
     assert (r.status, r.value, r.evidence) == ("missing", None, [])
+    assert len(llm.calls) == 2
 
 
 async def test_printed_total_row_is_excluded_after_one_rebinding(vector_store):

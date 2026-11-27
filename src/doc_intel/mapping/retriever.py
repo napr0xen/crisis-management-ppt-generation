@@ -44,8 +44,9 @@ def curate(
 ) -> tuple[list[Hit], int]:
     """`hits` in their order minus near-duplicates, within `budget_tokens` of formatted chunks, and
     the kept chunks' token total. The first `pinned` hits (a source's opening chunks) claim the
-    budget first, then scored hits in order, then the 0.0-score neighbors fill what is left; each
-    pass stops at the first chunk that does not fit, and the first claimed chunk is always kept."""
+    budget first, then scored hits in order; 0.0-score chunks (unscored neighbors) are left out,
+    unless no hit has a score, so the context is never empty. Each pass stops at the first chunk
+    that does not fit, and the first claimed chunk is always kept."""
     unique: list[tuple[int, Hit]] = []
     seen: list[set[str]] = []
     for i, h in enumerate(hits):
@@ -56,9 +57,10 @@ def curate(
         seen.append(words)
     keep: set[int] = set()
     used = 0
-    for tier in range(3):
+    scored = any(h.score != 0.0 for i, h in unique if i >= pinned)
+    for tier in range(2):
         for i, h in unique:
-            if (0 if i < pinned else 1 if h.score > 0 else 2) != tier:
+            if (0 if i < pinned else 1 if h.score != 0.0 or not scored else 2) != tier:
                 continue
             tokens = count(format_hit(h))
             if keep and used + tokens > budget_tokens:
@@ -114,39 +116,6 @@ class Retriever:
     async def table_chunks(self, ctx: TenantContext, document_ids: list[UUID]) -> list[Hit]:
         """Every table chunk of the documents (derived slots read whole tables, not top-k)."""
         return await self._store.table_chunks(ctx, document_ids)
-
-    async def with_neighbors(self, ctx: TenantContext, hits: list[Hit], budget: int) -> list[Hit]:
-        """`hits` plus the chunks next to them in their document, `budget` chunks at most, in
-        reading order (documents by best hit, chunks by index). Every hit's previous chunk (where
-        its heading usually is) comes before any next chunk, each pass in rank order."""
-        hits = hits[:budget]
-        have = {h.chunk_id for h in hits}
-        wanted: list[UUID] = []
-        for step in (-1, 1):
-            for h in hits:
-                if h.chunk_index is None:
-                    continue
-                i = h.chunk_index + step
-                cid = chunk_id(h.document_id, i)
-                if i >= 0 and cid not in have and len(hits) + len(wanted) < budget:
-                    have.add(cid)
-                    wanted.append(cid)
-        found = await self._store.retrieve(ctx, wanted) if wanted else []
-        rank: dict[UUID, int] = {}
-        for h in hits:
-            rank.setdefault(h.document_id, len(rank))
-        order = {h.chunk_id: n for n, h in enumerate(hits)}
-        # a point without chunk_index (written before the payload carried it) has no neighbors
-        # and goes last, in rank order
-        return sorted(
-            [*hits, *found],
-            key=lambda h: (
-                h.chunk_index is None,
-                rank.get(h.document_id, len(rank)),
-                h.chunk_index or 0,
-                order.get(h.chunk_id, 0),
-            ),
-        )
 
     async def opening(self, ctx: TenantContext, document_ids: list[UUID], n: int = 2) -> list[Hit]:
         """The first `n` chunks of each document (title, author, date usually sit there), documents

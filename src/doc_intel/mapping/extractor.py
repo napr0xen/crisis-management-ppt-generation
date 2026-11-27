@@ -28,6 +28,7 @@ from doc_intel.mapping.schemas import (
 )
 from doc_intel.mapping.verifier import normalize
 from doc_intel.templates.anchors import has_letter
+from doc_intel.templates.ir_builder import SLOT_FORMAT, slot_type
 from doc_intel.templates.schemas import IRField
 
 # Context budget: a chunk is <= CHUNK_MAX_TOKENS (512) tokens, and the system prompt, field spec
@@ -44,6 +45,7 @@ _SPEC_FIELDS = {
     "description",
     "section_path",
     "expected_type",
+    "slot_type",
     "mode",
     "constraints",
     "context",
@@ -93,6 +95,18 @@ def bounded_field(field: IRField) -> IRField:
     )
 
 
+def _spec(field: IRField) -> str:
+    """The field spec JSON for a prompt: `slot_type` derived for an IR stored without it, plus its
+    one-line format constraint."""
+    kind = slot_type(field)
+    line = SLOT_FORMAT.get(kind or "")  # free_text and table/chart have none: nothing is sent
+    bounded = bounded_field(field).model_copy(update={"slot_type": kind if line else None})
+    spec = json.loads(bounded.model_dump_json(include=_SPEC_FIELDS, exclude_none=True))
+    if line:
+        spec["format"] = line
+    return json.dumps(spec, ensure_ascii=False, separators=(",", ":"))  # pydantic's compact form
+
+
 async def extract(
     llm: LLMClient,
     field: IRField,
@@ -103,7 +117,7 @@ async def extract(
     """One schema-constrained call; `hits` must be the hits later used for verification. `retry`
     is an earlier reply and why its values break the slot's rules, for one corrective call.
     `think_budget` makes it an escalated call: thinking on, up to that many reasoning tokens."""
-    spec = bounded_field(field).model_dump_json(include=_SPEC_FIELDS, exclude_none=True)
+    spec = _spec(field)
     sources = "\n\n".join(format_hit(h) for h in hits)
     messages = [
         {"role": "system", "content": load_prompt("field_extract")},
@@ -234,6 +248,8 @@ def _slot_spec(field: IRField) -> dict[str, Any]:
         "description": field.description,
         "expected_type": field.expected_type,
     }
+    if line := SLOT_FORMAT.get(slot_type(field) or ""):
+        spec["slot_type"], spec["format"] = slot_type(field), line
     token = field.constraints.token if field.write_mode == "replace_token" else None
     if token and (inner := token.strip("{}[]<> ")):
         spec["placeholder"] = inner
