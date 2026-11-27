@@ -1041,3 +1041,74 @@ async def test_typed_roles_not_asked_for_the_same_label():
     same_label = _typed("net2", "Closing Balance", "pptx:s1:sp20", "currency")
     _, llm = await _typed_run([CLOSING, same_label], CASH_HIT, CASH)
     assert len(llm.calls) == 1  # the batch only: no role check
+
+
+async def test_typed_roles_filler_words_do_not_make_two_labels_two_roles():
+    total = _typed("td", "Total Deposits", "pptx:s3:sp1", "currency", slide=3)
+    value = _typed("tdv", "Total deposits value", "pptx:s1:sp1", "currency", slide=1)
+    out, llm = await _typed_run([total, value], CASH_HIT, CASH1, _lone("$ 402.031,45"))
+    assert len(llm.calls) == 2  # two batches, no role check
+    assert {r.status for r in out.values()} == {"populated"}
+
+
+async def test_a_derived_slot_sharing_a_number_is_not_role_checked_or_demoted():
+    from doc_intel.mapping.engine import _check_slot_roles
+    from doc_intel.mapping.schemas import Evidence, FieldMappingResult
+
+    ev = Evidence(
+        document_id=DOCS[0],
+        chunk_id=uuid.uuid4(),
+        filename="s.csv",
+        page_number=None,
+        section_heading=None,
+        quote="402.031,45 $ at period end",
+    )
+
+    def res(fid):
+        return FieldMappingResult(
+            field_id=fid,
+            status="populated",
+            value=402031.45,
+            evidence=[ev],
+            confidence=0.9,
+            missing_reason=None,
+            checked_documents=DOCS,
+            conflict_details=None,
+            provenance="rag",
+        )
+
+    total = _typed("td", "Total Deposits", "pptx:s3:sp1", "currency", slide=3)
+    derived = total.model_copy(update={"mode": "derived"})
+    results = {"td": res("td"), "closing": res("closing")}
+    llm = FakeLLM()  # a role call would pop from no replies
+    rejected = await _check_slot_roles(llm, [derived, CLOSING], results, {})
+    assert rejected == {} and llm.calls == []
+    assert {r.status for r in results.values()} == {"populated"}
+
+
+def test_group_query_adds_a_direction_hint_for_paired_grids():
+    from doc_intel.mapping.engine import _group_query
+
+    def grid(heading):
+        return [
+            [
+                _slot_field(f"{k.lower()}_{n}", f"{k} {n}", f"pptx:s6:sp{n}").model_copy(
+                    update={"section_path": ["Slide 6", heading], "context": None}
+                )
+                for k in ("Amount", "Date")
+            ]
+            for n in (1, 2)
+        ]
+
+    rec, pay = _group_query(grid("LARGEST RECEIPTS")), _group_query(grid("LARGEST PAYMENTS"))
+    assert rec != pay
+    assert "CR" in rec and "DR" not in rec and "DR" in pay and "CR" not in pay
+    assert "DR" not in _group_query(grid("RISKS")) and "CR" not in _group_query(grid("RISKS"))
+
+
+def test_role_key_drops_filler_only_at_the_end_and_keeps_numbers():
+    from doc_intel.mapping.engine import _role_key
+
+    assert _role_key("Total deposits value") == _role_key("Total Deposits")
+    assert _role_key("Value date") != _role_key("Date")
+    assert _role_key("Payment 1") != _role_key("Payment 2")

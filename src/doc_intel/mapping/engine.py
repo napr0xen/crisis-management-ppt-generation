@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
 
 import structlog
+from pydantic import ValidationError
 
 from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
@@ -30,6 +31,7 @@ from doc_intel.mapping.derived import (
     row_line,
     summary_rows,
     tables,
+    tagged_column,
 )
 from doc_intel.mapping.extractor import (
     MAX_CHART_POINTS,
@@ -81,7 +83,7 @@ from doc_intel.mapping.verifier import (
     verify_quote,
 )
 from doc_intel.templates.anchors import find_tokens, has_letter
-from doc_intel.templates.ir_builder import _ranking_slots
+from doc_intel.templates.ir_builder import _direction, _ranking_slots, derivation_intent
 from doc_intel.templates.schemas import SLOT_NUMBER, Constraints, Derivation, IRField
 
 log = structlog.get_logger()
@@ -553,7 +555,8 @@ async def _bound(
     binding is a reason, never a guess. `retry` is an earlier binding and why it was refused (the
     house retry shape of `extract`)."""
     spec = bounded_field(field).model_dump_json(
-        include={"label", "description", "expected_type"}, exclude_none=True
+        include={"label", "description", "expected_type", "section_path", "context"},
+        exclude_none=True,
     )
     views = "\n\n".join(_bind_view(f"t{i}", t) for i, t in enumerate(found[:MAX_BIND_TABLES], 1))
     messages = [
@@ -579,7 +582,37 @@ async def _bound(
     table = labels.get(bind.table.strip().lower())
     if bind.not_found or table is None or bind.derivation is None:
         return "not_found_by_llm"
-    return table, bind.derivation, bind
+    spec = _with_intent(field, bind.derivation, table)
+    return (table, spec, bind) if spec else "evidence_failed_verification"
+
+
+def _with_intent(field: IRField, bound: Derivation, table: Table) -> Derivation | None:
+    """The binding with the op and tag the slot's names fix (`derivation_intent`): the binder
+    keeps the columns, never what the slot means. A tag needs a CR/DR-tagged column (separate
+    money in / money out columns have none). None when the result is no valid derivation."""
+    intent = derivation_intent(field)
+    if intent is None:
+        return bound
+    op, tag = intent
+    tag = tag or (bound.tag if op != "diff" else None)  # no stated direction: the binder's tag
+    if tag and not tagged_column(table, bound.column):
+        # no CR/DR cells: only a filter or a column named for the direction keeps the tag's
+        # meaning, else the sum would mix both directions
+        if not (bound.where or _direction((bound.column,)) == tag):
+            return None
+        tag = None
+    spec = bound.model_dump() | {"op": op, "tag": tag, "rank": None}
+    for name, only in (("minus", "diff"), ("group_by", "group_sum"), ("pick", "top")):
+        spec[name] = spec[name] if op == only else None
+    if op != "group_sum":
+        spec["group_sep"] = None
+    numeric = field.expected_type in ("number", "currency", "percent")
+    if op == "top" and not numeric and spec["pick"] in (None, bound.column):
+        return None  # a text slot would take the amount cell
+    try:
+        return Derivation.model_validate(spec)
+    except ValidationError:
+        return None
 
 
 def _row_evidence(table: Table, cited: tuple[Any, ...]) -> list[Evidence] | None:
@@ -1095,6 +1128,12 @@ def _group_heading(group: list[list[IRField]]) -> str | None:
     return bounded_field(first).context if first.context and shared else None
 
 
+_DIRECTION_HINT = {
+    "CR": "CR incoming credits deposits receipts",
+    "DR": "DR outgoing debits withdrawals payments",
+}
+
+
 def _group_query(group: list[list[IRField]]) -> str:
     first = group[0][0]
     if first.expected_type in _ROW_TYPES:
@@ -1104,6 +1143,9 @@ def _group_query(group: list[list[IRField]]) -> str:
     names = [_TRAILING_NUMBER.sub("", label) or label for label in labels]
     joined = " ".join(dict.fromkeys(names))
     query = f"{joined[:_MAX_QUERY_LABELS]} ({' > '.join(bounded_field(first).section_path)})"
+    names = tuple(n for f in _flat(group) for n in (*f.section_path, f.field_id, f.context or ""))
+    if hint := _DIRECTION_HINT.get(_direction((*labels, *names)) or ""):
+        query += f" {hint}"  # paired grids (receipts / payments) on one slide must not collide
     heading = _group_heading(group)
     return f"{heading}: {query}" if heading else query
 
@@ -1683,6 +1725,15 @@ def _chart_result(
     )
 
 
+_ROLE_FILLER = re.compile(r"(\s+(value|amount|valor|importe|monto))+$")
+
+
+def _role_key(label: str) -> str:
+    """The label without trailing filler words: "Total deposits value" and "Total Deposits"
+    name one role, "Value date" and "Date" two."""
+    return _ROLE_FILLER.sub("", normalize(label)) or normalize(label)
+
+
 async def _check_slot_roles(
     llm: LLMClient,
     fields: list[IRField],
@@ -1725,7 +1776,7 @@ async def _check_slot_roles(
     demoted: dict[str, MissingReason] = {}
     rejected: dict[str, tuple[FieldMappingResult, str]] = {}
     for group in boxes.values():
-        if len(group) < 2 or len({normalize(f.label) for f in group}) < 2:
+        if len(group) < 2 or len({_role_key(f.label) for f in group}) < 2:
             continue
         if only is not None and not any(f.field_id in only for f in group):
             continue

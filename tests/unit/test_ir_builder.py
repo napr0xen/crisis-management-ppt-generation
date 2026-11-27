@@ -32,7 +32,7 @@ from doc_intel.templates.schemas import (
 from tests.fakes import FakeLLM
 
 
-def _anchor(anchor_id, kind="paragraph", tokens=(), table=None, text="x"):
+def _anchor(anchor_id, kind="paragraph", tokens=(), table=None, text="x", context=None):
     return Anchor(
         anchor_id=anchor_id,
         kind=kind,
@@ -41,6 +41,7 @@ def _anchor(anchor_id, kind="paragraph", tokens=(), table=None, text="x"):
         tokens=list(tokens),
         is_placeholder=False,
         table=table,
+        context=context,
     )
 
 
@@ -1112,7 +1113,7 @@ def test_derived_mode_and_hidden_derivation():
     from doc_intel.templates.ir_builder import LLMIRField
     from doc_intel.templates.schemas import IRField
 
-    assert _version() == 6
+    assert _version() == 7
     assert "derived" in LLMIRField.model_json_schema()["properties"]["mode"]["enum"]
     assert "derivation" not in IRField.model_json_schema()["properties"]
     assert "derivation" not in LLMIRField.model_json_schema()["properties"]
@@ -1198,3 +1199,117 @@ async def test_ranking_rule_needs_a_numeric_slot_in_the_numbered_grid():
         "payment_payee_1",
         "payment_amount_1",
     }
+
+
+async def _modes(*spec):
+    """spec: (field_id, label, type, context, section_path heading) -> {field_id: mode}"""
+    anchors = [_anchor(s[0], tokens=["{{t}}"], context=s[3]) for s in spec]
+    fields = [
+        _typed_field(i, label, t).model_copy(update={"anchor_id": i, "section_path": ["S", h]})
+        for i, label, t, _, h in spec
+    ]
+    ir = await build_ir(FakeLLM(_reply(*fields)), AnchorMap(format="pptx", anchors=anchors), TID)
+    return {f.field_id: f.mode for f in ir.fields}
+
+
+async def test_directional_totals_and_largest_singletons_are_forced_to_derived():
+    got = await _modes(
+        ("tdv", "Total deposits value", "currency", "TOTAL MONEY IN", "Slide 1"),
+        ("twv", "Total withdrawals value", "currency", "TOTAL MONEY OUT", "Slide 1"),
+        ("td", "Total Deposits", "currency", "TOTAL DEPOSITS", "Slide 3"),
+        ("tw", "Total Withdrawals", "currency", "TOTAL WITHDRAWALS", "Slide 4"),
+        ("lca", "Largest Credit Amount", "currency", "LARGEST CREDIT", "Slide 3"),
+        ("lda", "Largest Debit Amount", "currency", "LARGEST DEBIT", "Slide 4"),
+        ("nm", "Net Cash Movement Value", "currency", "NET MOVEMENT", "Slide 2"),
+        ("ctx_net", "Value", "currency", "Net movement", "Slide 2"),
+        ("emp", "Total employees", "number", "HEADCOUNT", "Slide 7"),
+        ("notes", "Notes", "text", "TOTAL DEPOSITS", "Slide 3"),
+        ("close", "Closing Balance Value", "currency", "CLOSING", "Slide 2"),
+    )
+    assert {k for k, v in got.items() if v == "derived"} == {
+        "tdv",
+        "twv",
+        "td",
+        "tw",
+        "lca",
+        "lda",
+        "nm",
+        "ctx_net",
+    }
+
+
+async def test_a_category_grid_with_text_typed_amounts_is_retyped_and_derived():
+    spec = [
+        (f"category_{i}{s}", f"Category {i}{lbl}", "text", "CATEGORY BREAKDOWN", "Slide 5")
+        for i in (1, 2)
+        for s, lbl in (("", ""), ("_amount", " Amount"))
+    ]
+    amap = AnchorMap(format="pptx", anchors=[_anchor(s[0], tokens=["{{t}}"]) for s in spec])
+    fields = [
+        _typed_field(i, label, t).model_copy(
+            update={"anchor_id": i, "context": c, "section_path": ["S", h]}
+        )
+        for i, label, t, c, h in spec
+    ]
+    ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
+    got = {f.field_id: (f.mode, f.expected_type) for f in ir.fields}
+    assert got == {
+        "category_1": ("derived", "text"),
+        "category_1_amount": ("derived", "currency"),
+        "category_2": ("derived", "text"),
+        "category_2_amount": ("derived", "currency"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("fid", "label", "ctx", "path", "want"),
+    [
+        ("t", "Total deposits value", "TOTAL MONEY IN", [], ("sum", "CR")),
+        ("t", "Total", "TOTAL MONEY OUT", [], ("sum", "DR")),
+        ("t", "Total Retiros", "", [], ("sum", "DR")),
+        ("t", "Net Cash Movement", "NET MOVEMENT", [], ("diff", None)),
+        ("largest_credit_amount", "Largest Credit Amount", "", [], ("top", "CR")),
+        ("largest_debit_amount", "Largest Debit Amount", "", [], ("top", "DR")),
+        ("payment_amount_1", "Amount", "Amount", ["S", "LARGEST PAYMENTS"], ("top", "DR")),
+        ("receipt_date_2", "Date", "Date", ["S", "LARGEST RECEIPTS"], ("top", "CR")),
+        ("category_1", "Category 1", "", ["S", "CATEGORY BREAKDOWN"], ("group_sum", None)),
+        ("category_1_amount", "Amount", "", ["S", "SPENDING BY CATEGORY"], ("group_sum", "DR")),
+        ("t", "Total employees", "", [], None),
+        ("t", "Total deposits and withdrawals", "", [], None),
+        ("t", "Closing balance", "", [], None),
+        ("t", "Value", "NET MOVEMENT", [], ("diff", None)),
+        ("t", "Total", "TOTAL MONEY OUT", [], ("sum", "DR")),
+        ("t", "Opening balance", "NET CASH FLOW", [], None),  # context only for a bare label
+        ("t", "Count", "TOTAL DEPOSITS", [], None),
+        ("total_number_of_deposits", "Total number of deposits", "", [], None),
+        ("t", "Total Credit Limit", "", [], None),
+        ("t", "Total payment due", "", [], None),
+        ("t", "Total", "INCOME STATEMENT", [], None),
+        ("t", "Total cargo", "", [], None),
+        ("t", "Total cargos", "", [], ("sum", "DR")),
+        (
+            "merchant_amount_1",
+            "Amount",
+            "",
+            ["Credit card statement", "Top merchants"],
+            ("top", None),
+        ),
+        ("total_deposits_2", "Total Deposits", "", [], ("sum", "CR")),
+    ],
+)
+def test_derivation_intent(fid, label, ctx, path, want):
+    from doc_intel.templates.ir_builder import derivation_intent
+
+    f = _typed_field(fid, label).model_copy(update={"context": ctx, "section_path": path})
+    assert derivation_intent(f) == want
+
+
+async def test_a_value_n_text_grid_under_a_top_heading_is_not_retyped():
+    spec = [(f"value_{i}", f"Value {i}", "text", "", "OUR TOP VALUES") for i in (1, 2)]
+    amap = AnchorMap(format="pptx", anchors=[_anchor(s[0], tokens=["{{t}}"]) for s in spec])
+    fields = [
+        _typed_field(i, label, t).model_copy(update={"anchor_id": i, "section_path": ["S", h]})
+        for i, label, t, _, h in spec
+    ]
+    ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
+    assert {(f.expected_type, f.mode) for f in ir.fields} == {("text", "extractive")}

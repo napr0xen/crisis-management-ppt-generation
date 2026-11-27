@@ -3,6 +3,8 @@
 import json
 import uuid
 
+import pytest
+
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.ingestion.schemas import TableRow
@@ -381,3 +383,81 @@ async def test_numbered_copies_of_other_derived_fields_are_not_ranked():
     out = await map_fields(CTX, [*sums, table], [DOC], Retr([_stmt_hit()]), FakeLLM())
     assert all(r.status == "populated" for r in out.values())
     assert out["total_money_in_value_2"].value == 51015.15
+
+
+# ---- the slot's names fix op and tag, the binder only picks table and columns -------------------
+def _named(fid, label, context="", path=("Slide 1",), expected_type="currency"):
+    return _field(None, fid, expected_type).model_copy(
+        update={"label": label, "context": context or None, "section_path": list(path)}
+    )
+
+
+def _amount(**kw):
+    return _bind(column="Transaction amount", **kw)
+
+
+async def _intent(field, reply, rank=None):
+    llm = FakeLLM(reply)
+    out = await map_field(CTX, field, [DOC], Retr([_stmt_hit()]), llm, rank=rank)
+    return out.value
+
+
+async def test_intent_overrides_a_wrong_op_or_tag_from_the_binder():
+    cr, dr = 51015.15, 4383.51
+    dep = _named("total_deposits", "Total Deposits", "TOTAL DEPOSITS")
+    wd = _named("total_withdrawals", "Total Withdrawals", "TOTAL WITHDRAWALS")
+    net = _named("net_cash_movement", "Net Cash Movement", "NET MOVEMENT")
+    assert await _intent(dep, _amount(tag="DR")) == cr
+    assert await _intent(dep, _amount()) == cr
+    assert await _intent(wd, _amount(tag="CR")) == dr
+    assert await _intent(wd, _amount(op="max")) == dr
+    assert await _intent(net, _amount(tag="CR")) == pytest.approx(cr - dr)
+    assert await _intent(net, _amount(op="sum", tag="DR")) == pytest.approx(cr - dr)
+
+
+async def test_intent_group_sum_and_largest_singletons():
+    cat = _named("category_1", "Category 1", "", ("S", "SPENDING BY CATEGORY"), "text")
+    cat_bind = _amount(op="group_sum", group_by="Description", group_sep=" · ", tag="CR")
+    assert await _intent(cat, cat_bind, rank=1) == "Rent"  # tag DR from the heading
+    big_in = _named("largest_credit_amount", "Largest Credit Amount", "LARGEST CREDIT")
+    big_out = _named("largest_debit_amount", "Largest Debit Amount", "LARGEST DEBIT")
+    assert await _intent(big_in, _amount(op="sum")) == 45015.15
+    assert await _intent(big_out, _amount(op="top", tag="CR")) == 2000
+
+
+async def test_intent_fixes_the_tag_of_paired_ranked_grids():
+    rec = _named("receipt_amount_1", "Amount", "Amount", ("Slide 6", "LARGEST RECEIPTS"))
+    pay = _named("payment_amount_1", "Amount", "Amount", ("Slide 6", "LARGEST PAYMENTS"))
+    llm = FakeLLM(_amount(op="top", tag="DR"), _amount(op="top"))  # wrong tag, no tag
+    out = await map_fields(CTX, [rec, pay], [DOC], Retr([_stmt_hit()]), llm)
+    assert (out["receipt_amount_1"].value, out["payment_amount_1"].value) == (45015.15, 2000)
+
+
+async def test_intent_that_breaks_the_binding_fails_closed():
+    cat = _named("category_1", "Category 1", "", ("S", "CATEGORY BREAKDOWN"), "text")
+    r = await map_field(CTX, cat, [DOC], Retr([_stmt_hit()]), FakeLLM(_amount(op="sum")))
+    assert r.status == "missing" and r.value is None
+
+
+def _typed_hit(header):
+    return _hit(text=TEXT.replace("Amount", header), headers=("Item", header))
+
+
+async def test_an_untagged_amount_column_never_sums_both_directions():
+    dep = _named("total_deposits", "Total Deposits", "TOTAL DEPOSITS")
+    hit = _typed_hit("Amount")
+    r = await map_field(CTX, dep, [DOC], Retr([hit]), FakeLLM(_bind()))
+    assert (r.status, r.value) == ("missing", None)  # no tag, no filter, no direction column
+    kept = _bind(where={"Item": "Rent"})  # a Type-like filter keeps the binding
+    r = await map_field(CTX, dep, [DOC], Retr([hit]), FakeLLM(kept))
+    assert (r.status, r.value) == ("populated", 1000.5)
+    r = await map_field(
+        CTX, dep, [DOC], Retr([_typed_hit("Deposits")]), FakeLLM(_bind(column="Deposits"))
+    )
+    assert (r.status, r.value) == ("populated", 1299.75)  # a column named for the direction
+
+
+async def test_a_top_intent_without_pick_on_a_text_slot_fails_closed():
+    pay = _named("payment_payee_1", "Payee", "Payee", ("Slide 6", "LARGEST PAYMENTS"), "text")
+    r = await map_field(CTX, pay, [DOC], Retr([_stmt_hit()]), FakeLLM(_amount(op="sum")), rank=1)
+    assert (r.status, r.value) == ("missing", None)

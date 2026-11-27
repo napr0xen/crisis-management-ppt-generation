@@ -10,6 +10,7 @@ import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable
 from itertools import groupby
+from typing import Literal
 
 import structlog
 from pydantic import Field
@@ -32,7 +33,7 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 6  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 7  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -541,7 +542,15 @@ def _names_net_movement(f: IRField) -> bool:
     states a figure that is the difference of two others, so it is computed."""
     if f.expected_type not in ("currency", "number"):
         return False
-    return any(t in _padded(name) for name in (f.label, f.field_id) for t in _NET_TERMS)
+    return any(t in _padded(name) for name in _names(f) for t in _NET_TERMS)
+
+
+def _names(f: IRField) -> tuple[str, ...]:
+    """Label, id and, only for a bare label ("Value", "Total"), the context: a cell under a
+    "NET CASH FLOW" heading is not itself the net."""
+    rest = [w for w in _padded(f.label).split() if w not in _AMOUNT_WORDS | _TOTAL_WORDS]
+    bare = all(w.isdigit() for w in rest)
+    return (f.label, f.field_id, f.context or "" if bare else "")
 
 
 def _padded(name: str) -> str:
@@ -574,6 +583,110 @@ def _ranking_slots(fields: list[IRField]) -> set[str]:
     or currency slot: a text-only list (`Top risks 1..3`) is not a computation."""
     numeric = {_slot_key(f) for f in fields if f.expected_type in ("number", "currency")}
     return {f.field_id for f in fields if _names_ranking(f) and _slot_key(f) in numeric}
+
+
+# shortcut: English/Spanish words only, add words per language when a template needs them.
+_IN_WORDS = frozenset(
+    "deposit deposits credit credits receipt receipts inflow inflows income ingreso ingresos "
+    "deposito depositos abono abonos entrada entradas cobro cobros".split()
+)
+_OUT_WORDS = frozenset(
+    "withdrawal withdrawals debit debits payment payments outflow outflows expense expenses "
+    "spending retiro retiros cargos egreso egresos salida salidas pago pagos gasto "
+    "gastos".split()
+)
+_TOTAL_WORDS = frozenset("total totals suma totales".split())
+_LARGEST_WORDS = frozenset("largest biggest highest top mayor".split())
+_GROUP_WORDS = frozenset("category categories breakdown categoria categorias desglose".split())
+_AMOUNT_WORDS = frozenset("amount value total importe monto valor".split())
+
+
+def _words(names: tuple[str, ...]) -> tuple[set[str], str]:
+    text = _padded(" ".join(names))
+    return set(text.split()), text
+
+
+# shortcut: English/Spanish phrases only, add phrases when a template trips a direction word.
+_NOT_DIRECTION = tuple(
+    f" {p} "
+    for p in (
+        "credit card",
+        "credit limit",
+        "available credit",
+        "credit line",
+        "debit card",
+        "payment due",
+        "minimum payment",
+        "income statement",
+        "tarjeta de credito",
+        "limite de credito",
+    )
+)
+_COUNT_WORDS = frozenset("number count cantidad numero num no".split())
+
+
+def _direction(names: tuple[str, ...]) -> Literal["CR", "DR"] | None:
+    """CR (money in) or DR (money out) when the names state exactly one direction."""
+    words, text = _words(names)
+    for phrase in _NOT_DIRECTION:
+        text = text.replace(phrase, " ")
+    words = set(text.split())
+    ins = bool(_IN_WORDS & words) or " money in " in text
+    outs = bool(_OUT_WORDS & words) or " money out " in text
+    return "CR" if ins and not outs else ("DR" if outs and not ins else None)
+
+
+def _is_total(f: IRField) -> bool:
+    return (
+        f.expected_type in ("currency", "number")
+        and not _COUNT_WORDS & _words((f.label, f.field_id))[0]  # "Total number of deposits"
+        and bool(_TOTAL_WORDS & _words(_names(f))[0])
+        and _direction(_names(f)) is not None
+    )
+
+
+def _is_largest(f: IRField) -> bool:
+    """An un-numbered 'largest credit' style slot: the top row of one direction."""
+    return (
+        f.expected_type in ("currency", "number")
+        and _slot_key(f) is None
+        and bool(_LARGEST_WORDS & _words(_names(f))[0])
+        and _direction(_names(f)) is not None
+    )
+
+
+def derivation_intent(f: IRField) -> tuple[str, Literal["CR", "DR"] | None] | None:
+    """(op, tag) a derived slot's names fix, or None: the binder still picks the table and the
+    headers, code fixes what the slot means. A numbered slot's direction may come from its
+    heading (section_path)."""
+    if _names_net_movement(f):
+        return "diff", None
+    if _slot_key(f) is not None:
+        names = (*_names(f), *f.section_path)
+        words = _words(names)[0]
+        if _GROUP_WORDS & words:
+            return "group_sum", _direction(names)
+        if _RANK_WORDS & words:
+            return "top", _direction(names)
+    if _is_total(f):
+        return "sum", _direction(_names(f))
+    if _is_largest(f):
+        return "top", _direction(_names(f))
+    return None
+
+
+def _retype_amounts(fields: list[IRField]) -> list[IRField]:
+    """A numbered ranking slot named an amount but typed text becomes currency, so the grid has
+    the numeric slot that `_ranking_slots` needs (the category-name slots stay text)."""
+    return [
+        f.model_copy(update={"expected_type": "currency"})
+        if f.expected_type == "text"
+        and _names_ranking(f)
+        and _GROUP_WORDS & _words((*_names(f), *f.section_path))[0]
+        and _AMOUNT_WORDS & _words((f.label, f.field_id))[0]
+        else f
+        for f in fields
+    ]
 
 
 async def build_ir(
@@ -616,10 +729,11 @@ async def build_ir(
     # context and card are code-set, never the LLM's
     by_id = {a.anchor_id: a for a in amap.anchors}
     fields = [_with_anchor_data(f, by_id[f.anchor_id]) for f in _caption_types(fields, by_id)]
+    fields = _retype_amounts(fields)
     ranking = _ranking_slots(fields)
     fields = [
         f.model_copy(update={"mode": "derived"})
-        if _names_net_movement(f) or f.field_id in ranking
+        if _names_net_movement(f) or _is_total(f) or _is_largest(f) or f.field_id in ranking
         else f
         for f in fields
     ]

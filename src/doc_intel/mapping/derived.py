@@ -227,6 +227,11 @@ def _kept(table: Table, spec: Derivation) -> list[Pair]:
     ]
 
 
+def tagged_column(table: Table, header: str) -> bool:
+    """Whether any cell of the column carries a CR/DR tag (separate in/out columns do not)."""
+    return any(_TAG.search(row.cells.get(header, "")) for _, row in table.rows)
+
+
 def _tagged(text: str, tag: str) -> bool:
     found = _TAG.search(text)
     return bool(found and found[1].upper() == tag)
