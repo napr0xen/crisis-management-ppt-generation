@@ -9,6 +9,7 @@ from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import (
+    ContentLayer,
     CoordOrigin,
     DocItemLabel,
     ListItem,
@@ -158,6 +159,9 @@ def _columns(labels: list[ParsedElement], values: list[ParsedElement]) -> bool:
     )
 
 
+# shortcut: more cells than this on one line fail closed (no split), upgrade if real statements
+# put more than a few dozen text cells on one line.
+MAX_LINE_CELLS = 200
 Cells = list[tuple[str, Box]]  # a page's text cells (layout clusters), top-left origin
 
 
@@ -169,12 +173,17 @@ def _split_merged(
     and the cells must spell the item's text. None (fail closed) otherwise; text is never split
     by guessing, so no amount can land under the wrong label."""
     line = sorted((c for c in cells if _same_line(label.bbox, c[1])), key=lambda c: c[1][0])
-    runs = [
-        line[i:j]
-        for i in range(len(line))
-        for j in range(i + 1, len(line) + 1)
-        if " ".join(t for t, _ in line[i:j]) == label.text
-    ]
+    if len(line) > MAX_LINE_CELLS:
+        return None
+    runs = []
+    for i in range(len(line)):
+        text = ""
+        for j in range(i, len(line)):
+            text = f"{text} {line[j][0]}" if j > i else line[j][0]
+            if not label.text.startswith(text) or len(text) > len(label.text):
+                break  # no longer a prefix of the label: no longer run can match
+            if text == label.text:
+                runs.append(line[i : j + 1])
     if len(runs) != 1:  # no cell run spells the text, or it is ambiguous
         return None
     inside = runs[0]
@@ -324,6 +333,8 @@ def join_split_tables(elements: list[ParsedElement]) -> list[ParsedElement]:
     for x in elements:
         if x.region == "header":
             header_pages[x.text].add(x.page_number)
+    # shortcut: exact text, so a header that changes per page ("… Page 2 of 4") blocks a join;
+    # loosening it could merge two accounts' tables, upgrade with a page-number-aware key.
     running = {t for t, p in header_pages.items() if len(p) >= 2}
 
     def between(x: ParsedElement) -> bool:
@@ -345,7 +356,13 @@ def join_split_tables(elements: list[ParsedElement]) -> list[ParsedElement]:
             and prev.rows[0] == e.rows[0]
             and not any(between(x) for x in out[settled:])
         ):
-            out[head] = prev.model_copy(update={"rows": prev.rows + e.rows[1:]})
+            pages = prev.row_pages or [prev.page_number] * (len(prev.rows) - 1)
+            out[head] = prev.model_copy(
+                update={
+                    "rows": prev.rows + e.rows[1:],
+                    "row_pages": pages + [e.page_number] * (len(e.rows) - 1),
+                }
+            )
         else:
             out.append(e)
             head = len(out) - 1
@@ -425,7 +442,9 @@ def _parse(data: bytes, ext: str) -> ParsedDocument:
     bands: dict[int, str] = {}  # ids of text in the top / bottom band, to be confirmed
     heading: str | None = None
     pdf = ext == "pdf"  # regions, bbox and kv need PDF page geometry
-    for item, _level in doc.iterate_items():
+    # Page headers/footers are Docling's furniture layer, left out of iterate_items by default.
+    layers = {ContentLayer.BODY, ContentLayer.FURNITURE} if pdf else {ContentLayer.BODY}
+    for item, _level in doc.iterate_items(included_content_layers=layers):
         # PDF: page number; PPTX: slide number; DOCX: no provenance.
         page = item.prov[0].page_no if getattr(item, "prov", None) else None
         box = _box(item, doc, page) if pdf else None
@@ -449,6 +468,14 @@ def _parse(data: bytes, ext: str) -> ParsedDocument:
             rows = _table_rows(item.data)
             if any(any(row) for row in rows):
                 caption, rows = strip_banner(rows, item.data)
+                if (
+                    pdf
+                    and caption is None
+                    and not any(c.column_header for c in item.data.table_cells)
+                ):
+                    # shortcut: trusts TableFormer's header flags; a real header it misses loses its
+                    # names (derived slots fail closed), upgrade if live tables show that.
+                    rows = [[""] * len(rows[0]), *rows]  # no header row (a key/value block)
                 elements.append(
                     ParsedElement(
                         element_type="table",
@@ -479,7 +506,8 @@ def _parse(data: bytes, ext: str) -> ParsedDocument:
         # a confirmed element is a copy: ids of unchanged ones (headings) stay valid
         elements = pair_kv(confirm_bands(elements, bands), headings, _page_cells(result))
     return ParsedDocument(
-        elements=join_split_tables(drop_repeated(elements)),
+        # join first: it needs every copy of a running header to see that it is running
+        elements=drop_repeated(join_split_tables(elements)),
         page_count=doc.num_pages() if ext != "docx" else None,
     )
 

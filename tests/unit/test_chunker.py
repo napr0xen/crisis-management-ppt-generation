@@ -423,3 +423,13 @@ def test_total_role_needs_amount_only_siblings():
         ["", "Total", "100,00"],
         ["", "Total", "Rent"],
     ) == ["data", "total", "total", "data"]
+
+
+def test_split_joined_table_chunks_cite_the_page_of_their_first_row():
+    rows = [["k", "v"]] + [[f"row{i}", "x y"] for i in range(1, 7)]
+    joined = tbl(rows, page=3).model_copy(update={"row_pages": [3, 3, 3, 4, 4, 5]})
+    chunks = run(ParsedDocument(elements=[joined]), 20)
+    assert len(chunks) > 1
+    pages = {int(r.cells["k"][3:]): c.page_number for c in chunks for r in c.rows[:1]}
+    assert pages == {i: [3, 3, 3, 4, 4, 5][i - 1] for i in pages}
+    assert {c.page_number for c in chunks} != {3}

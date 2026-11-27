@@ -133,8 +133,8 @@ def chunk(
 ) -> list[ChunkPayload]:
     prov = dict(zip(map(id, doc.elements), _provenance(doc.elements), strict=True))
     elements = [e for e in doc.elements if e.region != "footer"]  # stays in parsed JSON only
-    # (element, block ids, table rows, text) per chunk
-    pieces: list[tuple[ParsedElement, list[str], list[TableRow] | None, str]] = []
+    # (element, block ids, table rows, text, page) per chunk
+    pieces: list[tuple[ParsedElement, list[str], list[TableRow] | None, str, int | None]] = []
     for (kind, _), group in groupby(elements, key=lambda e: (e.element_type, e.section_heading)):
         els = list(group)
         if kind == "table":
@@ -144,7 +144,10 @@ def chunk(
                     shown = (
                         None if idx is None else _table_rows(rows[0], rows[1:], prov[id(e)], idx)
                     )
-                    pieces.append((e, [], shown, t))
+                    # shortcut: a chunk without row ids cites the table's first page, upgrade
+                    # if such tables (rows split or header over half the budget) span pages.
+                    page = e.row_pages[idx[0]] if e.row_pages and idx else e.page_number
+                    pieces.append((e, [], shown, t, page))
         else:
             parts = [
                 ((e, (prov[id(e)],)), p)
@@ -159,12 +162,12 @@ def chunk(
                 count_tokens,
                 lambda a, b: (a[0], a[1] + tuple(i for i in b[1] if i not in a[1])),
             )
-            pieces += [(e, list(ids), None, t) for (e, ids), t in packed]
+            pieces += [(e, list(ids), None, t, e.page_number) for (e, ids), t in packed]
     return [
         ChunkPayload(
             document_id=document_id,
             filename=filename,
-            page_number=e.page_number,
+            page_number=page,
             section_heading=(e.caption or e.section_heading)
             if e.element_type == "table"
             else e.section_heading,
@@ -174,7 +177,7 @@ def chunk(
             block_ids=ids,
             rows=rows,
         )
-        for i, (e, ids, rows, t) in enumerate(pieces)
+        for i, (e, ids, rows, t, page) in enumerate(pieces)
     ]
 
 

@@ -29,6 +29,7 @@ class ParsedElement(BaseModel):
     label: str | None = None  # kv only
     value: str | None = None  # kv only
     caption: str | None = None  # tables only: a banner row 0 taken out of `rows`
+    row_pages: list[int] | None = None  # joined tables only: page of each row in `rows[1:]`
 
 
 class ParsedDocument(BaseModel):

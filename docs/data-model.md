@@ -265,5 +265,6 @@ PostgreSQL, Qdrant, and Open WebUI data live in Docker **named volumes** (`pgdat
 | `bbox` | `[l, t, r, b]` \| null | PDF points, top-left origin; null without Docling provenance |
 | `label`, `value` | string \| null | `kv` only: the label (trailing `:` stripped) and the value text |
 | `caption` | string \| null | tables only: a banner/title row 0 removed from `rows` (one non-empty cell that is the only Docling cell of row 0 or spans 2+ columns, table of 2+ columns and 3+ rows); when the next row holds an amount the table is headerless and `rows[0]` is all empty |
+| `row_pages` | integer[] \| null | tables joined across pages only (Phase 31): the page of each row in `rows[1:]`; table chunks cite the page of their first row; `null` for a table on one page |
 
 `TableRow` (built by the chunker, stored in the Qdrant `rows` payload): `{id, cells, row_role}`; `row_role` is `carry_forward` when a cell is a carry-forward phrase (`Balance brought forward`, `Carried forward`, `Saldo anterior`, …), `total` when a cell is a total phrase (`Total`, `Total charged`, `Subtotal`, `Suma`, …) and every other non-empty cell is an amount (`01/02 | TOTAL | 45,00` stays `data`), else `data`.

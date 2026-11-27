@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from docling_core.types.doc import (
     BoundingBox,
+    ContentLayer,
     CoordOrigin,
     DocItemLabel,
     ProvenanceItem,
@@ -18,9 +19,10 @@ from docling_core.types.doc.page import BoundingRectangle, TextCell
 from doc_intel.ingestion import docling_parser
 
 
-def _cell(text, r, c, rs=1, cs=1):
+def _cell(text, r, c, rs=1, cs=1, header=None):
     return TableCell(
         text=text,
+        column_header=r == 0 if header is None else header,  # TableFormer flags the header row
         start_row_offset_idx=r,
         end_row_offset_idx=r + rs,
         start_col_offset_idx=c,
@@ -60,10 +62,19 @@ def _simple(header, body, page):
     return _table(cells, len(body) + 1, len(header), page)
 
 
-def _text(text, page, box=MID, label=DocItemLabel.TEXT):
+def _text(text, page, box=MID, label=DocItemLabel.TEXT, layer=ContentLayer.BODY):
     return TextItem(
-        self_ref="#/texts/0", label=label, orig=text, text=text, prov=[_prov(page, box)]
+        self_ref="#/texts/0",
+        label=label,
+        orig=text,
+        text=text,
+        prov=[_prov(page, box)],
+        content_layer=layer,
     )
+
+
+def _furniture(text, page, box, label):
+    return _text(text, page, box, label, ContentLayer.FURNITURE)
 
 
 def _cells(specs):
@@ -85,7 +96,10 @@ def _cells(specs):
 def parse(monkeypatch):
     def run(items, pages=4, cells=()):
         doc = SimpleNamespace(
-            iterate_items=lambda: [(i, 0) for i in items],
+            # like Docling: page headers/footers (furniture) only when asked for
+            iterate_items=lambda included_content_layers=frozenset({ContentLayer.BODY}): [
+                (i, 0) for i in items if i.content_layer in included_content_layers
+            ],
             num_pages=lambda: pages,
             pages={p: SimpleNamespace(size=SimpleNamespace(height=PAGE_H)) for p in range(1, 9)},
         )
@@ -407,3 +421,73 @@ def test_page_number_bottom_band_is_footer(parse):
 def test_one_off_page_number_bottom_band_is_footer(parse):
     (e,) = parse([_text("Page 1", 1, at(50, 760))])
     assert e.region == "footer"
+
+
+def test_merged_label_split_fails_closed_on_a_crowded_line(parse):
+    # a crafted line of thousands of cells must not cost cubic time: over the cap, no split
+    n = docling_parser.MAX_LINE_CELLS + 1
+    filler = [("z", at(500 + i, 200, 0.5)) for i in range(n)]
+    items, cells = _merged(
+        [("Alpha", at(50, 200, 60)), ("Beta", at(200, 200, 60)), ("Gamma", at(350, 200, 60))]
+    )
+    out = parse(items, cells=[*cells, *filler])
+    assert all(e.element_type == "text" for e in out)
+
+
+def test_docling_furniture_headers_and_footers_are_parsed(parse):
+    out = parse(
+        [
+            _furniture("Ref: QR-7 v1.2", 1, at(50, 20), DocItemLabel.PAGE_HEADER),
+            _text("Body prose here", 1, at(50, 300)),
+            _furniture("Issuer Ltd, Tax ID 99", 1, at(50, 770), DocItemLabel.PAGE_FOOTER),
+        ]
+    )
+    assert [(e.text, e.region) for e in out] == [
+        ("Ref: QR-7 v1.2", "header"),
+        ("Body prose here", "body"),
+        ("Issuer Ltd, Tax ID 99", "footer"),
+    ]
+
+
+def test_running_furniture_header_keeps_one_copy_and_the_table_still_joins(parse):
+    items = []
+    for p, c in ((1, "a"), (2, "b"), (3, "c")):
+        items += [
+            _furniture("Bank X statement", p, at(50, 20), DocItemLabel.PAGE_HEADER),
+            _simple(["Item", "Qty"], [[c, "1"]], p),
+            _furniture(f"Page {p}/3", p, at(50, 770), DocItemLabel.PAGE_FOOTER),
+        ]
+    out = parse(items, pages=3)
+    tables = [e for e in out if e.element_type == "table"]
+    assert [t.rows for t in tables] == [[["Item", "Qty"], ["a", "1"], ["b", "1"], ["c", "1"]]]
+    assert [e.page_number for e in out if e.text == "Bank X statement"] == [1]
+
+
+def test_table_without_a_docling_column_header_is_headerless(parse):
+    body = [["Prepared by", "R. Lee, Head"], ["Contributors", "Team A"]]
+    cells = [_cell(v, r, c, header=False) for r, row in enumerate(body) for c, v in enumerate(row)]
+    (table,) = parse([_table(cells, 2, 2, 1)])
+    assert table.rows == [["", ""], *body]
+
+
+def test_joined_table_records_the_page_of_each_row(parse):
+    items = [_simple(["Item", "Qty"], [[c, "1"], [c + c, "2"]], p) for p, c in ((2, "a"), (3, "b"))]
+    (table,) = parse(items)
+    assert table.page_number == 2
+    assert table.row_pages == [2, 2, 3, 3]
+
+
+def test_single_page_table_has_no_row_pages(parse):
+    (table,) = parse([_simple(["Item", "Qty"], [["a", "1"]], 2)])
+    assert table.row_pages is None
+
+
+def test_banner_table_without_column_header_flags_keeps_its_caption_and_one_header(parse):
+    cells = [_cell("Closing statement", 0, 0, cs=2, header=False)]
+    body = [["Fees", "2,275.26"], ["Total charged", "2,275.26"]]
+    cells += [
+        _cell(v, r + 1, c, header=False) for r, row in enumerate(body) for c, v in enumerate(row)
+    ]
+    (table,) = parse([_table(cells, 3, 2, 4)])
+    assert table.caption == "Closing statement"
+    assert table.rows == [["", ""], *body]
