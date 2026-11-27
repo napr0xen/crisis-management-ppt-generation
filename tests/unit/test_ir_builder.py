@@ -1113,7 +1113,7 @@ def test_derived_mode_and_hidden_derivation():
     from doc_intel.templates.ir_builder import LLMIRField
     from doc_intel.templates.schemas import IRField
 
-    assert _version() == 7
+    assert _version() == 8
     assert "derived" in LLMIRField.model_json_schema()["properties"]["mode"]["enum"]
     assert "derivation" not in IRField.model_json_schema()["properties"]
     assert "derivation" not in LLMIRField.model_json_schema()["properties"]
@@ -1313,3 +1313,35 @@ async def test_a_value_n_text_grid_under_a_top_heading_is_not_retyped():
     ]
     ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
     assert {(f.expected_type, f.mode) for f in ir.fields} == {("text", "extractive")}
+
+
+async def test_a_numbered_slot_inherits_ranking_from_its_partner():
+    got = await _modes(
+        ("spend_label_1", "Category 1", "text", "", "SPENDING"),
+        ("spend_value_1", "Value 1", "currency", "", "SPENDING"),
+        ("spend_label_2", "Category 2", "text", "", "SPENDING"),
+        ("spend_value_2", "Value 2", "currency", "", "SPENDING"),
+        ("note_1", "Note 1", "text", "", "SPENDING"),
+        ("note_amount_1", "Amount 1", "currency", "", "SPENDING"),
+    )
+    assert {k for k, v in got.items() if v == "derived"} == {
+        "spend_label_1",
+        "spend_value_1",
+        "spend_label_2",
+        "spend_value_2",
+    }
+
+
+def test_ranking_inheritance_stays_on_the_slide():
+    from doc_intel.templates.ir_builder import _ranking_slots
+
+    spec = [  # (anchor, field_id, label, type)
+        ("pptx:s2:a", "summary_largest_deposit_1", "Largest deposit 1", "currency"),
+        ("pptx:s7:a", "summary_note_1", "Note 1", "text"),
+        ("pptx:s7:b", "summary_note_amount_1", "Amount 1", "currency"),
+    ]
+    fields = [
+        _typed_field(i, label, t).model_copy(update={"anchor_id": a, "section_path": ["S", "X"]})
+        for a, i, label, t in spec
+    ]
+    assert _ranking_slots(fields) == {"summary_largest_deposit_1"}

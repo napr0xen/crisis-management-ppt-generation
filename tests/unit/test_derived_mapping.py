@@ -120,7 +120,7 @@ async def test_not_found_and_unknown_table_are_missing():
 async def test_no_tables_and_absent_column_and_row_gap_are_missing():
     r = await map_field(CTX, _field(SUM), [DOC], Retr([]), FakeLLM())
     assert r.missing_reason == "no_relevant_chunks"
-    r = await map_field(CTX, _field(), [DOC], Retr([_hit()]), FakeLLM(_bind(column="Nope")))
+    r = await map_field(CTX, _field(), [DOC], Retr([_hit()]), FakeLLM(_bind(where={"Nope": "x"})))
     assert (r.status, r.missing_reason) == ("missing", "no_relevant_chunks")
     gap = _hit(rows=("R01", "R03", "R04"))
     r = await map_field(CTX, _field(SUM), [DOC], Retr([gap]), FakeLLM())

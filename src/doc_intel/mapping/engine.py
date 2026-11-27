@@ -6,7 +6,9 @@ import re
 import time
 import unicodedata
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Hashable, Sequence
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import Any, Literal
 
 import structlog
@@ -28,6 +30,7 @@ from doc_intel.mapping.derived import (
     Table,
     compute,
     named,
+    resolve_columns,
     row_line,
     summary_rows,
     tables,
@@ -72,6 +75,7 @@ from doc_intel.mapping.schemas import (
 from doc_intel.mapping.verifier import (
     MIN_QUOTE_CHARS,
     TYPED_TYPES,
+    bound_labels,
     canonical_value,
     derived_in_quotes,
     is_amount,
@@ -83,7 +87,21 @@ from doc_intel.mapping.verifier import (
     verify_quote,
 )
 from doc_intel.templates.anchors import find_tokens, has_letter
-from doc_intel.templates.ir_builder import _direction, _ranking_slots, derivation_intent
+from doc_intel.templates.ir_builder import (
+    _AMOUNT_WORDS,
+    _IN_WORDS,
+    _NET_TERMS,
+    _OUT_WORDS,
+    _TOTAL_WORDS,
+    _direction,
+    _opening,
+    _padded,
+    _ranking_slots,
+    derivation_intent,
+)
+from doc_intel.templates.ir_builder import (
+    _names as _slot_names,
+)
 from doc_intel.templates.schemas import SLOT_NUMBER, Constraints, Derivation, IRField
 
 log = structlog.get_logger()
@@ -296,6 +314,19 @@ async def _retrieve(
     return select_context(await retriever.with_neighbors(ctx, hits, budget)) if hits else hits
 
 
+Intent = tuple[str, Literal["CR", "DR"] | None]  # (op, tag), see `derivation_intent`
+
+
+@dataclass
+class _Shared:
+    """What derived slots of one `map_fields` run share: the first successful binding per key
+    (slots of one intent, or of one ranked group_sum series, give identical numbers and
+    citations) and, per slot of a group_sum series, the series' lead field and intent."""
+
+    bound: dict[Hashable, tuple[Table, Derivation]] = dc_field(default_factory=dict)
+    series: dict[str, tuple[IRField, Intent]] = dc_field(default_factory=dict)
+
+
 async def map_field(
     ctx: TenantContext,
     field: IRField,
@@ -305,11 +336,12 @@ async def map_field(
     other_headings: Sequence[str] = (),
     retry: tuple[LLMExtraction[Any], list[str]] | None = None,
     rank: int | None = None,
+    shared: _Shared | None = None,
 ) -> FieldMappingResult:
     """`retry`: an earlier reply and why it was rejected, sent with the first extraction. `rank`:
-    the slot number of a derived slot in a numbered grid."""
+    the slot number of a derived slot in a numbered grid. `shared`: see `_Shared`."""
     if field.mode == "derived":  # before the row types: a group_sum slot is a table or a list
-        return await _derived(ctx, field, document_ids, retriever, llm, rank)
+        return await _derived(ctx, field, document_ids, retriever, llm, rank, shared)
     if field.expected_type in _ROW_TYPES:
         group = await map_group(ctx, [[field]], document_ids, retriever, llm, other_headings)
         return group[field.field_id]
@@ -550,6 +582,7 @@ async def _bound(
     field: IRField,
     found: list[Table],
     retry: tuple[LLMDerivation, list[str]] | None = None,
+    intent: Intent | None = None,
 ) -> tuple[Table, Derivation, LLMDerivation] | MissingReason:
     """The LLM call of a derived slot: which table and which exact headers. A bad or unusable
     binding is a reason, never a guess. `retry` is an earlier binding and why it was refused (the
@@ -582,24 +615,34 @@ async def _bound(
     table = labels.get(bind.table.strip().lower())
     if bind.not_found or table is None or bind.derivation is None:
         return "not_found_by_llm"
-    spec = _with_intent(field, bind.derivation, table)
-    return (table, spec, bind) if spec else "evidence_failed_verification"
+    spec = _with_intent(field, bind.derivation, table, intent)
+    if isinstance(spec, str):
+        log.info("derived_rejected", slot_id=field.field_id, code=spec)  # code only, never text
+        return "no_relevant_chunks" if spec == "column_missing" else "evidence_failed_verification"
+    return table, spec, bind
 
 
-def _with_intent(field: IRField, bound: Derivation, table: Table) -> Derivation | None:
-    """The binding with the op and tag the slot's names fix (`derivation_intent`): the binder
-    keeps the columns, never what the slot means. A tag needs a CR/DR-tagged column (separate
-    money in / money out columns have none). None when the result is no valid derivation."""
-    intent = derivation_intent(field)
-    if intent is None:
-        return bound
-    op, tag = intent
+def _with_intent(
+    field: IRField,
+    bound: Derivation,
+    table: Table,
+    intent: Intent | None,
+) -> Derivation | str:
+    """The binding with the op and tag the slot's names fix (`derivation_intent`, or the series'
+    `intent`): the binder names the table, code fixes what the slot means and finds the headers
+    (`resolve_columns`). A tag needs a CR/DR-tagged column (separate money in / money out columns
+    have none). A failure code when the result is no valid derivation."""
+    op, tag = intent or (bound.op, None)
     tag = tag or (bound.tag if op != "diff" else None)  # no stated direction: the binder's tag
+    resolved = resolve_columns(table, bound.model_copy(update={"op": op}), tag)
+    if isinstance(resolved, str) or intent is None:
+        return resolved
+    bound = resolved
     if tag and not tagged_column(table, bound.column):
         # no CR/DR cells: only a filter or a column named for the direction keeps the tag's
         # meaning, else the sum would mix both directions
         if not (bound.where or _direction((bound.column,)) == tag):
-            return None
+            return "intent_mismatch"
         tag = None
     spec = bound.model_dump() | {"op": op, "tag": tag, "rank": None}
     for name, only in (("minus", "diff"), ("group_by", "group_sum"), ("pick", "top")):
@@ -608,11 +651,11 @@ def _with_intent(field: IRField, bound: Derivation, table: Table) -> Derivation 
         spec["group_sep"] = None
     numeric = field.expected_type in ("number", "currency", "percent")
     if op == "top" and not numeric and spec["pick"] in (None, bound.column):
-        return None  # a text slot would take the amount cell
+        return "intent_mismatch"  # a text slot would take the amount cell
     try:
         return Derivation.model_validate(spec)
     except ValidationError:
-        return None
+        return "intent_mismatch"
 
 
 def _row_evidence(table: Table, cited: tuple[Any, ...]) -> list[Evidence] | None:
@@ -649,10 +692,22 @@ async def _derived(
     retriever: Retriever,
     llm: LLMClient,
     rank: int | None = None,
+    shared: _Shared | None = None,
 ) -> FieldMappingResult:
     """A `derived` slot (ADR-018): the aggregate is computed by `derived.compute` over the rows of
-    one table; the LLM only binds the table and headers when the IR has no derivation. `rank` (the
-    slot number, from code) picks the k-th group or row of a group_sum or top derivation."""
+    one table; the LLM only binds the table when the IR has no derivation (code resolves the
+    headers). `rank` (the slot number, from code) picks the k-th group or row of a group_sum or
+    top derivation. `shared` reuses an earlier successful binding of the same intent or series."""
+    lead, intent = (shared.series.get(field.field_id) if shared else None) or (
+        field,
+        derivation_intent(field),
+    )
+    key: Hashable | None = None  # `top` is never shared: each slot picks its own cell
+    if field.field_id in (shared.series if shared else {}):
+        key = ("series", lead.field_id)
+    elif intent and intent[0] != "top" and not rank:
+        key = (*intent, _residual(field))
+    memo = shared.bound.get(key) if shared and key is not None and not field.derivation else None
 
     def run(table: Table, spec: Derivation) -> Computed | str:
         if rank and spec.op in ("group_sum", "top"):
@@ -674,8 +729,11 @@ async def _derived(
         table, spec = fits[0], field.derivation
         out = run(table, spec)  # shortcut: a preset spec cannot name row
         # ids, so summary_row is missing; upgrade by letting the binding call fix presets
+    elif memo:
+        table, spec = memo
+        out = run(table, spec)
     else:
-        bound = await _bound(llm, field, found)
+        bound = await _bound(llm, lead, found, intent=intent)
         if isinstance(bound, str):
             return _missing(field, bound, docs)
         table, spec, bind = bound
@@ -688,11 +746,19 @@ async def _derived(
                 "like printed totals, subtotals or carried-forward rows; list every such row in "
                 "exclude_rows."
             )
-            again = await _bound(llm, field, found, (bind, [note]))
+            again = await _bound(llm, lead, found, (bind, [note]), intent)
             if isinstance(again, str):
                 return _missing(field, "evidence_failed_verification", docs)
             table, spec, _ = again
             out = run(table, spec)
+    if (
+        shared
+        and key is not None
+        and not field.derivation
+        and not spec.where  # a filtered binding answers its own slot only
+        and (not isinstance(out, str) or out in ("rank_tied", "rank_out_of_range"))
+    ):
+        shared.bound.setdefault(key, (table, spec))  # a failed rank is the series' too
     if isinstance(out, str):
         log.info("derived_rejected", slot_id=field.field_id, code=out)  # code only, never text
         return _missing(
@@ -976,6 +1042,66 @@ def _amount_note(header: str | None) -> str:
     )
 
 
+_DIRECTION_CODE = "direction_mismatch"
+_TEMPORAL_CODE = "temporal_role_mismatch"
+
+
+def _labels(value: Any, kind: str, quotes: list[str]) -> list[str]:
+    """The label text bound to each place the quotes state the value: the text before it, else
+    (nothing but punctuation before it) the text after it."""
+    return [b if has_letter(b) else a for b, a in bound_labels(value, kind, quotes)]
+
+
+def _role_code(field: IRField, value: Any, quotes: list[str]) -> str | None:
+    """A reason code when every label bound to the cited number or date states the opposite
+    direction of a directional slot, or an opening/prior role a date slot lacks; else None (a
+    label stating nothing decides nothing)."""
+    names = _slot_names(field)
+    bound = _labels(value, field.expected_type, quotes)
+    if field.expected_type == "date":
+        stated = not _opening(names) and bound and all(_opening((b,)) for b in bound)
+        return _TEMPORAL_CODE if stated else None
+    if (want := _direction(names)) and bound:
+        found = [_direction((b,)) for b in bound]
+        return _DIRECTION_CODE if all(f not in (None, want) for f in found) else None
+    return None
+
+
+def _drop_running_balance(
+    field: IRField, hits: list[Hit], found: list[tuple[Value, list[Evidence]]]
+) -> list[tuple[Value, list[Evidence]]]:
+    """An opening slot with a candidate labelled opening/prior (by its words or a carry-forward
+    row) drops the candidates that are unlabelled table data cells (running balances). With no
+    labelled candidate nothing is dropped; two labelled values stay a conflict."""
+    kind = field.expected_type
+    if kind not in ("number", "currency") or not _opening((field.label, field.context or "")):
+        return found
+
+    def sort(value: Value, evidence: list[Evidence]) -> str:
+        cited = {e.chunk_id for e in evidence}
+        rows = [
+            r
+            for h in hits
+            if h.chunk_id in cited
+            for r in h.rows or []
+            if any(value_in_quotes(value, kind, [c]) for c in r.cells.values())
+        ]
+        bound = _labels(value, kind, [e.quote for e in evidence])
+        heads = [h for r in rows for h, c in r.cells.items() if value_in_quotes(value, kind, [c])]
+        if any(_opening((b,)) for b in [*bound, *heads]) or any(
+            r.row_role == "carry_forward" for r in rows
+        ):
+            return "opening"
+        return "running" if any(r.row_role == "data" for r in rows) else "other"
+
+    sorts = [sort(v, e) for v, e in found]
+    if "opening" not in sorts:
+        return found
+    if "running" in sorts:
+        _log_rejected(field.field_id, ["running_balance_cell"])
+    return [c for c, k in zip(found, sorts, strict=True) if k != "running"]
+
+
 def _rejection(
     field: IRField, hits: list[Hit], value: Any, evidence: list[Evidence]
 ) -> tuple[str, str] | None:
@@ -1006,6 +1132,14 @@ def _rejection(
         note := _row_label_note(field, hits, value, evidence)
     ):
         return "row_label_mismatch", note
+    if field.expected_type in ("number", "currency", "date") and (
+        code := _role_code(field, value, quotes)
+    ):
+        return code, (
+            f"the label next to {shown} in its quote states a "
+            f"{'direction' if code == _DIRECTION_CODE else 'opening/prior role'} the slot "
+            f"{field.label[:60]!r} does not; quote the number its own label names."
+        )
     return None
 
 
@@ -1033,7 +1167,7 @@ def _candidates(
         known = merged.setdefault(key, (value, []))[1]
         have = {(e.chunk_id, e.quote) for e in known}
         known.extend(e for e in evidence if (e.chunk_id, e.quote) not in have)
-    return list(merged.values())
+    return _drop_running_balance(field, hits, list(merged.values()))
 
 
 def _extractive(expected_type: str, value: Value, quotes: list[str]) -> bool:
@@ -1960,6 +2094,7 @@ async def map_fields(
     # a derived slot is mapped alone by `map_field`: never in a group, a batch or a shared fact
     plain = [f for f in fields if f.mode != "derived"]
     ranked = _ranking_slots(fields)
+    shared_binding = _Shared(series=_series(fields, ranked))
     groups = {f.field_id: g for g in row_groups(plain) for row in g for f in row}
     shared = shared_facts(fields)
     siblings = sibling_headings(fields)
@@ -1988,7 +2123,13 @@ async def map_fields(
             await on_field(len(results), field.field_id)  # template-derived: progress only
         if field.mode == "derived":
             results[field.field_id] = await map_field(
-                ctx, field, document_ids, retriever, llm, rank=_slot_rank(field, ranked)
+                ctx,
+                field,
+                document_ids,
+                retriever,
+                llm,
+                rank=_slot_rank(field, ranked),
+                shared=shared_binding,
             )
         elif field.field_id in groups:
             results |= await map_group(
@@ -2033,6 +2174,42 @@ def _slot_rank(field: IRField, ranked: set[str]) -> int | None:
     a `_2` copy of another derived field is not one), else None."""
     m = SLOT_NUMBER.search(field.field_id)
     return int(m[1]) if m and field.mode == "derived" and field.field_id in ranked else None
+
+
+def _residual(field: IRField) -> frozenset[str]:
+    """The content words of a slot's label after the direction, total, net, amount and number
+    words: "Total money in" and "Total deposits" say the same, "Total card payments" says more
+    than "Total payments"."""
+    text = _padded(field.label)
+    for phrase in (" money in ", " money out ", *_NET_TERMS):
+        text = text.replace(phrase, " ")
+    skip = _IN_WORDS | _OUT_WORDS | _TOTAL_WORDS | _AMOUNT_WORDS
+    return frozenset(w for w in text.split() if w not in skip and not w.isdigit())
+
+
+def _series(fields: list[IRField], ranked: set[str]) -> dict[str, tuple[IRField, Intent]]:
+    """field_id -> (lead field, intent) for the ranked slots bound by the IR's own derivation
+    nowhere, grouped by slide and field_id first word: when any slot of the series has a
+    `group_sum` intent, all of them (the amount sibling names no group) bind one group_sum, with
+    the first such slot's direction, the lead being its first slot."""
+    series: dict[tuple[object, str], list[IRField]] = {}
+    for f in fields:
+        i = derivation_intent(f)
+        if (
+            f.mode == "derived"
+            and f.derivation is None
+            and _slot_rank(f, ranked)
+            and f.expected_type != "date"
+            and (i is None or i[0] == "group_sum")  # a `top` slot picks its own row and cell
+        ):
+            series.setdefault((_unit(f), f.field_id.split("_")[0]), []).append(f)
+    out: dict[str, tuple[IRField, Intent]] = {}
+    for members in series.values():
+        intents = [(f, i) for f in members if (i := derivation_intent(f)) and i[0] == "group_sum"]
+        if intents:
+            tag = next((i[1] for _, i in intents if i[1]), None)
+            out |= {f.field_id: (intents[0][0], ("group_sum", tag)) for f in members}
+    return out
 
 
 def _check_ranks(

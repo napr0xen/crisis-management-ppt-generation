@@ -174,8 +174,7 @@ async def test_ranked_slots_without_a_category_column(vector_store):
     fields = [field("category_1", "text"), field("category_1_amount")]
     fields += [field("payment_payee_1", "text"), field("payment_amount_1")]
     llm = FakeLLM(
-        bind(**cat, tag="DR"),
-        bind(**cat, tag="DR"),
+        bind(**cat, tag="DR"),  # one binding serves the whole category series
         bind(op="top", column="Amount", tag="DR", pick="Description"),
         bind(op="top", column="Amount", tag="DR"),
     )

@@ -10,6 +10,7 @@ from uuid import UUID
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.ingestion.schemas import TableRow
 from doc_intel.mapping.verifier import _NUMBER, normalize
+from doc_intel.templates.ir_builder import _direction
 from doc_intel.templates.schemas import Derivation, ExpectedType
 
 _ROW_ID = re.compile(r"^(.+)-R(\d+)$")
@@ -184,7 +185,7 @@ def _column(rows: list[Pair], header: str) -> list[tuple[Pair, _Cell]] | str:
 def compute(table: Table, spec: Derivation, expected_type: ExpectedType) -> Computed | str:
     """`spec` over the rows of `table`, or a failure code: op_type_mismatch, rows_incomplete,
     column_missing, no_rows, cell_unparseable, ambiguous_number_format, untagged_cell, mixed_tags,
-    group_label_missing, summary_row, exclude_unverified, rank_out_of_range."""
+    group_label_missing, summary_row, exclude_unverified, rank_out_of_range, rank_tied."""
     wanted = {
         "count": {"number"},
         "group_sum": {"text", "number", "currency"} if spec.rank else {"table", "bullet_list"},
@@ -218,6 +219,107 @@ def compute(table: Table, spec: Derivation, expected_type: ExpectedType) -> Comp
         cited = tuple((h, r, None) for h, r in used)
         return Computed(str(len(used)), cited, Decimal(len(used))) if used else "no_rows"
     return _aggregate(rows, spec, expected_type)
+
+
+def _real(table: Table, name: str) -> str | None:
+    """The table's own header for `name`: the exact one, else the one equal after `normalize`."""
+    if name in table.headers:
+        return name
+    found = [h for h in table.headers if normalize(h) == normalize(name)]
+    return found[0] if len(found) == 1 else None
+
+
+def _data(table: Table, header: str) -> list[str]:
+    return [r.cells.get(header, "") for _, r in table.rows if r.row_role == "data"]
+
+
+def _numeric(table: Table, header: str) -> bool:
+    """Every non-empty data cell is a bare number (a tag or currency sign aside) and one exists.
+    shortcut: a currency word in the cell ("USD 5") makes the column text, upgrade with a list."""
+    cells = [_parse(t) for t in _data(table, header)]
+    cells = [c for c in cells if c is not None]
+    return bool(cells) and all(
+        isinstance(c, _Cell) and not any(ch.isalpha() for ch in "".join(c.affix)) for c in cells
+    )
+
+
+def _both_tags(table: Table, header: str) -> bool:
+    """The column holds CR and DR cells (a one-sided suffix, e.g. a balance's "Cr", is no tag
+    column)."""
+    cells = [_parse(t) for t in _data(table, header)]
+    return {c.tag for c in cells if isinstance(c, _Cell)} >= {"CR", "DR"}
+
+
+def _amount(table: Table, spec: Derivation, tag: str | None) -> str:
+    """The amount column: the numeric column whose header names the wanted direction, else the one
+    holding both CR and DR tags, else the only numeric one (unless the LLM named another real
+    header), else the LLM's when numeric; code `column_ambiguous` otherwise."""
+    nums = [h for h in table.headers if _numeric(table, h)]
+    llm = _real(table, spec.column)
+    if tag or (spec.op == "diff" and not spec.minus):
+        named = [h for h in nums if tag and _direction((h,)) == tag]
+        tagged = [h for h in nums if _both_tags(table, h)]
+        for found in (named, tagged):
+            if len(found) == 1:
+                return found[0]
+    if len(nums) == 1:
+        return nums[0] if llm in (None, nums[0]) else "column_ambiguous"
+    return llm if llm is not None and llm in nums else "column_ambiguous"
+
+
+def _sep(table: Table, header: str) -> str | None:
+    """The delimiter every cell of a column of all-distinct values holds (a `category · detail`
+    label column), else None."""
+    cells = [t for t in _data(table, header) if t.strip()]
+    if len(set(cells)) < len(cells):
+        return None
+    found = [d for d in ("·", ":") if all(d in t for t in cells)]
+    return (
+        found[0]
+        if len(found) == 1 and not any(o in t for t in cells for o in "·:" if o != found[0])
+        else None
+    )
+
+
+def _group(table: Table, spec: Derivation) -> str:
+    """The group column: the LLM's when it names a header, else the one non-numeric column whose
+    values repeat; code `group_ambiguous` otherwise."""
+    if spec.group_by and (real := _real(table, spec.group_by)):
+        return real
+    rep = [
+        h
+        for h in table.headers
+        if not _numeric(table, h) and len(set(_data(table, h))) < len(_data(table, h))
+    ]
+    return rep[0] if len(rep) == 1 else "group_ambiguous"
+
+
+def resolve_columns(table: Table, spec: Derivation, tag: str | None) -> Derivation | str:
+    """`spec` with every named header replaced by the table's real one (equal after `normalize`),
+    the amount column and group column found from the table's structure (`_amount`, `_group`), and
+    `group_sep` set from the group column's values; a failure code `column_missing`,
+    `column_ambiguous` or `group_ambiguous`. `spec.op` is the op the slot means."""
+    fixed: dict[str, object] = {}
+    heads = {"column": spec.column if spec.op == "count" else None}
+    heads |= {"minus": spec.minus, "pick": spec.pick} if spec.op in ("diff", "top") else {}
+    for name, header in heads.items():
+        if header is None:
+            continue
+        if (real := _real(table, header)) is None:
+            return "column_missing"
+        fixed[name] = real
+    if spec.op != "count":
+        if (column := _amount(table, spec, tag)) == "column_ambiguous":
+            return column
+        fixed["column"] = column
+    if spec.op == "group_sum":
+        if (group := _group(table, spec)) == "group_ambiguous":
+            return group
+        fixed |= {"group_by": group, "group_sep": _sep(table, group)}
+    where = {_real(table, k): v for k, v in spec.where.items()}
+    if None in where:
+        return "column_missing"
+    return spec.model_copy(update=fixed | {"where": where})
 
 
 def _kept(table: Table, spec: Derivation) -> list[Pair]:
@@ -346,6 +448,8 @@ def _groups(
         if spec.rank > len(ranked):
             return "rank_out_of_range"
         k = ranked[spec.rank - 1]
+        if any(sums[n] == sums[k] for n in ranked[max(spec.rank - 2, 0) : spec.rank + 1] if n != k):
+            return "rank_tied"  # the rank order among equal sums would be arbitrary
         cited = tuple((h, r, None) for (h, r), _ in members[k])
         if expected_type == "text":
             return Computed(k, cited)

@@ -350,6 +350,7 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 - Amount in an identifier column: a `text` slot or table/grid column whose header names an identifier, reference, description or date kind rejects a pure amount (`verifier.is_amount`, code `amount_in_text_column`). The group's escalation retry receives the rejection notes. Ambiguous words (account, card, details) are not in the word list.
 - `IR_BUILDER_VERSION` 5 → 6.
 - Phase 26 follow-up: `IR_BUILDER_VERSION` 6 → 7; directional totals, largest singletons and category grids with text-typed amounts are forced to `derived`; `derivation_intent` fixes op and tag from the names (the binder keeps the columns), the role check compares role keys, and the group query carries a CR/DR hint. See `docs/system-design.md` (Direction rules).
+- Phase 28 follow-up: `IR_BUILDER_VERSION` 7 → 8; a label and its amount in a numbered grid are both `derived` when either names the ranking; code resolves bound headers and the amount and group columns from the table structure and binds a ranked `group_sum` series once (`rank_tied`, `column_ambiguous`, `group_ambiguous` fail closed). See `docs/system-design.md` (Column resolution).
 
 **Consequences.**
 - More binding LLM calls: one per ranked cell (each cell of a ranked record is its own derived slot).

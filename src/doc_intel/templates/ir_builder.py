@@ -33,7 +33,7 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 7  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 8  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -578,11 +578,22 @@ def _names_ranking(f: IRField) -> bool:
     return _slot_key(f) is not None and any(_RANK_WORDS & set(_padded(n).split()) for n in names)
 
 
+def _grid(f: IRField) -> tuple[tuple[str, str] | None, object]:
+    """A numbered slot's key and its slide (pptx) or first heading: grids of two slides that
+    share a field_id word never inherit from each other."""
+    m = _SLIDE.match(f.anchor_id)
+    return _slot_key(f), m[1] if m else tuple(f.section_path[:1])
+
+
 def _ranking_slots(fields: list[IRField]) -> set[str]:
-    """The ranking slots whose numbered grid (same field_id first word and number) holds a number
-    or currency slot: a text-only list (`Top risks 1..3`) is not a computation."""
-    numeric = {_slot_key(f) for f in fields if f.expected_type in ("number", "currency")}
-    return {f.field_id for f in fields if _names_ranking(f) and _slot_key(f) in numeric}
+    """The slots of a numbered grid (same slide, field_id first word and number) that holds a
+    number or currency slot and names a ranking: a label and its amount are one record, so either
+    naming it makes both ranking. A text-only list (`Top risks 1..3`) is no computation."""
+    numeric = {_grid(f) for f in fields if f.expected_type in ("number", "currency")}
+    named = {_grid(f) for f in fields if _names_ranking(f)}
+    return {
+        f.field_id for f in fields if _slot_key(f) and _grid(f) in named and _grid(f) in numeric
+    }
 
 
 # shortcut: English/Spanish words only, add words per language when a template needs them.
@@ -634,6 +645,18 @@ def _direction(names: tuple[str, ...]) -> Literal["CR", "DR"] | None:
     ins = bool(_IN_WORDS & words) or " money in " in text
     outs = bool(_OUT_WORDS & words) or " money out " in text
     return "CR" if ins and not outs else ("DR" if outs and not ins else None)
+
+
+# shortcut: English/Spanish words only, add words per language when a template needs them.
+_OPENING_WORDS = frozenset(
+    "opening beginning previous prior initial anterior inicial apertura".split()
+)
+
+
+def _opening(names: tuple[str, ...]) -> bool:
+    """The names state an opening/prior role (opening balance, previous period, brought forward)."""
+    words, text = _words(names)
+    return bool(_OPENING_WORDS & words) or " brought forward " in text
 
 
 def _is_total(f: IRField) -> bool:

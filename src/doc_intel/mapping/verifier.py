@@ -276,23 +276,44 @@ def _with_marker(t: str, start: int, end: int, value_type: str) -> tuple[int, in
     return start, end
 
 
+def _spans(
+    value: str | int | float, value_type: str, quotes: list[str]
+) -> list[tuple[str, int, int]]:
+    """(text, start, end) of every place a quote states `value`, with the patterns
+    `value_in_quotes` uses."""
+    c = _canonical(value, value_type)
+    found = []
+    for q in quotes if c is not None else []:
+        t = unicodedata.normalize("NFKC", q).translate(_PUNCT)
+        if value_type == "date":
+            spans = [(d, (m.start(), m.end())) for d, m in _date_spans(t, True)]
+        else:
+            spans = [
+                (n, _with_marker(t, m.start(), m.end(), value_type))
+                for n, m in _number_spans(t, _NUMBER_CI, True)
+            ]
+        found += [(t, *at) for n, at in spans if n == c]
+    return found
+
+
 def source_text(value: str | int | float, value_type: str, quotes: list[str]) -> str | None:
     """The span of the first quote that states `value`, as the source wrote it (symbol, code,
     percent sign, DR/CR tag, date format), found with the same patterns `value_in_quotes`
     uses."""
-    c = _canonical(value, value_type)
-    if c is None:
-        return None
-    for q in quotes:
-        t = unicodedata.normalize("NFKC", q).translate(_PUNCT)
-        if value_type == "date":
-            spans = _date_spans(t, True)
-        else:
-            spans = _number_spans(t, _NUMBER_CI, True)
-        for found, m in spans:
-            if found == c:
-                if value_type == "date":
-                    return m[0]
-                start, end = _with_marker(t, m.start(), m.end(), value_type)
-                return t[start:end]
-    return None
+    return next((t[a:b] for t, a, b in _spans(value, value_type, quotes)), None)
+
+
+_DIGIT_OR_BREAK = re.compile(r"[\d\n]")
+
+
+def bound_labels(
+    value: str | int | float, value_type: str, quotes: list[str]
+) -> list[tuple[str, str]]:
+    """(before, after) label text around each place the quotes state `value`: the text back to
+    the previous digit or line break, and forward to the next."""
+    # shortcut: label-before convention ("Label: 4", a table row); prose like "4 x and 9 y" may
+    # bind the wrong label, upgrade to a parsed label/value structure.
+    return [
+        (_DIGIT_OR_BREAK.split(t[:a])[-1], _DIGIT_OR_BREAK.split(t[b:])[0])
+        for t, a, b in _spans(value, value_type, quotes)
+    ]
