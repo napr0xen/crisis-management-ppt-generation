@@ -216,7 +216,9 @@ Accessed only through `src/doc_intel/vector/qdrant_store.py`.
 | `chunk_index` | integer | no |
 | `text` | string | no (chunk text, used by the verifier) |
 | `block_ids` | array of string | no (text chunks: provenance ids of the blocks in `text`, e.g. `P1-B03`, in order; a split block repeats its id; `[]` otherwise) |
-| `rows` | array of `{id, cells}` \| null | no (table chunks: the data rows whose Markdown lines are in `text`, in line order; `id` like `P1-T2-R04` (`T2-R04` when there is no page), `cells` keyed by column header, an empty or duplicate header as `col<j>` (1-based). `null` for text chunks and for table chunks split as plain text (oversized header or row)) |
+| `rows` | array of `{id, cells, row_role}` \| null | no (table chunks: the data rows whose Markdown lines are in `text`, in line order; `id` like `P1-T2-R04` (`T2-R04` when there is no page), `cells` keyed by column header, an empty or duplicate header as `col<j>` (1-based); `row_role` ∈ `data` \| `carry_forward` \| `total` (Phase 27; read as `data` on older points). `null` for text chunks and for table chunks split as plain text (oversized header or row)) |
+
+`kv` elements (Phase 27) are indexed as `element_type = 'text'` chunks whose `text` is one `Label: value` line per pair; `footer` elements are not indexed.
 
 Provenance ids are `P<page>-T<n>-R<nn>` (table `n` counted per page, data row `nn` 1-based) and `P<page>-B<nn>` (text block per page), assigned in document order. They are not part of `text`. Points written before Phase 23 lack `block_ids` and `rows` (read as `[]` and `null`); re-ingest the document to get them.
 
@@ -247,3 +249,21 @@ PostgreSQL, Qdrant, and Open WebUI data live in Docker **named volumes** (`pgdat
 - `StorageBackend.put_bytes(key, data, overwrite=False)` refuses to overwrite an existing key. `uploads/` and `artifacts/` are always written with `overwrite=False`. `parsed/` is derived data and is written with `overwrite=True`, so a retried ingest job can rewrite it.
 - `delete` is used only when a document or project is deleted, or a library template is removed (`remove-template`).
 - `data/` is git-ignored.
+
+### Parsed document (`parsed/{document_id}.json`)
+
+`ParsedDocument = {elements: [ParsedElement], page_count: int | null}`, elements in reading order (`ingestion/schemas.py`).
+
+| `ParsedElement` key | Type | Meaning |
+|---|---|---|
+| `element_type` | `text` \| `table` \| `kv` | `kv` (Phase 27): one label→value pair found by layout |
+| `text` | string | paragraph text; `Label: value` for `kv`; `""` for tables |
+| `rows` | array of array of string \| null | tables only; `rows[0]` is the column header row |
+| `page_number` | integer \| null | PDF page / PPTX slide; null for docx/xlsx/csv/txt/md |
+| `section_heading` | string \| null | nearest heading (sheet name for xlsx) |
+| `region` | `header` \| `kv` \| `table` \| `summary` \| `footer` \| `body` | Phase 27, default `body`. `table` for tables; `kv` for a single label→value pair; `summary` for pairs from a multi-column label line over an aligned value line; `header` / `footer` for PDF text labelled page header / footer by Docling, or in the top / bottom 8% band of the page when it is a page-number line or its digit-stripped text is in that band on 2+ pages (a one-off band line stays `body`) |
+| `bbox` | `[l, t, r, b]` \| null | PDF points, top-left origin; null without Docling provenance |
+| `label`, `value` | string \| null | `kv` only: the label (trailing `:` stripped) and the value text |
+| `caption` | string \| null | tables only: a banner/title row 0 removed from `rows` (one non-empty cell that is the only Docling cell of row 0 or spans 2+ columns, table of 2+ columns and 3+ rows); when the next row holds an amount the table is headerless and `rows[0]` is all empty |
+
+`TableRow` (built by the chunker, stored in the Qdrant `rows` payload): `{id, cells, row_role}`; `row_role` is `carry_forward` when a cell is a carry-forward phrase (`Balance brought forward`, `Carried forward`, `Saldo anterior`, …), `total` when a cell is a total phrase (`Total`, `Total charged`, `Subtotal`, `Suma`, …) and every other non-empty cell is an amount (`01/02 | TOTAL | 45,00` stays `data`), else `data`.

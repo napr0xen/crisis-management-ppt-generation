@@ -461,3 +461,37 @@ def test_top_on_a_signed_column_without_tags_fails_closed():
     top = {"op": "top", "column": "Amount", "pick": "Description", "rank": 1}
     assert compute(t, _d(**top), "text") == "mixed_tags"
     assert val(_stmt(("a", "-50,00"), ("b", "-20,00")), "text", **top) == "a"
+
+
+# ---- row_role (Phase 27) -------------------------------------------------------------------------
+def _roled(pairs):
+    hit = _hit(_rows("P1-T1", cells(*[(d, a) for d, a, _ in pairs])))
+    for row, (_, _, role) in zip(hit.rows, pairs, strict=True):
+        row.row_role = role
+    (t,) = tables([hit])
+    return t
+
+
+def test_total_row_role_skipped_not_double_counted():
+    t = _roled([("Fees", "10,00", "data"), ("Total charged", "10,00", "total")])
+    spec = _d(op="sum", column="Amount")
+    assert summary_rows(t, spec) == []
+    assert val(t, op="sum", column="Amount") == "10,00"
+
+
+def test_carry_forward_row_skipped():
+    t = _roled(
+        [("Brought forward", "5,00", "carry_forward"), ("A", "1,00", "data"), ("B", "2,00", "data")]
+    )
+    assert val(t, op="sum", column="Amount") == "3,00"
+
+
+def test_exclude_of_tagged_row_accepted():
+    t = _roled([("Fees", "10,00", "data"), ("Total", "10,00", "total")])
+    out = compute(t, _d(op="sum", column="Amount", exclude_rows=["P1-T1-R02"]), "currency")
+    assert isinstance(out, Computed) and out.value == "10,00"
+
+
+def test_untagged_arithmetic_total_still_summary_row():
+    t = _roled([("A", "1,00", "data"), ("B", "2,00", "data"), ("Sum", "3,00", "data")])
+    assert compute(t, _d(op="sum", column="Amount"), "currency") == "summary_row"

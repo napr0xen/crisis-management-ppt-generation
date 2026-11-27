@@ -6,8 +6,10 @@ Guarantee: every chunk satisfies `count_tokens(text) <= max_tokens`.
 import re
 from collections.abc import Callable
 from itertools import groupby
+from typing import Literal
 from uuid import UUID
 
+from doc_intel.ingestion.phrases import is_amount, is_carry_forward, is_total
 from doc_intel.ingestion.schemas import ChunkPayload, ParsedDocument, ParsedElement, TableRow
 
 Counter = Callable[[str], int]
@@ -91,6 +93,16 @@ def _provenance(elements: list[ParsedElement]) -> list[str]:
     return ids
 
 
+def _role(cells: list[str]) -> Literal["data", "carry_forward", "total"]:
+    if any(is_carry_forward(c) for c in cells):
+        return "carry_forward"
+    # a total row is the phrase plus amounts only: "01/02 | TOTAL | 45,00" is a merchant row
+    filled = [c for c in cells if c.strip()]
+    if any(is_total(c) for c in filled) and all(is_total(c) or is_amount(c) for c in filled):
+        return "total"
+    return "data"
+
+
 def _table_rows(header: list[str], data: list[list[str]], table_id: str, idx: tuple[int, ...]):
     keys = [" ".join(h.split()) for h in header]
     keys = [k if k and keys.index(k) == j else f"col{j + 1}" for j, k in enumerate(keys)]
@@ -101,6 +113,7 @@ def _table_rows(header: list[str], data: list[list[str]], table_id: str, idx: tu
                 (keys[j] if j < len(keys) else f"col{j + 1}"): " ".join(c.split())
                 for j, c in enumerate(data[i])
             },
+            row_role=_role(data[i]),
         )
         for i in idx
     ]
@@ -115,11 +128,10 @@ def chunk(
     count_tokens: Counter,
 ) -> list[ChunkPayload]:
     prov = dict(zip(map(id, doc.elements), _provenance(doc.elements), strict=True))
+    elements = [e for e in doc.elements if e.region != "footer"]  # stays in parsed JSON only
     # (element, block ids, table rows, text) per chunk
     pieces: list[tuple[ParsedElement, list[str], list[TableRow] | None, str]] = []
-    for (kind, _), group in groupby(
-        doc.elements, key=lambda e: (e.element_type, e.section_heading)
-    ):
+    for (kind, _), group in groupby(elements, key=lambda e: (e.element_type, e.section_heading)):
         els = list(group)
         if kind == "table":
             for e in els:
@@ -138,7 +150,7 @@ def chunk(
             ]
             packed = _pack(
                 parts,
-                "\n\n",
+                "\n" if kind == "kv" else "\n\n",  # one `Label: value` line per pair
                 max_tokens,
                 count_tokens,
                 lambda a, b: (a[0], a[1] + tuple(i for i in b[1] if i not in a[1])),
@@ -149,8 +161,10 @@ def chunk(
             document_id=document_id,
             filename=filename,
             page_number=e.page_number,
-            section_heading=e.section_heading,
-            element_type=e.element_type,
+            section_heading=(e.caption or e.section_heading)
+            if e.element_type == "table"
+            else e.section_heading,
+            element_type="table" if e.element_type == "table" else "text",
             chunk_index=i,
             text=t,
             block_ids=ids,

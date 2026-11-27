@@ -196,8 +196,11 @@ def compute(table: Table, spec: Derivation, expected_type: ExpectedType) -> Comp
         return "rows_incomplete"
     if any(h not in table.headers for h in named(spec)):
         return "column_missing"
-    if set(spec.exclude_rows) - set(
-        summary_rows(table, spec.model_copy(update={"exclude_rows": []}))
+    tagged = {p[1].id for p in table.rows if p[1].row_role != "data"}
+    if (
+        set(spec.exclude_rows)
+        - tagged
+        - set(summary_rows(table, spec.model_copy(update={"exclude_rows": []})))
     ):
         return "exclude_unverified"  # only detected summary rows may be dropped
     if summary_rows(table, spec):  # never auto-excluded: a genuine row would give a wrong total
@@ -222,7 +225,8 @@ def _kept(table: Table, spec: Derivation) -> list[Pair]:
     return [
         pair
         for pair in table.rows
-        if pair[1].id not in spec.exclude_rows
+        if pair[1].row_role == "data"  # carry-forward and total rows are never aggregated
+        and pair[1].id not in spec.exclude_rows
         and all(normalize(pair[1].cells[h]) == normalize(v) for h, v in spec.where.items())
     ]
 

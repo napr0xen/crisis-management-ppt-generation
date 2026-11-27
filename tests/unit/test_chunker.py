@@ -340,3 +340,70 @@ def test_parse_and_chunk_gives_a_csv_table_row_ids():
     rows = [r for c in chunks if c.rows for r in c.rows]
     assert [r.id for r in rows] == ["T1-R01", "T1-R02"]
     assert rows[1].cells == {"name": "tax", "amount": "20"}
+
+
+# ---- Phase 27 -----------------------------------------------------------------------------------
+def test_footer_not_chunked_kv_packed_as_lines():
+    kv = lambda label, value: ParsedElement(  # noqa: E731
+        element_type="kv", text=f"{label}: {value}", label=label, value=value, region="kv"
+    )
+    foot = ParsedElement(element_type="text", text="Pay soon", region="footer")
+    doc = ParsedDocument(elements=[kv("Opening", "1,00"), kv("Closing", "2,00"), foot])
+    (c,) = run(doc, 100)
+    assert c.element_type == "text" and c.text == "Opening: 1,00\nClosing: 2,00"
+    assert c.block_ids == ["B01", "B02"]
+
+
+def test_caption_is_table_heading():
+    e = ParsedElement(
+        element_type="table", rows=[["A", "B"], ["1", "2"]], section_heading="S", caption="Cap"
+    )
+    (c,) = run(ParsedDocument(elements=[e]), 100)
+    assert c.section_heading == "Cap"
+
+
+def test_row_roles_tagged():
+    rows = [
+        ["Item", "Amt"],
+        ["Fees", "1"],
+        ["Total charged this period", "1"],
+        ["Total Energies", "5"],
+        ["Balance Brought Forward:", "2"],
+        ["Saldo anterior", "3"],
+    ]
+    (c,) = run(ParsedDocument(elements=[table(rows)]), 200)
+    assert [r.row_role for r in c.rows] == [
+        "data",
+        "total",
+        "data",
+        "carry_forward",
+        "carry_forward",
+    ]
+
+
+def test_headerless_banner_table_total_not_double_counted():
+    from doc_intel.embeddings.schemas import Hit
+    from doc_intel.mapping.derived import Computed, compute, tables
+    from doc_intel.templates.schemas import Derivation
+
+    rows = [["", ""], ["Fees", "10,00 $"], ["Total charged", "10,00 $"]]
+    e = ParsedElement(element_type="table", rows=rows, caption="Closing", page_number=1)
+    (c,) = run(ParsedDocument(elements=[e]), 100)
+    hit = Hit(**c.model_dump(), chunk_id=uuid.uuid4(), score=0.0)
+    (t,) = tables([hit])
+    out = compute(t, Derivation(op="sum", column="col2"), "currency")
+    assert isinstance(out, Computed) and out.value == "10,00 $"
+
+
+def _roles(*rows):
+    (c,) = run(ParsedDocument(elements=[table([["A", "B", "C"], *rows])]), 200)
+    return [r.row_role for r in c.rows]
+
+
+def test_total_role_needs_amount_only_siblings():
+    assert _roles(
+        ["01/02", "TOTAL", "45,00"],  # a dated merchant row
+        ["Total charged", "10,00 $", ""],
+        ["", "Total", "100,00"],
+        ["", "Total", "Rent"],
+    ) == ["data", "total", "total", "data"]

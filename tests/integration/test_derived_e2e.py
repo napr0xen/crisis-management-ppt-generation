@@ -149,8 +149,8 @@ async def test_unknown_column_fails_closed(vector_store):
 
 
 async def test_printed_total_row_is_excluded_after_one_rebinding(vector_store):
-    # the statement prints a TOTAL row in Money In (3000.00 + 45.10 + 1250.40 = 4295.50)
-    rows = [*EU_ROWS, ["2024-01-09", "TOTAL", "", "4.295,50 $", "", ""]]
+    # a sum row not named as a total (arithmetic backstop) in Money In
+    rows = [*EU_ROWS, ["2024-01-09", "Period sum", "", "4.295,50 $", "", ""]]
     ctx, doc, texts, retriever = await ingest(vector_store, HEADERS, rows)
     llm = FakeLLM(
         bind(op="sum", column="Money In"),  # forgets the printed total
