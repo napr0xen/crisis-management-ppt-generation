@@ -117,8 +117,9 @@ def test_source_rows_skip_separators():
     assert source_rows(CASE) == ["Name | Qty", "apple | 3", "pear | 5"]
 
 
-def test_bench_has_the_three_cases():
-    assert set(CASES) == {"finance_statement", "procurement_review", "multilingual"} == set(GOLD)
+def test_bench_has_the_four_cases():
+    names = {"finance_statement", "procurement_review", "multilingual", "finance_derived"}
+    assert set(CASES) == names == set(GOLD)
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
@@ -132,4 +133,4 @@ def test_case_and_gold_are_consistent_and_gold_scores_one(name):
     assert r["field_accuracy"] == 1.0
     assert r["populated_but_wrong_rate"] == 0.0
     assert r["row_alignment_accuracy"] == 1.0
-    assert r["rows"] > 0
+    assert r["rows"] > 0 or name == "finance_derived"  # derived rows are not aligned

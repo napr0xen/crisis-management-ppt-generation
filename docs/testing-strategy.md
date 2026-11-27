@@ -66,6 +66,7 @@ pytest markers (declared in `pyproject.toml`): `integration`, `llm` (needs Ollam
 - `tests/integration/test_generation_e2e.py`: round trip per format (FakeLLM IR + extraction → render → signed download → reopen).
 - `tests/integration/test_pipe_api.py`: `/v1/pipe/chat` SSE event sequence (`status*` → `delta*` → `error`? → `done`); `X-OWUI-Chat-Id` validation (422); files dedup on `sha256` with the file id appended; the same chat id for another user is another project; unknown and failed files warn and continue; the 51-message limit.
 - `tests/integration/test_derived_e2e.py`: synthetic bank statements (European `$` cells; a single `Amount` column of `CR`/`DR` cells) through real parsing and Qdrant; `derived` slots (sum, diff, group_sum) get hand-computed literals, every evidence quote verbatim in its chunk with a `row_id`, and a binding to an absent column stays `missing` (Phase 24).
+- `tests/integration/test_derived_pptx.py`: `derived` results through `map_fields` and `render` into a PPTX; totals appear in the source's number convention and affix (`4.295,50 $`), breakdown rows in order, no token left (Phase 24).
 - `tests/integration/test_pipe_e2e.py`: the real Pipe against the real app over ASGI: upload, template fill, signed download (opens and holds the filled slides), and a cited answer. The LLM is scripted, the embedder is a seeded fake, and Open WebUI's file read is stubbed.
 
 ## 4. Security tests (`tests/security/`), hard gate at every phase exit
@@ -122,13 +123,13 @@ Phase 16 results (2026-11-22; 85 fields: summary/findings fields in four sources
 
 ### Regression bench (`tests/eval/bench/`, Phase 22)
 
-Synthetic real-shaped cases (`cases/finance_statement.json`, `procurement_review.json`, `multilingual.json`) share the `mapping.jsonl` case shape (`name`, `template.fields`, `sources`; no `expected`). `gold.json` holds `{case: {"fields": {field_id: {status, value?}}, "row_groups": [[field_id, ...]]}}`; a row group lists the numbered slot fields that form one template row. `score.py` is pure (no services; unit-tested in `tests/unit/test_bench_score.py`, which also checks that each gold fed back as results scores 1.0).
+Synthetic real-shaped cases (`cases/finance_statement.json`, `procurement_review.json`, `multilingual.json`, `finance_derived.json`: Spanish statement marked `"structured": true` so `ingest()` uses the real chunker and table chunks carry `rows`; four `derived` fields bound by the live LLM, a printed TOTAL row, gold computed by hand) share the `mapping.jsonl` case shape (`name`, `template.fields`, `sources`; no `expected`). `gold.json` holds `{case: {"fields": {field_id: {status, value?}}, "row_groups": [[field_id, ...]]}}`; a row group lists the numbered slot fields that form one template row. `score.py` is pure (no services; unit-tested in `tests/unit/test_bench_score.py`, which also checks that each gold fed back as results scores 1.0).
 
 | Metric | Definition |
 |---|---|
 | `field_accuracy` | gold fields whose result has the gold status and, when gold has a value, a matching value |
 | `populated_but_wrong_rate` | `populated` results whose value does not match gold (a gold `missing`/`conflict` or an absent gold field counts as wrong; gold `partial` with a matching value does not); 0.0 with no populated results |
-| `row_alignment_accuracy` | populated rows (each row of a populated table, each row group whose fields are all populated/partial) whose non-empty cells all occur in one single source pipe row; 1.0 with no rows (the `rows` count shows n) |
+| `row_alignment_accuracy` | populated rows (derived fields excluded, aggregates are not source rows; each row of a populated table, each row group whose fields are all populated/partial) whose non-empty cells all occur in one single source pipe row; 1.0 with no rows (the `rows` count shows n) |
 
 Reports carry the counts next to each rate. Run: `uv run pytest tests/eval/bench -m eval`; results go to `report.json["bench"]`. Only `fabricated_citations == 0` is gated; the three metrics are recorded as the regression baseline.
 

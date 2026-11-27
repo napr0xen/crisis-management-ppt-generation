@@ -1,0 +1,81 @@
+{
+  "name": "finance_derived",
+  "template": {
+    "fields": [
+      {
+        "field_id": "total_money_in",
+        "anchor_id": "pptx:total_money_in",
+        "section_path": [
+          "Resumen"
+        ],
+        "label": "Total money in",
+        "description": "Sum of all money received (Ingresos) in the statement period.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Total money in]"
+        },
+        "mode": "derived"
+      },
+      {
+        "field_id": "total_money_out",
+        "anchor_id": "pptx:total_money_out",
+        "section_path": [
+          "Resumen"
+        ],
+        "label": "Total money out",
+        "description": "Sum of all money spent (Gastos) in the statement period.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Total money out]"
+        },
+        "mode": "derived"
+      },
+      {
+        "field_id": "net_movement",
+        "anchor_id": "pptx:net_movement",
+        "section_path": [
+          "Resumen"
+        ],
+        "label": "Net movement",
+        "description": "Net movement over the period: money in minus money out, not a balance.",
+        "expected_type": "currency",
+        "required": true,
+        "write_mode": "replace_token",
+        "constraints": {
+          "token": "[Net movement]"
+        },
+        "mode": "derived"
+      },
+      {
+        "field_id": "category_breakdown",
+        "anchor_id": "pptx:category_breakdown",
+        "section_path": [
+          "Resumen"
+        ],
+        "label": "Spending by category",
+        "description": "The three categories with the highest total spending (Gastos), one row per category: category name and total spent, largest first.",
+        "expected_type": "table",
+        "required": true,
+        "write_mode": "fill_table_rows",
+        "constraints": {
+          "columns": [
+            "Category",
+            "Total spent"
+          ]
+        },
+        "mode": "derived"
+      }
+    ]
+  },
+  "sources": [
+    {
+      "filename": "extracto_mayo.md",
+      "structured": true,
+      "text": "Extracto de cuenta, mayo de 2025\n\n| Fecha | Concepto | Categoría | Ingresos | Gastos | Saldo |\n| --- | --- | --- | --- | --- | --- |\n| 02/05/2025 | Nómina mayo | Ingresos | 3.250,00 $ |  | 4.250,00 $ |\n| 03/05/2025 | Alquiler | Vivienda |  | 1.150,00 $ | 3.100,00 $ |\n| 05/05/2025 | Supermercado Sol | Alimentación |  | 212,40 $ | 2.887,60 $ |\n| 07/05/2025 | Reembolso seguro | Reembolsos | 85,60 $ |  | 2.973,20 $ |\n| 09/05/2025 | Restaurante | Alimentación |  | 64,35 $ | 2.908,85 $ |\n| 12/05/2025 | Electricidad | Vivienda |  | 98,70 $ | 2.810,15 $ |\n| 15/05/2025 | Trabajo freelance | Ingresos | 1.420,15 $ |  | 4.230,30 $ |\n| 18/05/2025 | Cine | Ocio |  | 38,00 $ | 4.192,30 $ |\n| 21/05/2025 | Gasolina | Transporte |  | 71,25 $ | 4.121,05 $ |\n| 26/05/2025 | Supermercado Sol | Alimentación |  | 143,80 $ | 3.977,25 $ |\n| | TOTAL | | 4.755,75 $ | 1.778,50 $ | |"
+    }
+  ]
+}

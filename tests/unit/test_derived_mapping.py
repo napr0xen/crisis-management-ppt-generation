@@ -85,10 +85,10 @@ async def test_preset_derivation_makes_no_llm_call():
 
 
 async def test_llm_binding_and_verbatim_row_evidence():
-    hit, llm = _hit(), FakeLLM(_bind(exclude_rows=["T1-R03"]))
+    hit, llm = _hit(), FakeLLM(_bind())
     r = await map_field(CTX, _field(), [DOC], Retr([hit]), llm)
-    assert (r.status, r.value, len(llm.calls)) == ("populated", 1200.75, 1)
-    assert [e.row_id for e in r.evidence] == ["T1-R01", "T1-R02"]
+    assert (r.status, r.value, len(llm.calls)) == ("populated", 1299.75, 1)
+    assert [e.row_id for e in r.evidence] == ["T1-R01", "T1-R02", "T1-R03"]
     for e in r.evidence:
         assert verify_quote([hit], str(e.chunk_id), e.quote) is not None
     assert r.evidence[0].quote == "| Rent | 1.000,50 |"
@@ -205,4 +205,42 @@ async def test_llm_binding_that_breaks_derivation_rules_is_missing_not_a_crash()
     assert r.status == "missing" and r.missing_reason in (
         "llm_error",
         "evidence_failed_verification",
+    )
+
+
+def _total_hit():
+    """Rent 1.000,50 + Fees 200,25 + Tax 99,00 and a printed total row 1.299,75."""
+    hit = _hit()
+    hit.rows.append(TableRow(id="T1-R04", cells={"Item": "Total", "Amount": "1.299,75"}))
+    hit.text += "\n| Total | 1.299,75 |"
+    return hit
+
+
+async def test_summary_row_binding_is_corrected_by_one_rebinding():
+    llm = FakeLLM(_bind(), _bind(exclude_rows=["T1-R04"]))
+    r = await map_field(CTX, _field(), [DOC], Retr([_total_hit()]), llm)
+    assert (r.status, r.value, len(llm.calls)) == ("populated", 1299.75, 2)
+    assert [e.row_id for e in r.evidence] == ["T1-R01", "T1-R02", "T1-R03"]
+    retry = llm.calls[1][0]
+    assert retry[-2]["role"] == "assistant" and "T1-R04" in retry[-1]["content"]
+
+
+async def test_summary_row_binding_still_wrong_after_retry_is_missing():
+    llm = FakeLLM(_bind(), _bind())
+    r = await map_field(CTX, _field(), [DOC], Retr([_total_hit()]), llm)
+    assert (r.status, r.value, r.missing_reason, len(llm.calls)) == (
+        "missing",
+        None,
+        "evidence_failed_verification",
+        2,
+    )
+
+
+async def test_summary_row_in_a_preset_derivation_is_missing_without_llm():
+    llm = FakeLLM()
+    r = await map_field(CTX, _field(SUM), [DOC], Retr([_total_hit()]), llm)
+    assert (r.status, r.missing_reason, llm.calls) == (
+        "missing",
+        "evidence_failed_verification",
+        [],
     )

@@ -6,7 +6,15 @@ import pytest
 
 from doc_intel.embeddings.schemas import Hit
 from doc_intel.ingestion.schemas import TableRow
-from doc_intel.mapping.derived import Computed, Table, compute, row_line, tables
+from doc_intel.mapping.derived import (
+    Computed,
+    Table,
+    compute,
+    render_like,
+    row_line,
+    summary_rows,
+    tables,
+)
 from doc_intel.templates.schemas import Derivation
 
 DOC = uuid.uuid4()
@@ -182,7 +190,6 @@ def test_where_and_exclude_rows():
     ]
     t = _table(rows)
     assert val(t, op="sum", column="Amount", where={"Type": "FEE"}) == "3,00"
-    assert val(t, op="sum", column="Amount", exclude_rows=["P1-T1-R03"]) == "3,00"
     out = compute(t, _d(op="sum", column="Amount", where={"Type": "Nope"}), "currency")
     assert out == "no_rows"
 
@@ -321,3 +328,76 @@ def test_row_line_matches_every_real_chunk_shape_and_format_hit():
             )
             seen += 1
     assert seen == 12
+
+
+# ---- summary rows (printed totals, subtotals, carried-forward) -----------------------------------
+def _amounts(*values):
+    return _table(cells(*[(f"d{i}", v) for i, v in enumerate(values, 1)]))
+
+
+def test_final_grand_total_row_is_flagged_and_compute_fails_closed():
+    t = _amounts("10,00", "20,00", "35,00", "65,00")
+    spec = _d(op="sum", column="Amount")
+    assert summary_rows(t, spec) == ["P1-T1-R04"]
+    assert compute(t, spec, "currency") == "summary_row"
+
+
+def test_page_subtotal_and_carried_forward_rows_are_flagged():
+    t = _amounts("10,00", "20,00", "35,00", "65,00", "65,00", "5,00", "8,00", "78,00")
+    assert summary_rows(t, _d(op="sum", column="Amount")) == ["P1-T1-R04", "P1-T1-R05", "P1-T1-R08"]
+
+
+def test_two_equal_consecutive_transactions_are_not_flagged():
+    t = _amounts("5,00", "5,00")
+    assert summary_rows(t, _d(op="sum", column="Amount")) == []
+    assert val(t, op="sum", column="Amount") == "10,00"
+
+
+def test_coincidental_sum_is_flagged_conservatively():
+    # documented trade-off: a genuine r3 == r1 + r2 makes the slot missing, never a wrong total
+    t = _amounts("10,00", "20,00", "30,00", "7,00")
+    assert compute(t, _d(op="sum", column="Amount"), "currency") == "summary_row"
+
+
+def test_correctly_excluded_total_computes():
+    t = _amounts("10,00", "20,00", "35,00", "65,00")
+    assert val(t, op="sum", column="Amount", exclude_rows=["P1-T1-R04"]) == "65,00"
+
+
+def test_excluding_a_genuine_or_unknown_row_is_unverified():
+    t = _amounts("10,00", "20,00", "35,00", "65,00")
+    for ids in (["P1-T1-R03"], ["P1-T1-R04", "P1-T1-R01"], ["P9-T9-R09"]):
+        out = compute(t, _d(op="sum", column="Amount", exclude_rows=ids), "currency")
+        assert out == "exclude_unverified"
+
+
+def test_cr_dr_subsets_and_minus_sides_are_checked_separately():
+    t = _amounts("1,00 CR", "2,00 DR", "3,00 CR", "4,00 CR", "2,00 DR")
+    assert summary_rows(t, _d(op="diff", column="Amount")) == ["P1-T1-R04"]  # CR: 1 + 3 = 4
+    assert summary_rows(t, _d(op="sum", column="Amount", tag="DR")) == []
+    two = _table(
+        [{"Description": "a", "Amount": "1,00", "B": "9,00"}] * 2
+        + [{"Description": "b", "Amount": "2,00", "B": "9,00"}]
+    )
+    assert summary_rows(two, _d(op="diff", column="Amount", minus="B")) == ["P1-T1-R03"]
+
+
+def test_group_sum_and_text_count_are_covered_or_skipped():
+    t = _table(cells(("a", "1,00"), ("b", "2,00"), ("c", "3,00")))
+    assert summary_rows(t, _d(op="group_sum", column="Amount", group_by="Description")) == [
+        "P1-T1-R03"
+    ]
+    names = _table(cells(("a", "x"), ("b", "y"), ("c", "z")))
+    assert summary_rows(names, _d(op="count", column="Description")) == []
+
+
+def test_render_like_follows_cell_convention():
+    assert render_like(1234.5, ["1.000,00 $", "20,00 $"]) == "1.234,50 $"
+    assert render_like(1234.5, ["$1,000.00", "$20.00"]) == "$1,234.50"
+    assert render_like(5, ["1.000,00", "20.00"]) is None
+    assert render_like(5, ["n/a"]) is None
+
+
+def test_render_like_ignores_cells_with_another_affix_pair():
+    assert render_like(1234.5, ["1.000,00 $", "01.05", "20,00 $"]) == "1.234,50 $"
+    assert render_like(1234.5, ["$1,000.00", "Factura 123", "$20.00"]) == "$1,234.50"

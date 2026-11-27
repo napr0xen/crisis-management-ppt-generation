@@ -5,6 +5,8 @@ the verifier's chunk check), every seeded conflict detected, absent fields retur
 Field accuracy is tracked, not gated. Merges its results into tests/eval/report.json["mapping"].
 """
 
+import csv
+import io
 import json
 import statistics
 import time
@@ -18,6 +20,7 @@ import pytest
 from doc_intel.core.config import get_settings
 from doc_intel.core.tenancy import TenantContext
 from doc_intel.embeddings.ollama import OllamaQwen3Embedder
+from doc_intel.ingestion.pipeline import parse_and_chunk
 from doc_intel.ingestion.schemas import ChunkPayload
 from doc_intel.llm.gateway import make_llm_client
 from doc_intel.mapping.engine import map_fields
@@ -45,12 +48,34 @@ def _quotes(result: FieldMappingResult) -> list:
 
 
 async def ingest(ctx, sources, embedder, vector_store) -> tuple[list[UUID], dict[UUID, str]]:
-    """Chunk each source on blank lines, embed and upsert; returns doc ids and their full texts."""
+    """Chunk each source on blank lines (its pipe table via the real chunker when `structured`),
+    embed and upsert; returns doc ids and their full texts."""
+    settings = get_settings()
     doc_ids, texts = [], {}
     for source in sources:
         doc_id = uuid.uuid4()
         doc_ids.append(doc_id)
         texts[doc_id] = source["text"]
+        if source.get("structured"):  # real parse/chunk path (table chunks carry `rows`) via CSV
+            out = io.StringIO()  # shortcut: the .md parser keeps tables as text; pipe rows -> CSV
+            csv.writer(out).writerows(
+                [c.strip() for c in ln.strip().strip("|").split("|")]
+                for ln in source["text"].splitlines()
+                if ln.startswith("|") and not set(ln) <= set("|-: ")
+            )
+            _, chunks = parse_and_chunk(
+                out.getvalue().encode(),
+                "csv",
+                document_id=doc_id,
+                filename=source["filename"],
+                max_tokens=settings.chunk_max_tokens,
+                tokenizer_model=settings.chunk_tokenizer,
+            )
+            paragraphs = [c.text for c in chunks]
+            await vector_store.upsert_chunks(
+                ctx, chunks, await embedder.embed_documents(paragraphs)
+            )
+            continue
         paragraphs = [p for p in source["text"].split("\n\n") if p.strip()]
         chunks = [
             ChunkPayload(

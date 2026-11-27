@@ -4,6 +4,7 @@ import re
 import unicodedata
 from datetime import date
 
+from doc_intel.mapping.derived import render_like
 from doc_intel.mapping.schemas import FieldMappingResult
 from doc_intel.mapping.verifier import source_text
 from doc_intel.templates.schemas import IRField, TemplateFormat
@@ -40,6 +41,11 @@ def _paragraphs(field: IRField, result: FieldMappingResult) -> list[str]:
     # falls back to the canonical value.
     span = source_text(value, t, [e.quote for e in result.evidence])  # type: ignore[arg-type]
     if t in ("number", "currency"):
+        # shortcut: only currency; a computed count has no cell convention and plain numbers keep
+        # str(value), upgrade when the result carries the rendered text.
+        if not span and t == "currency" and isinstance(value, int | float):
+            # a computed amount (no quote states it) in the convention and affix of the cited cells
+            span = render_like(value, [p for e in result.evidence for p in e.quote.split("|")])
         text = span or str(value)
         return [f"{text} {unit}" if unit and not (span and _has_marker(span, unit)) else text]
     if t == "percent":

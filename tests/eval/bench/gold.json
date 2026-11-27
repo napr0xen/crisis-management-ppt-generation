@@ -162,5 +162,39 @@
       }
     },
     "row_groups": []
+  },
+  "finance_derived": {
+    "fields": {
+      "total_money_in": {
+        "status": "populated",
+        "value": 4755.75
+      },
+      "total_money_out": {
+        "status": "populated",
+        "value": 1778.5
+      },
+      "net_movement": {
+        "status": "populated",
+        "value": 2977.25
+      },
+      "category_breakdown": {
+        "status": "populated",
+        "value": [
+          [
+            "Vivienda",
+            "1.248,70 $"
+          ],
+          [
+            "Alimentación",
+            "420,55 $"
+          ],
+          [
+            "Transporte",
+            "71,25 $"
+          ]
+        ]
+      }
+    },
+    "row_groups": []
   }
 }

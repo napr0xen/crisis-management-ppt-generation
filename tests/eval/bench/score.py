@@ -87,8 +87,14 @@ def score_case(case: dict, gold: dict, results: dict) -> Counter:
     rows = source_rows(case)
     # shortcut: a numeric cell is compared as a number against one row's text, not per column;
     # tighten if a row ever aligns only by coincidence.
-    for result in results.values():
-        if result.status == "populated" and _is_table(result.value):
+    derived = {
+        f["field_id"]
+        for f in case.get("template", {}).get("fields", [])
+        if f.get("mode") == "derived"
+    }
+    for field_id, result in results.items():
+        # aggregated rows (derived) are computed, not source rows: nothing to align
+        if result.status == "populated" and field_id not in derived and _is_table(result.value):
             for row in result.value:
                 count["rows"] += 1
                 count["rows_aligned"] += _aligned(row, rows)

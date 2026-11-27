@@ -21,7 +21,7 @@ from doc_intel.llm.gateway import (
     prompt_tokens,
 )
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.mapping.derived import Table, compute, named, row_line, tables
+from doc_intel.mapping.derived import Table, compute, named, row_line, summary_rows, tables
 from doc_intel.mapping.extractor import (
     MAX_CHART_POINTS,
     MAX_PRIMARY_HITS,
@@ -531,10 +531,14 @@ def _bind_view(label: str, table: Table) -> str:
 
 
 async def _bound(
-    llm: LLMClient, field: IRField, found: list[Table]
-) -> tuple[Table, Derivation] | MissingReason:
-    """The one LLM call of a derived slot: which table and which exact headers. A bad or unusable
-    binding is a reason, never a guess."""
+    llm: LLMClient,
+    field: IRField,
+    found: list[Table],
+    retry: tuple[LLMDerivation, list[str]] | None = None,
+) -> tuple[Table, Derivation, LLMDerivation] | MissingReason:
+    """The LLM call of a derived slot: which table and which exact headers. A bad or unusable
+    binding is a reason, never a guess. `retry` is an earlier binding and why it was refused (the
+    house retry shape of `extract`)."""
     spec = bounded_field(field).model_dump_json(
         include={"label", "description", "expected_type"}, exclude_none=True
     )
@@ -543,6 +547,17 @@ async def _bound(
         {"role": "system", "content": load_prompt("derive_bind")},
         {"role": "user", "content": f"Slot:\n{spec}\n\nTables:\n\n{views}"},
     ]
+    if retry:
+        earlier, notes = retry
+        listing = "\n".join(f"- {n}" for n in notes)
+        messages += [
+            {"role": "assistant", "content": earlier.model_dump_json()},
+            {
+                "role": "user",
+                "content": f"That binding does not fit this slot:\n{listing}\nReply with the "
+                "corrected full JSON.",
+            },
+        ]
     try:
         bind = await complete_json(llm, messages, LLMDerivation)
     except LLMInvalidOutput:  # a transport LLMError propagates: the worker retries
@@ -551,7 +566,7 @@ async def _bound(
     table = labels.get(bind.table.strip().lower())
     if bind.not_found or table is None or bind.derivation is None:
         return "not_found_by_llm"
-    return table, bind.derivation
+    return table, bind.derivation, bind
 
 
 def _row_evidence(table: Table, cited: tuple[Any, ...]) -> list[Evidence] | None:
@@ -603,12 +618,27 @@ async def _derived(
         if len(fits) > 1:
             return _missing(field, "evidence_failed_verification", docs)
         table, spec = fits[0], field.derivation
+        out = compute(table, spec, field.expected_type)  # shortcut: a preset spec cannot name row
+        # ids, so summary_row is missing; upgrade by letting the binding call fix presets
     else:
         bound = await _bound(llm, field, found)
         if isinstance(bound, str):
             return _missing(field, bound, docs)
-        table, spec = bound
-    out = compute(table, spec, field.expected_type)
+        table, spec, bind = bound
+        out = compute(table, spec, field.expected_type)
+        if out == "summary_row":  # one corrective re-binding naming the flagged rows
+            log.info("derived_rejected", slot_id=field.field_id, code=out)
+            ids = ", ".join(summary_rows(table, spec))
+            note = (
+                f"summary_row: rows {ids} equal the sum of the rows before them, so they look "
+                "like printed totals, subtotals or carried-forward rows; list every such row in "
+                "exclude_rows."
+            )
+            again = await _bound(llm, field, found, (bind, [note]))
+            if isinstance(again, str):
+                return _missing(field, "evidence_failed_verification", docs)
+            table, spec, _ = again
+            out = compute(table, spec, field.expected_type)
     if isinstance(out, str):
         log.info("derived_rejected", slot_id=field.field_id, code=out)  # code only, never text
         return _missing(

@@ -146,3 +146,17 @@ async def test_unknown_column_fails_closed(vector_store):
     llm = FakeLLM(bind(op="sum", column="Money Sideways"))
     r = (await map_fields(ctx, [field("total")], [doc], retriever, llm))["total"]
     assert (r.status, r.value, r.evidence) == ("missing", None, [])
+
+
+async def test_printed_total_row_is_excluded_after_one_rebinding(vector_store):
+    # the statement prints a TOTAL row in Money In (3000.00 + 45.10 + 1250.40 = 4295.50)
+    rows = [*EU_ROWS, ["2024-01-09", "TOTAL", "", "4.295,50 $", "", ""]]
+    ctx, doc, texts, retriever = await ingest(vector_store, HEADERS, rows)
+    llm = FakeLLM(
+        bind(op="sum", column="Money In"),  # forgets the printed total
+        bind(op="sum", column="Money In", exclude_rows=["T1-R09"]),
+    )
+    r = (await map_fields(ctx, [field("total_money_in")], [doc], retriever, llm))["total_money_in"]
+    assert len(llm.calls) == 2
+    assert (r.status, r.value) == ("populated", 4295.5)
+    assert_cited(r, texts, 3)
