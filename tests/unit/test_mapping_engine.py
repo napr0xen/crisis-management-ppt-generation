@@ -999,16 +999,42 @@ async def test_typed_roles_both_confirmed_stay_populated():
     assert {r.status for r in out.values()} == {"populated"}
 
 
-async def test_typed_roles_not_asked_across_slides():
-    other_slide = _typed("closing", "Closing Balance", "pptx:s2:sp14", "currency", slide=2)
-    one = _typed_batch(CASH_HIT, "402.031,45 $", "402.031,45 $ at period end", 1)
-    lone = json.dumps(
-        {"candidates": json.loads(one)["slots"][0]["candidates"]}
-        | {"not_found": False, "incomplete": False}
+def _lone(value):
+    cand = _cand(value, (CASH_HIT, "402.031,45 $ at period end"))
+    return json.dumps({"candidates": [cand], "not_found": False, "incomplete": False})
+
+
+CASH1 = _typed_batch(CASH_HIT, "402.031,45 $", "402.031,45 $ at period end", 1)
+
+
+async def test_typed_roles_group_the_same_number_across_slides_in_any_symbol_order():
+    net2 = _typed("net", "Net Cash Movement", "pptx:s2:sp11", "currency", slide=2)
+    out, llm = await _typed_run(
+        [CLOSING, net2],
+        CASH_HIT,
+        CASH1,
+        _lone("$ 402.031,45"),
+        '{"about": "Closing", "slots": [1]}',
+        NOT_FOUND,
     )
-    out, llm = await _typed_run([NET, other_slide], CASH_HIT, one, lone)
-    assert len(llm.calls) == 2  # one batch per slide: no role check
-    assert {r.status for r in out.values()} == {"populated"}
+    assert len(llm.calls) == 4  # two batches, one role check, one role retry
+    assert out["closing"].status == "populated"
+    assert (out["net"].status, out["net"].missing_reason) == (
+        "missing",
+        "evidence_failed_verification",
+    )
+
+
+async def test_typed_roles_float_and_text_forms_of_a_number_are_one_group():
+    net2 = _typed("net", "Net Cash Movement", "pptx:s2:sp11", "currency", slide=2)
+    _, llm = await _typed_run(
+        [CLOSING, net2],
+        CASH_HIT,
+        CASH1,
+        _lone("402031.45"),
+        '{"about": "Closing", "slots": [1, 2]}',
+    )
+    assert len(llm.calls) == 3  # two batches, one role check
 
 
 async def test_typed_roles_not_asked_for_the_same_label():

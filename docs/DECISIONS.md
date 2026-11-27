@@ -334,3 +334,23 @@ Names used below (tables, endpoints, paths) are defined in [data-model.md](data-
 - Printed total, subtotal and carried-forward rows are detected arithmetically (`derived.summary_rows`, no keywords, any language): over each value sequence an op aggregates, a row equal to the sum of the values since the previous such row, or to the sum of all values before it (each over at least two values), is a summary row. `compute` then fails closed with `summary_row`; it never auto-excludes (excluding a genuine row would give a wrong but verified total). An LLM binding gets one corrective re-binding naming the flagged row ids so it lists them in `exclude_rows`; a second `summary_row` or any failure is `missing(evidence_failed_verification)`, and so is a preset derivation (it cannot name row ids). Trade-off: a genuine row that coincidentally equals the running or cumulative sum makes the slot missing; a count over a text column is not checked. An `exclude_rows` id is accepted only if `summary_rows` flags it when run with no exclusions (else `exclude_unverified`, `missing`), so a binding cannot drop a genuine row; trade-off: a non-sum row the binding rightly skips (an opening balance printed in an amount column) makes the slot missing.
 - One table per slot: a logical table split into tables with different headers (not joined by Phase 22) is aggregated per table only.
 - Documents ingested before Phase 23 have no `rows`; their derived slots are `missing` until re-ingest.
+
+## ADR-019 — Ranked derived slots, deck-wide numeric role guard, amount-in-identifier-column rejection
+
+**Status:** Accepted (Phase 25). Extends ADR-018 (`derived` ops and IR classification) and the Phase 21 slot-role check.
+
+**Context.** A live run of a finance deck (`finance_test.pdf`) after Phase 24: slide 2's net movement took the closing balance and the closing balance went `missing` (the same number filled two roles on different slides, which the per-slide role check never compared); slide 4's Reference column was filled with amounts copied from the neighbouring amount column; slides 5 (category breakdown) and 6 (largest payments and receipts) were `missing` because every IR slot was classified `extractive`, though no source states a k-th largest row or a category total.
+
+**Decision.**
+- Role guard: typed slots (`number`, `currency`, `percent`) are grouped by canonical number across the whole deck (`"$ 402.031,45"`, `"402.031,45 $"` and `402031.45` are one group), then checked together as before. Dates stay per slide.
+- IR builder: a number or currency slot whose label or id names a net movement (EN/ES term set) is forced to `derived`. A numbered slot (`receipt_date_2`, `category_1_amount`) whose label, id, section path or context holds a ranking or breakdown word is forced to `derived` when its numbered group (first id word, slot number) holds a number or currency slot (`_ranking_slots`); a text-only list is left alone.
+- Derivation: new `op` `top` (the k-th largest row by magnitude of `column`; `tag` `CR`/`DR`; the slot takes the `pick` cell, default `column`); `group_sum` gains `group_sep` (the category is the cell text before a separator, for description-prefix categories) and `rank` (the k-th group's label or sum). `rank` is set by code from the field id's slot number for ranking slots only, never by the LLM. A signed column with no tag and both signs fails closed (`mixed_tags`); `rank` above the row or group count is `rank_out_of_range`.
+- Rank consistency (`engine._check_ranks`): the cells of one record (slide, first field id word, number) must cite the same rows, and two ranks must not cite identical rows, else the cells are `missing` (code `rank_mixed`).
+- Amount in an identifier column: a `text` slot or table/grid column whose header names an identifier, reference, description or date kind rejects a pure amount (`verifier.is_amount`, code `amount_in_text_column`). The group's escalation retry receives the rejection notes. Ambiguous words (account, card, details) are not in the word list.
+- `IR_BUILDER_VERSION` 5 → 6.
+
+**Consequences.**
+- More binding LLM calls: one per ranked cell (each cell of a ranked record is its own derived slot).
+- The net-movement terms, ranking words and identifier header words are English/Spanish lists (`shortcut:` comments in `ir_builder.py` and `engine.py`); another language needs words added.
+- Templates must be re-extracted at version 6 (the sync does it); IRs stored at 5 keep their `extractive` classification until then.
+- Rank rejection is all-or-nothing per record: a binding that disagrees on one cell loses the whole row, never mixes rows.

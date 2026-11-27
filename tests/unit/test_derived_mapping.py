@@ -244,3 +244,140 @@ async def test_summary_row_in_a_preset_derivation_is_missing_without_llm():
         "evidence_failed_verification",
         [],
     )
+
+
+# ---- ranked slot grids (largest receipts/payments, category breakdown) ---------------------------
+STMT_HEADERS = ("Booking date", "Value", "Description", "Transaction amount", "Balance")
+STMT = [  # (date, description, amount): no Category column
+    ("2026-01-02", "Card purchase · Fennstead", "1.183,51 DR"),
+    ("2026-01-03", "Transfer received · Gilwick INV-1", "45.015,15 CR"),
+    ("2026-01-04", "Utilities · Powerco", "700,00 DR"),
+    ("2026-01-05", "Transfer received · Acme", "3.000,00 CR"),
+    ("2026-01-06", "Rent · Landlord", "2.000,00 DR"),
+    ("2026-01-07", "Card purchase · Cafe", "500,00 DR"),
+    ("2026-01-08", "Transfer received · Beta", "3.000,00 CR"),
+]
+
+
+def _stmt_hit():
+    rows, lines = [], []
+    for n, (d, desc, amt) in enumerate(STMT, 1):
+        cells = dict(zip(STMT_HEADERS, (d, d, desc, amt, "0,00"), strict=True))
+        rows.append(TableRow(id=f"T1-R{n:02d}", cells=cells))
+        lines.append("| " + " | ".join(cells.values()) + " |")
+    text = (
+        "| " + " | ".join(STMT_HEADERS) + " |\n| --- | --- | --- | --- | --- |\n" + "\n".join(lines)
+    )
+    return Hit(
+        chunk_id=uuid.uuid4(),
+        document_id=DOC,
+        filename="s.csv",
+        page_number=None,
+        section_heading=None,
+        element_type="table",
+        text=text,
+        score=0.0,
+        chunk_index=0,
+        rows=rows,
+    )
+
+
+def _top(tag, pick, n, kind, heading):
+    spec = Derivation(op="top", column="Transaction amount", tag=tag, pick=pick)
+    f = _field(
+        spec,
+        f"{heading}_{kind}_{n}",
+        "currency" if kind == "amount" else ("date" if kind == "date" else "text"),
+    )
+    # as the live IR: the heading names the ranking, the context is the column header
+    return f.model_copy(
+        update={"context": kind.title(), "section_path": ["Slide 6", f"LARGEST {heading.upper()}S"]}
+    )
+
+
+def _grid(tag, heading, party_kind, n=3):
+    return [
+        _top(tag, pick, i, kind, heading)
+        for i in range(1, n + 1)
+        for kind, pick in (("date", "Booking date"), (party_kind, "Description"), ("amount", None))
+    ]
+
+
+async def test_largest_receipts_and_payments_take_their_own_ranked_rows():
+    fields = _grid("CR", "receipt", "source") + _grid("DR", "payment", "payee")
+    llm = FakeLLM()
+    out = await map_fields(CTX, fields, [DOC], Retr([_stmt_hit()]), llm)
+    assert llm.calls == []
+    got = {k: v.value for k, v in out.items()}
+    assert [got[f"receipt_amount_{i}"] for i in (1, 2, 3)] == [45015.15, 3000, 3000]
+    assert got["receipt_date_2"] == "2026-01-05" and got["receipt_date_3"] == "2026-01-08"  # ties
+    assert got["receipt_source_1"] == "Transfer received · Gilwick INV-1"
+    assert [got[f"payment_amount_{i}"] for i in (1, 2, 3)] == [2000, 1183.51, 700]
+    assert got["payment_payee_1"] == "Rent · Landlord"
+    for k, v in out.items():
+        assert v.status == "populated" and len(v.evidence) == 1, k
+    assert out["payment_date_2"].evidence[0].row_id == out["payment_amount_2"].evidence[0].row_id
+    assert out["receipt_date_1"].evidence[0].row_id == "T1-R02"
+
+
+async def test_a_record_citing_different_rows_is_demoted_as_rank_mixed():
+    fields = _grid("DR", "payment", "payee", 2)
+    bad = Derivation(op="top", column="Transaction amount", tag="CR")  # amount bound to receipts
+    fields = [
+        f.model_copy(update={"derivation": bad}) if f.field_id == "payment_amount_1" else f
+        for f in fields
+    ]
+    out = await map_fields(CTX, fields, [DOC], Retr([_stmt_hit()]), FakeLLM())
+    for k in ("payment_date_1", "payment_payee_1", "payment_amount_1"):
+        assert (out[k].status, out[k].missing_reason) == ("missing", "evidence_failed_verification")
+    assert out["payment_date_2"].status == "populated"
+
+
+async def test_rank_beyond_the_rows_is_missing():
+    f = _top("CR", None, 4, "amount", "receipt")  # only three receipts
+    r = await map_field(CTX, f, [DOC], Retr([_stmt_hit()]), FakeLLM(), rank=4)
+    assert (r.status, r.missing_reason) == ("missing", "evidence_failed_verification")
+
+
+async def test_category_slots_rank_description_prefixes_with_exact_sums():
+    spec = Derivation(
+        op="group_sum",
+        column="Transaction amount",
+        group_by="Description",
+        group_sep=" · ",
+        tag="DR",
+    )
+    fields = []
+    for i in (1, 2, 3):
+        fields.append(_field(spec, f"category_{i}", "text"))
+        fields.append(_field(spec, f"category_{i}_amount", "currency"))
+    out = await map_fields(CTX, fields, [DOC], Retr([_stmt_hit()]), FakeLLM())
+    assert [out[f"category_{i}"].value for i in (1, 2, 3)] == ["Rent", "Card purchase", "Utilities"]
+    assert [out[f"category_{i}_amount"].value for i in (1, 2, 3)] == [2000, 1683.51, 700]
+    assert [e.row_id for e in out["category_2_amount"].evidence] == ["T1-R01", "T1-R06"]
+    assert all(r.status == "populated" for r in out.values())
+
+
+async def test_two_ranks_citing_the_same_rows_are_demoted_as_rank_mixed():
+    total = Derivation(op="sum", column="Transaction amount", tag="DR")  # not rank-aware
+    fields = [_field(total, f"category_{i}_amount", "currency") for i in (1, 2)]
+    out = await map_fields(CTX, fields, [DOC], Retr([_stmt_hit()]), FakeLLM())
+    for r in out.values():
+        assert (r.status, r.missing_reason) == ("missing", "evidence_failed_verification")
+
+
+async def test_numbered_copies_of_other_derived_fields_are_not_ranked():
+    sums = [
+        _field(Derivation(op="sum", column="Transaction amount", tag=t), fid, "currency")
+        for fid, t in (("total_money_in_value_2", "CR"), ("total_money_out_value_2", "DR"))
+    ]
+    table = _field(
+        Derivation(
+            op="group_sum", column="Transaction amount", group_by="Description", top_n=2, tag="DR"
+        ),
+        "category_breakdown_2",
+        "table",
+    )
+    out = await map_fields(CTX, [*sums, table], [DOC], Retr([_stmt_hit()]), FakeLLM())
+    assert all(r.status == "populated" for r in out.values())
+    assert out["total_money_in_value_2"].value == 51015.15

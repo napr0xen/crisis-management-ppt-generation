@@ -401,3 +401,63 @@ def test_render_like_follows_cell_convention():
 def test_render_like_ignores_cells_with_another_affix_pair():
     assert render_like(1234.5, ["1.000,00 $", "01.05", "20,00 $"]) == "1.234,50 $"
     assert render_like(1234.5, ["$1,000.00", "Factura 123", "$20.00"]) == "$1,234.50"
+
+
+# ---- rank, group_sep, top -----------------------------------------------------------------------
+def _stmt(*pairs):
+    return _table(
+        [{"Description": d, "Amount": a, "Date": f"d{i}"} for i, (d, a) in enumerate(pairs)]
+    )
+
+
+def test_group_sep_groups_by_the_text_before_the_first_separator():
+    t = _stmt(("Card · A", "1,00 DR"), ("Card · B", "2,00 DR"), ("Rent", "5,00 DR"))
+    spec = {"op": "group_sum", "column": "Amount", "group_by": "Description", "group_sep": " · "}
+    assert val(t, "table", **spec) == [["Rent", "5,00"], ["Card", "3,00"]]
+
+
+def test_group_rank_gives_the_kth_label_or_sum_and_fails_beyond_the_groups():
+    t = _stmt(("Card · A", "1,00 DR"), ("Card · B", "2,00 DR"), ("Rent", "5,00 DR"))
+    spec = {"op": "group_sum", "column": "Amount", "group_by": "Description", "group_sep": " · "}
+    assert val(t, "text", rank=2, **spec) == "Card"
+    out = compute(t, _d(rank=2, **spec), "currency")
+    assert isinstance(out, Computed) and out.number == 3
+    assert [r.id for _, r, _ in out.cited] == ["P1-T1-R01", "P1-T1-R02"]
+    assert compute(t, _d(rank=3, **spec), "text") == "rank_out_of_range"
+
+
+def test_top_takes_the_kth_row_by_magnitude_per_tag_with_stable_ties():
+    t = _stmt(
+        ("a", "10,00 DR"), ("b", "99,00 CR"), ("c", "30,00 DR"), ("d", "30,00 DR"), ("e", "5,00 CR")
+    )
+    top = {"op": "top", "column": "Amount", "pick": "Description"}
+    assert [val(t, "text", rank=k, tag="DR", **top) for k in (1, 2, 3)] == ["c", "d", "a"]
+    assert [val(t, "text", rank=k, tag="CR", **top) for k in (1, 2)] == ["b", "e"]
+    assert val(t, "text", tag="CR", **top) == "b"  # no rank: the largest
+    assert compute(t, _d(rank=4, tag="DR", **top), "text") == "rank_out_of_range"
+
+
+def test_top_value_follows_the_slot_type_and_pick_column():
+    t = _stmt(("a", "10,00 DR"), ("c", "30,00 DR"))
+    out = compute(t, _d(op="top", column="Amount", tag="DR", rank=1), "currency")
+    assert isinstance(out, Computed) and out.number == 30 and out.value == "30,00"
+    assert [r.id for _, r, _ in out.cited] == ["P1-T1-R02"]
+    assert val(t, "date", op="top", column="Amount", tag="DR", pick="Date", rank=2) == "d0"
+    assert compute(t, _d(op="top", column="Amount", rank=1), "table") == "op_type_mismatch"
+
+
+def test_derivation_validator_limits_the_new_fields():
+    for bad in (
+        {"op": "sum", "column": "A", "rank": 1},
+        {"op": "sum", "column": "A", "group_sep": "·"},
+        {"op": "sum", "column": "A", "pick": "B"},
+    ):
+        with pytest.raises(ValueError):
+            Derivation(**bad)
+
+
+def test_top_on_a_signed_column_without_tags_fails_closed():
+    t = _stmt(("pay", "-50,00"), ("rec", "20,00"))
+    top = {"op": "top", "column": "Amount", "pick": "Description", "rank": 1}
+    assert compute(t, _d(**top), "text") == "mixed_tags"
+    assert val(_stmt(("a", "-50,00"), ("b", "-20,00")), "text", **top) == "a"

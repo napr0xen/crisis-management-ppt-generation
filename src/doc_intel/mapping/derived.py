@@ -79,7 +79,8 @@ def row_line(hit: Hit, row: TableRow) -> str | None:
 
 def named(spec: Derivation) -> list[str]:
     """The headers a derivation refers to."""
-    return [h for h in (spec.column, spec.minus, spec.group_by, *spec.where) if h is not None]
+    heads = (spec.column, spec.minus, spec.group_by, spec.pick, *spec.where)
+    return [h for h in heads if h is not None]
 
 
 @dataclass(frozen=True)
@@ -183,10 +184,12 @@ def _column(rows: list[Pair], header: str) -> list[tuple[Pair, _Cell]] | str:
 def compute(table: Table, spec: Derivation, expected_type: ExpectedType) -> Computed | str:
     """`spec` over the rows of `table`, or a failure code: op_type_mismatch, rows_incomplete,
     column_missing, no_rows, cell_unparseable, ambiguous_number_format, untagged_cell, mixed_tags,
-    group_label_missing, summary_row, exclude_unverified."""
-    wanted = {"count": {"number"}, "group_sum": {"table", "bullet_list"}}.get(
-        spec.op, _NUMERIC_TYPES
-    )
+    group_label_missing, summary_row, exclude_unverified, rank_out_of_range."""
+    wanted = {
+        "count": {"number"},
+        "group_sum": {"text", "number", "currency"} if spec.rank else {"table", "bullet_list"},
+        "top": _NUMERIC_TYPES | {"text", "date"},
+    }.get(spec.op, _NUMERIC_TYPES)
     if expected_type not in wanted:
         return "op_type_mismatch"
     if not table.complete:
@@ -299,6 +302,8 @@ def _aggregate(rows: list[Pair], spec: Derivation, expected_type: str) -> Comput
     cells = [c for _, c in main + minus]
     if spec.op == "group_sum":
         return _groups(main, spec, conv, expected_type)
+    if spec.op == "top":
+        return _top(main, spec, conv, expected_type)
     values = [_value(c, conv) for _, c in main]
     if spec.op == "diff" and spec.minus:
         total = sum(values) - sum(_value(c, conv) for _, c in minus)
@@ -319,12 +324,24 @@ def _groups(
     sums: dict[str, Decimal] = {}
     members: dict[str, list[tuple[Pair, _Cell]]] = defaultdict(list)
     for pair, cell in main:
-        label = pair[1].cells[spec.group_by or ""].strip()
+        label = pair[1].cells[spec.group_by or ""]
+        if spec.group_sep:
+            label = label.split(spec.group_sep, 1)[0]
+        label = label.strip()
         if not label:
             return "group_label_missing"
         sums[label] = sums.get(label, Decimal(0)) + _value(cell, conv)
         members[label].append((pair, cell))
-    ranked = sorted(sums, key=lambda k: -sums[k])[: spec.top_n]  # stable: ties by first seen
+    ranked = sorted(sums, key=lambda k: -sums[k])  # stable: ties by first seen
+    if spec.rank:  # the k-th group alone: its label, or its sum
+        if spec.rank > len(ranked):
+            return "rank_out_of_range"
+        k = ranked[spec.rank - 1]
+        cited = tuple((h, r, None) for (h, r), _ in members[k])
+        if expected_type == "text":
+            return Computed(k, cited)
+        return Computed(_render(sums[k], [c for _, c in members[k]], conv), cited, sums[k])
+    ranked = ranked[: spec.top_n]
     cells = [c for k in ranked for _, c in members[k]]
     amounts = [(k, _render(sums[k], cells, conv)) for k in ranked]
     value = (
@@ -334,3 +351,27 @@ def _groups(
     )
     cited = tuple((h, r, i) for i, k in enumerate(ranked) for (h, r), _ in members[k])
     return Computed(value, cited)
+
+
+def _top(
+    main: list[tuple[Pair, _Cell]], spec: Derivation, conv: str, expected_type: str
+) -> Computed | str:
+    """The `rank`-th row (default 1) by the magnitude of `column`, ties in source order; the slot
+    takes that row's `pick` cell."""
+    if spec.tag is None and {c.negative for _, c in main} == {True, False}:
+        return "mixed_tags"  # a signed column: magnitude alone would rank a receipt as a payment
+    ordered = sorted(main, key=lambda x: -abs(_value(x[1], conv)))
+    if (spec.rank or 1) > len(ordered):
+        return "rank_out_of_range"
+    pair, _ = ordered[(spec.rank or 1) - 1]
+    cited = ((pair[0], pair[1], None),)
+    text = pair[1].cells[spec.pick or spec.column].strip()
+    if expected_type not in _NUMERIC_TYPES:
+        return Computed(text, cited)
+    cell = _parse(text)
+    if not isinstance(cell, _Cell):
+        return cell or "cell_unparseable"
+    if (own := conv if spec.pick in (None, spec.column) else _convention([cell])) is None:
+        return "ambiguous_number_format"
+    n = _value(cell, own)
+    return Computed(_render(n, [cell], own), cited, n)

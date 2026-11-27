@@ -160,3 +160,27 @@ async def test_printed_total_row_is_excluded_after_one_rebinding(vector_store):
     assert len(llm.calls) == 2
     assert (r.status, r.value) == ("populated", 4295.5)
     assert_cited(r, texts, 3)
+
+
+async def test_ranked_slots_without_a_category_column(vector_store):
+    rows = [
+        ["2024-03-01", "Card · Shop A", "300,00 DR"],
+        ["2024-03-02", "Rent · Landlord", "1.200,00 DR"],
+        ["2024-03-03", "Card · Shop B", "1.100,00 DR"],
+        ["2024-03-04", "Salary · Acme", "5.000,00 CR"],
+    ]
+    ctx, doc, texts, retriever = await ingest(vector_store, ["Date", "Description", "Amount"], rows)
+    cat = {"op": "group_sum", "column": "Amount", "group_by": "Description", "group_sep": " · "}
+    fields = [field("category_1", "text"), field("category_1_amount")]
+    fields += [field("payment_payee_1", "text"), field("payment_amount_1")]
+    llm = FakeLLM(
+        bind(**cat, tag="DR"),
+        bind(**cat, tag="DR"),
+        bind(op="top", column="Amount", tag="DR", pick="Description"),
+        bind(op="top", column="Amount", tag="DR"),
+    )
+    r = await map_fields(ctx, fields, [doc], retriever, llm)
+    assert all(x.status == "populated" for x in r.values())
+    assert (r["category_1"].value, r["category_1_amount"].value) == ("Card", 1400)  # 300 + 1100
+    assert (r["payment_payee_1"].value, r["payment_amount_1"].value) == ("Rent · Landlord", 1200)
+    assert_cited(r["payment_amount_1"], texts, 1)

@@ -191,12 +191,26 @@ def _by_label(cells: list[LLMCell], labels: list[str]) -> list[LLMCell]:
     return [cells[names.index(w)] for w in wanted]
 
 
+def _with_notes(messages: list[dict[str, str]], notes: list[str] | None) -> None:
+    """Append why an earlier pass's cells were rejected, for the one escalated group call."""
+    if notes:
+        listing = "\n".join(f"- {n}" for n in dict.fromkeys(notes))
+        messages.append(
+            {
+                "role": "user",
+                "content": f"A previous attempt filled cells that do not fit:\n{listing}\n"
+                "Reply with the corrected full JSON.",
+            }
+        )
+
+
 async def extract_rows(
     llm: LLMClient,
     field: IRField,
     hits: list[Hit],
     other_headings: Sequence[str] = (),
     think_budget: int | None = None,
+    notes: list[str] | None = None,
 ) -> LLMRows:
     """One schema-constrained call for a `fill_table_rows` field; `hits` verify it later.
     `think_budget` makes it an escalated call, as in `extract`."""
@@ -206,6 +220,7 @@ async def extract_rows(
         {"role": "system", "content": load_prompt("table_rows")},
         {"role": "user", "content": f"Table:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
+    _with_notes(messages, notes)
     rows = await complete_json(llm, messages, LLMRows, think=True, think_budget=think_budget)
     labels = [c["label"] for c in _rows_spec(field)["columns"]]
     for row in rows.rows:
@@ -277,6 +292,7 @@ async def extract_records(
     hits: list[Hit],
     other_headings: Sequence[str] = (),
     think_budget: int | None = None,
+    notes: list[str] | None = None,
 ) -> LLMRecords:
     """One schema-constrained call for a slot group (tiles, grids, lists); `hits` verify it.
     `think_budget` makes it an escalated call, as in `extract`."""
@@ -286,6 +302,7 @@ async def extract_records(
         {"role": "system", "content": load_prompt("slot_records")},
         {"role": "user", "content": f"Records:\n{spec}\n\nChunks:\n\n{sources}"},
     ]
+    _with_notes(messages, notes)
     # several rows are several entities to tell apart: that is where reasoning pays
     think = len(group) >= 2 or think_budget is not None
     records = await complete_json(llm, messages, LLMRecords, think=think, think_budget=think_budget)

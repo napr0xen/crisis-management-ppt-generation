@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
@@ -21,7 +22,15 @@ from doc_intel.llm.gateway import (
     prompt_tokens,
 )
 from doc_intel.llm.prompts import load_prompt
-from doc_intel.mapping.derived import Table, compute, named, row_line, summary_rows, tables
+from doc_intel.mapping.derived import (
+    Computed,
+    Table,
+    compute,
+    named,
+    row_line,
+    summary_rows,
+    tables,
+)
 from doc_intel.mapping.extractor import (
     MAX_CHART_POINTS,
     MAX_PRIMARY_HITS,
@@ -63,6 +72,7 @@ from doc_intel.mapping.verifier import (
     TYPED_TYPES,
     canonical_value,
     derived_in_quotes,
+    is_amount,
     normalize,
     source_text,
     states_value,
@@ -71,7 +81,8 @@ from doc_intel.mapping.verifier import (
     verify_quote,
 )
 from doc_intel.templates.anchors import find_tokens, has_letter
-from doc_intel.templates.schemas import Constraints, Derivation, IRField
+from doc_intel.templates.ir_builder import _ranking_slots
+from doc_intel.templates.schemas import SLOT_NUMBER, Constraints, Derivation, IRField
 
 log = structlog.get_logger()
 
@@ -291,10 +302,12 @@ async def map_field(
     llm: LLMClient,
     other_headings: Sequence[str] = (),
     retry: tuple[LLMExtraction[Any], list[str]] | None = None,
+    rank: int | None = None,
 ) -> FieldMappingResult:
-    """`retry`: an earlier reply and why it was rejected, sent with the first extraction."""
+    """`retry`: an earlier reply and why it was rejected, sent with the first extraction. `rank`:
+    the slot number of a derived slot in a numbered grid."""
     if field.mode == "derived":  # before the row types: a group_sum slot is a table or a list
-        return await _derived(ctx, field, document_ids, retriever, llm)
+        return await _derived(ctx, field, document_ids, retriever, llm, rank)
     if field.expected_type in _ROW_TYPES:
         group = await map_group(ctx, [[field]], document_ids, retriever, llm, other_headings)
         return group[field.field_id]
@@ -602,9 +615,17 @@ async def _derived(
     docs: list[uuid.UUID],
     retriever: Retriever,
     llm: LLMClient,
+    rank: int | None = None,
 ) -> FieldMappingResult:
     """A `derived` slot (ADR-018): the aggregate is computed by `derived.compute` over the rows of
-    one table; the LLM only binds the table and headers when the IR has no derivation."""
+    one table; the LLM only binds the table and headers when the IR has no derivation. `rank` (the
+    slot number, from code) picks the k-th group or row of a group_sum or top derivation."""
+
+    def run(table: Table, spec: Derivation) -> Computed | str:
+        if rank and spec.op in ("group_sum", "top"):
+            spec = spec.model_copy(update={"rank": rank})
+        return compute(table, spec, field.expected_type)
+
     # shortcut: each derived slot re-reads all table chunks, cache per map_fields run if timing
     # shows it
     found = tables(await retriever.table_chunks(ctx, docs))
@@ -618,14 +639,14 @@ async def _derived(
         if len(fits) > 1:
             return _missing(field, "evidence_failed_verification", docs)
         table, spec = fits[0], field.derivation
-        out = compute(table, spec, field.expected_type)  # shortcut: a preset spec cannot name row
+        out = run(table, spec)  # shortcut: a preset spec cannot name row
         # ids, so summary_row is missing; upgrade by letting the binding call fix presets
     else:
         bound = await _bound(llm, field, found)
         if isinstance(bound, str):
             return _missing(field, bound, docs)
         table, spec, bind = bound
-        out = compute(table, spec, field.expected_type)
+        out = run(table, spec)
         if out == "summary_row":  # one corrective re-binding naming the flagged rows
             log.info("derived_rejected", slot_id=field.field_id, code=out)
             ids = ", ".join(summary_rows(table, spec))
@@ -638,7 +659,7 @@ async def _derived(
             if isinstance(again, str):
                 return _missing(field, "evidence_failed_verification", docs)
             table, spec, _ = again
-            out = compute(table, spec, field.expected_type)
+            out = run(table, spec)
     if isinstance(out, str):
         log.info("derived_rejected", slot_id=field.field_id, code=out)  # code only, never text
         return _missing(
@@ -897,6 +918,31 @@ def _row_label_note(
     )
 
 
+_AMOUNT_CODE = "amount_in_text_column"
+# shortcut: English/Spanish header words only, add words (or an LLM header classifier) when a
+# template in another language puts amounts under its identifier columns.
+_ID_HEADERS = frozenset(
+    "reference ref id identifier clabe code folio description concept date "
+    "referencia codigo descripcion concepto fecha".split()
+)
+
+
+def _amount_in_text(expected_type: str, header: str | None, text: str) -> bool:
+    """A text slot under an identifier/reference/description/date header holding an amount."""
+    folded = "".join(
+        c for c in unicodedata.normalize("NFKD", header or "") if not unicodedata.combining(c)
+    )
+    words = set(re.findall(r"\w+", folded.casefold()))
+    return expected_type == "text" and bool(_ID_HEADERS & words) and is_amount(text)
+
+
+def _amount_note(header: str | None) -> str:
+    return (
+        f"column {(header or '')[:60]!r} takes an identifier from the same source row, not an "
+        "amount; leave it empty if the row has none."
+    )
+
+
 def _rejection(
     field: IRField, hits: list[Hit], value: Any, evidence: list[Evidence]
 ) -> tuple[str, str] | None:
@@ -910,6 +956,8 @@ def _rejection(
             f"no quote given for {shown} is copied verbatim from the chunk it cites; copy the "
             "exact characters of that chunk."
         )
+    if _amount_in_text(field.expected_type, field.context or field.label, str(value)):
+        return _AMOUNT_CODE, _amount_note(field.context or field.label)
     if note := _rule_note(field, value, evidence, hits):
         return "slot_rule", note
     quotes = [e.quote for e in evidence]
@@ -1072,8 +1120,9 @@ async def map_group(
     hits = await _retrieve(ctx, _group_query(group), document_ids, retriever, _group_heading(group))
     if not hits:
         return {f.field_id: _missing(f, "no_relevant_chunks", document_ids) for f in _flat(group)}
-    first = await _group_pass(llm, group, hits, document_ids, other_headings)
-    return await _escalated_group(llm, group, hits, first, document_ids, other_headings)
+    notes: list[str] = []
+    first = await _group_pass(llm, group, hits, document_ids, other_headings, notes=notes)
+    return await _escalated_group(llm, group, hits, first, document_ids, other_headings, notes)
 
 
 def _flat(group: list[list[IRField]]) -> list[IRField]:
@@ -1087,8 +1136,11 @@ async def _group_pass(
     document_ids: list[uuid.UUID],
     other_headings: Sequence[str],
     think_budget: int | None = None,
+    notes: list[str] | None = None,
 ) -> dict[str, FieldMappingResult]:
-    """The group's structured call and its row-by-row verification (`think_budget`: escalated)."""
+    """The group's structured call and its row-by-row verification (`think_budget`: escalated).
+    `notes` in: why the first pass's cells were rejected; out (first pass): the same, collected."""
+    retry, rejected = (notes, None) if think_budget is not None else (None, notes)
 
     def all_missing(reason: MissingReason) -> dict[str, FieldMappingResult]:
         return {f.field_id: _missing(f, reason, document_ids) for f in _flat(group)}
@@ -1096,7 +1148,7 @@ async def _group_pass(
     first = group[0][0]
     try:  # a transport LLMError propagates: the worker retries
         if first.expected_type in _ROW_TYPES:
-            rows = await extract_rows(llm, first, hits, other_headings, think_budget)
+            rows = await extract_rows(llm, first, hits, other_headings, think_budget, retry)
             if first.expected_type == "table":
                 rows = rows.model_copy(
                     update={
@@ -1106,9 +1158,10 @@ async def _group_pass(
             if rows.not_found or not rows.rows:
                 _log_short("rows", 1, 0, hits, rows.not_found)
                 return all_missing("not_found_by_llm")
-            build = _chart_result if first.expected_type == "chart" else _table_result
-            return {first.field_id: build(first, hits, rows, document_ids)}
-        records = await extract_records(llm, group, hits, other_headings, think_budget)
+            if first.expected_type == "chart":
+                return {first.field_id: _chart_result(first, hits, rows, document_ids)}
+            return {first.field_id: _table_result(first, hits, rows, document_ids, rejected)}
+        records = await extract_records(llm, group, hits, other_headings, think_budget, retry)
         # shortcut: a list or grid is checked only beside sibling headings, add the check for a
         # lone heading when direction slips show up there; a keyed card (one row) is checked too.
         if other_headings and (len(group) == 1 or not _keyed(group)):
@@ -1126,7 +1179,7 @@ async def _group_pass(
             return all_missing("not_found_by_llm")
         results = all_missing("not_found_by_llm")  # prose list slots: the synthesis fallback
     else:
-        results = _record_results(group, hits, records, document_ids)
+        results = _record_results(group, hits, records, document_ids, rejected)
     if is_list:  # a list: duplicates collapse, gaps may be synthesized
         return await _list_results(llm, group, hits, results, document_ids)
     return results
@@ -1178,16 +1231,19 @@ async def _escalated_group(
     first: dict[str, FieldMappingResult],
     docs: list[uuid.UUID],
     other_headings: Sequence[str],
+    notes: list[str],
 ) -> dict[str, FieldMappingResult]:
     """`_escalated` for a table, chart or record group: one more pass, thinking on, kept whole
-    only if it fills more cells than the first, so a miss or an LLM error keeps the first."""
+    only if it fills more cells than the first, so a miss or an LLM error keeps the first. The
+    first pass's rejection `notes` go to that pass."""
     s = get_settings()
-    if not s.think_on_escalation or (reason := _group_reason(group, first, hits)) is None:
+    reason = _group_reason(group, first, hits) or (_AMOUNT_CODE if notes else None)
+    if not s.think_on_escalation or reason is None:
         return first
     start, after, error = time.monotonic(), first, None
     try:
         budget = s.think_escalation_max_tokens
-        after = await _group_pass(llm, group, hits, docs, other_headings, budget)
+        after = await _group_pass(llm, group, hits, docs, other_headings, budget, notes)
     except LLMError as exc:  # best effort, as for one slot
         error = type(exc).__name__
     more = sum(map(sum, _filled_grid(group, after))) > sum(map(sum, _filled_grid(group, first)))
@@ -1362,7 +1418,11 @@ def _restates(text: str, numbers: set[Any]) -> bool:
 
 
 def _record_results(
-    group: list[list[IRField]], hits: list[Hit], records: LLMRecords, docs: list[uuid.UUID]
+    group: list[list[IRField]],
+    hits: list[Hit],
+    records: LLMRecords,
+    docs: list[uuid.UUID],
+    rejected: list[str] | None = None,
 ) -> dict[str, FieldMappingResult]:
     """Record n fills slot row n. A cell its anchor states is kept; a cell only another record's
     anchor states is that record's value shifted in, so it is dropped; any other cell that is
@@ -1386,6 +1446,11 @@ def _record_results(
         for j, field in enumerate(row_fields):
             by = [s for s in range(len(spans)) if support[s][j]]
             value = _cell_value(cells[j], types[i][j]) if by and j not in stray else None
+            if value and _amount_in_text(types[i][j], field.context or field.label, cells[j]):
+                value = None  # an unsupported cell: an amount under an identifier header
+                _log_rejected(field.field_id, [_AMOUNT_CODE])
+                if rejected is not None:
+                    rejected.append(_amount_note(field.context or field.label))
             if not cells[j]:
                 results[field.field_id] = _missing(field, "not_found_by_llm", docs)
             elif value is None or (
@@ -1506,13 +1571,24 @@ async def _list_results(
 
 
 def _table_result(
-    field: IRField, hits: list[Hit], rows: LLMRows, docs: list[uuid.UUID]
+    field: IRField,
+    hits: list[Hit],
+    rows: LLMRows,
+    docs: list[uuid.UUID],
+    rejected: list[str] | None = None,
 ) -> FieldMappingResult:
     """The rows whose every cell a quote states; unverified rows stay out of the table."""
     types = ["text"] * len(field.constraints.columns or rows.rows[0].cells())
     llm_rows = rows.rows[: field.constraints.max_items]
+    columns = field.constraints.columns or []
     kept, evidence, all_anchored, mixed = [], [], True, 0
     for cells, ev, support, anchored in (_verified_row(types, hits, r) for r in llm_rows):
+        amounts = [h for h, c in zip(columns, cells, strict=False) if _amount_in_text("text", h, c)]
+        if amounts:  # an unsupported cell: the row stays out, as any unverified row does
+            _log_rejected(field.field_id, [_AMOUNT_CODE] * len(amounts))
+            if rejected is not None:
+                rejected.extend(_amount_note(h) for h in amounts)
+            continue
         if ev and any(cells) and all(not c or any(s) for c, s in zip(cells, support, strict=True)):
             if _mixed_rows(types, cells, hits, ev) is not None:
                 mixed += 1  # its cells come from different source rows
@@ -1614,13 +1690,13 @@ async def _check_slot_roles(
     shared: dict[str, tuple[str, str, str]],
     only: set[str] | None = None,
 ) -> dict[str, tuple[FieldMappingResult, str]]:
-    """Slots of one text box, or typed slots of one slide, are different roles, but the per-field
-    check cannot see the other slots, so one value filled into several of them is checked once,
-    together. A slot the quotes do not state, or any slot when the check is unusable, is never
-    populated. `only`: check just the groups holding one of these fields. Returns each slot the
-    check rejected (not its shared copies, not on an unusable check) with its result before and
-    the reason for its retry."""
-    boxes: dict[tuple[str, object, str], list[IRField]] = {}
+    """Slots of one text box, or typed slots of the deck holding one number, are different
+    roles, but the per-field check cannot see the other slots, so one value filled into several
+    of them is checked once, together. A slot the quotes do not state, or any slot when the check
+    is unusable, is never populated. `only`: check just the groups holding one of these fields.
+    Returns each slot the check rejected (not its shared copies, not on an unusable check) with
+    its result before and the reason for its retry."""
+    boxes: dict[tuple[Any, ...], list[IRField]] = {}
     for f in fields:
         r = results[f.field_id]
         if (
@@ -1633,7 +1709,19 @@ async def _check_slot_roles(
             if f.expected_type == "text" and isinstance(r.value, str):
                 boxes.setdefault(("text", f.anchor_id, normalize(r.value)), []).append(f)
             elif f.expected_type in TYPED_TYPES:
-                boxes.setdefault(("typed", _unit(f), normalize(str(r.value))), []).append(f)
+                # deck-wide: "$ 402.031,45" and 402031.45 are one number whatever the slide
+                n = canonical_value(r.value, f.expected_type)
+                # shortcut: dates stay per slide (a date repeats across slides and row-grid
+                # slots would be judged against each other), widen if a date role is misfiled.
+                key = (
+                    (n, None)
+                    if n is not None and f.expected_type != "date"
+                    else (
+                        normalize(str(r.value)),
+                        _unit(f),
+                    )
+                )
+                boxes.setdefault(("typed", *key), []).append(f)
     demoted: dict[str, MissingReason] = {}
     rejected: dict[str, tuple[FieldMappingResult, str]] = {}
     for group in boxes.values():
@@ -1820,6 +1908,7 @@ async def map_fields(
     `on_field(done, "")` after it. A group or batch is mapped at its first field in the IR."""
     # a derived slot is mapped alone by `map_field`: never in a group, a batch or a shared fact
     plain = [f for f in fields if f.mode != "derived"]
+    ranked = _ranking_slots(fields)
     groups = {f.field_id: g for g in row_groups(plain) for row in g for f in row}
     shared = shared_facts(fields)
     siblings = sibling_headings(fields)
@@ -1847,7 +1936,9 @@ async def map_fields(
         if on_field:
             await on_field(len(results), field.field_id)  # template-derived: progress only
         if field.mode == "derived":
-            results[field.field_id] = await map_field(ctx, field, document_ids, retriever, llm)
+            results[field.field_id] = await map_field(
+                ctx, field, document_ids, retriever, llm, rank=_slot_rank(field, ranked)
+            )
         elif field.field_id in groups:
             results |= await map_group(
                 ctx,
@@ -1879,10 +1970,52 @@ async def map_fields(
                     by_fact[key] = results[f.field_id]
         if on_field:
             await on_field(len(results), "")
+    _check_ranks(fields, results, ranked)
     rejected = await _check_slot_roles(llm, fields, results, shared)
     ungrouped = [f for f in fields if f.field_id in rejected and f.field_id not in groups]
     await _retry_roles(ctx, ungrouped, fields, rejected, document_ids, retriever, llm, results)
     return {f.field_id: results[f.field_id] for f in fields}
+
+
+def _slot_rank(field: IRField, ranked: set[str]) -> int | None:
+    """The slot number of a ranking slot (`receipt_date_2`, as the IR builder's rule finds them:
+    a `_2` copy of another derived field is not one), else None."""
+    m = SLOT_NUMBER.search(field.field_id)
+    return int(m[1]) if m and field.mode == "derived" and field.field_id in ranked else None
+
+
+def _check_ranks(
+    fields: list[IRField], results: dict[str, FieldMappingResult], ranked: set[str]
+) -> None:
+    """Every populated cell of one ranked record (same slide, field_id prefix word and number)
+    must cite the same rows, else the whole record is missing: a binding that disagrees on the
+    ranking would mix the cells of different rows."""
+
+    def demote(cells: list[IRField]) -> None:
+        log.info("derived_rejected", slot_id=cells[0].field_id, code="rank_mixed")
+        for f in cells:
+            results[f.field_id] = _missing(
+                f, "evidence_failed_verification", results[f.field_id].checked_documents
+            )
+
+    records: dict[tuple[object, str, int], list[IRField]] = {}
+    for f in fields:
+        if (n := _slot_rank(f, ranked)) and results[f.field_id].status == "populated":
+            records.setdefault((_unit(f), f.field_id.split("_")[0], n), []).append(f)
+    for cells in records.values():
+        cited = {frozenset(e.row_id for e in results[f.field_id].evidence) for f in cells}
+        if len(cited) > 1:
+            demote(cells)
+    # distinct ranks of one grid never cite the same rows: that is a binding that ignores rank
+    seen: dict[tuple[object, str], dict[frozenset[str | None], list[IRField]]] = {}
+    for (unit, word, _), cells in records.items():
+        if results[cells[0].field_id].status == "populated":  # not demoted by the first pass
+            rows = frozenset(e.row_id for f in cells for e in results[f.field_id].evidence)
+            seen.setdefault((unit, word), {}).setdefault(rows, []).extend(cells)
+    for by_rows in seen.values():
+        for cells in by_rows.values():
+            if len({_slot_rank(f, ranked) for f in cells}) > 1:
+                demote(cells)
 
 
 async def _retry_roles(

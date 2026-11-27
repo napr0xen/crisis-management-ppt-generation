@@ -235,6 +235,22 @@ def _is_symbol(ch: str) -> bool:
     return unicodedata.category(ch) == "Sc"
 
 
+_TAG_EDGE = re.compile(r"^(?i:dr|cr)\.? ?| ?(?i:dr|cr)$")
+_CODE_EDGE = re.compile(r"^[A-Z]{3} ?| ?[A-Z]{3}$")
+
+
+def is_amount(text: str) -> bool:
+    """`text` is one monetary amount and nothing else: a number with a decimal part or thousands
+    grouping, or any number carrying a currency symbol or DR/CR tag. A bare 3-letter code is
+    stripped but never makes an amount alone ("REF 1234" is a reference)."""
+    t = text.strip()
+    core = "".join(c for c in t if not _is_symbol(c)).strip()
+    untagged = _TAG_EDGE.sub("", core).strip()
+    bare = _CODE_EDGE.sub("", untagged).strip()
+    marked = untagged != t or "," in bare or "." in bare
+    return bool(_NUMBER.fullmatch(bare)) and marked
+
+
 def _with_marker(t: str, start: int, end: int, value_type: str) -> tuple[int, int]:
     """Widen a number span over a glued suffix (%, magnitude letters), then an adjacent currency
     symbol or currency code."""

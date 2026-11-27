@@ -1112,7 +1112,7 @@ def test_derived_mode_and_hidden_derivation():
     from doc_intel.templates.ir_builder import LLMIRField
     from doc_intel.templates.schemas import IRField
 
-    assert _version() == 5
+    assert _version() == 6
     assert "derived" in LLMIRField.model_json_schema()["properties"]["mode"]["enum"]
     assert "derivation" not in IRField.model_json_schema()["properties"]
     assert "derivation" not in LLMIRField.model_json_schema()["properties"]
@@ -1123,3 +1123,78 @@ def _version():
     from doc_intel.templates.ir_builder import IR_BUILDER_VERSION
 
     return IR_BUILDER_VERSION
+
+
+def _typed_field(fid, label, expected_type="currency"):
+    return _field(fid, fid, "replace_token", token="{{t}}").model_copy(
+        update={"label": label, "expected_type": expected_type, "mode": "extractive"}
+    )
+
+
+async def test_a_net_movement_label_is_forced_to_derived_whatever_the_llm_said():
+    ids = ("net", "es", "close", "txt")
+    amap = AnchorMap(format="pptx", anchors=[_anchor(i, tokens=["{{t}}"]) for i in ids])
+    fields = [
+        _typed_field("net", "NET MOVEMENT"),
+        _typed_field("es", "Variación Neta"),
+        _typed_field("close", "Closing Balance"),
+        _typed_field("txt", "Net movement note", "text"),
+    ]
+    ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
+    got = {f.field_id: f.mode for f in ir.fields}
+    assert got == {"net": "derived", "es": "derived", "close": "extractive", "txt": "extractive"}
+    assert all(f.derivation is None for f in ir.fields)
+
+
+async def test_numbered_ranking_and_breakdown_slots_are_forced_to_derived():
+    ids = ("pay_1", "cat_1_amt", "cat_es", "obs", "plain_1")
+    amap = AnchorMap(format="pptx", anchors=[_anchor(i, tokens=["{{t}}"]) for i in ids])
+    fields = [
+        _typed_field("payment_amount_1", "Payment amount 1").model_copy(
+            update={"anchor_id": "pay_1", "section_path": ["Slide 6", "LARGEST PAYMENTS"]}
+        ),
+        _typed_field("category_1_amount", "Amount").model_copy(
+            update={"anchor_id": "cat_1_amt", "section_path": ["Slide 5", "CATEGORY BREAKDOWN"]}
+        ),
+        _typed_field("categoria_2", "Categoría 2", "currency").model_copy(
+            update={"anchor_id": "cat_es"}
+        ),
+        _typed_field("highest_spending_category", "Highest spending category", "text").model_copy(
+            update={"anchor_id": "obs"}
+        ),
+        _typed_field("note_1", "Note 1", "text").model_copy(update={"anchor_id": "plain_1"}),
+    ]
+    ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
+    assert {f.field_id: f.mode for f in ir.fields} == {
+        "payment_amount_1": "derived",
+        "category_1_amount": "derived",
+        "categoria_2": "derived",
+        "highest_spending_category": "extractive",
+        "note_1": "extractive",
+    }
+
+
+async def test_ranking_rule_needs_a_numeric_slot_in_the_numbered_grid():
+    spec = [  # (field_id, label, type, heading)
+        ("risk_1", "Risk 1", "text", "TOP RISKS"),
+        ("risk_2", "Risk 2", "text", "TOP RISKS"),
+        ("category_1", "Category 1", "text", "CATEGORY BREAKDOWN"),
+        ("category_1_amount", "Amount 1", "currency", "CATEGORY BREAKDOWN"),
+        ("payment_date_1", "Date 1", "date", "LARGEST PAYMENTS"),
+        ("payment_payee_1", "Payee 1", "text", "LARGEST PAYMENTS"),
+        ("payment_amount_1", "Amount 1", "currency", "LARGEST PAYMENTS"),
+    ]
+    amap = AnchorMap(format="pptx", anchors=[_anchor(i, tokens=["{{t}}"]) for i, *_ in spec])
+    fields = [
+        _typed_field(i, label, t).model_copy(update={"anchor_id": i, "section_path": ["S", h]})
+        for i, label, t, h in spec
+    ]
+    ir = await build_ir(FakeLLM(_reply(*fields)), amap, TID)
+    got = {f.field_id: f.mode for f in ir.fields}
+    assert {k for k, v in got.items() if v == "derived"} == {
+        "category_1",
+        "category_1_amount",
+        "payment_date_1",
+        "payment_payee_1",
+        "payment_amount_1",
+    }

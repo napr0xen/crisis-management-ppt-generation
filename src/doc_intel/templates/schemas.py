@@ -3,6 +3,7 @@
 Phase 6 mapping and Phase 7 writers read these shapes; change them only with the docs.
 """
 
+import re
 import uuid
 from typing import Literal
 
@@ -89,16 +90,24 @@ class Constraints(_Strict):
     columns: list[str] | None = None
 
 
+# a numbered slot's field_id: `receipt_date_2`, `category_2_amount`
+SLOT_NUMBER = re.compile(r"_(\d{1,3})(?:_[a-z][a-z0-9]*)?$")
+
+
 class Derivation(_Strict):
     """An aggregate over one source table's rows (ADR-018), computed by code, never by the LLM."""
 
-    op: Literal["sum", "diff", "count", "min", "max", "group_sum"]
+    op: Literal["sum", "diff", "count", "min", "max", "group_sum", "top"]
     column: str
     minus: str | None = None  # diff: the column subtracted from `column`
     where: dict[str, str] = {}  # header -> required cell value
     tag: Literal["CR", "DR"] | None = None  # keep only cells tagged so
     group_by: str | None = None  # group_sum: the label column
+    group_sep: str | None = None  # group_sum: the label is the cell text before its first sep
     top_n: int | None = Field(None, ge=1)
+    # group_sum, top: the k-th largest group or row; set by code from the slot number, never the LLM
+    rank: int | None = Field(None, ge=1)
+    pick: str | None = None  # top: the header whose cell the slot takes (default `column`)
     exclude_rows: list[str] = []  # row ids left out (printed total rows)
 
     @model_validator(mode="after")
@@ -107,6 +116,12 @@ class Derivation(_Strict):
             raise ValueError("group_by is required for group_sum and only for it")
         if self.minus is not None and self.op != "diff":
             raise ValueError("minus is only for diff")
+        if self.group_sep is not None and self.op != "group_sum":
+            raise ValueError("group_sep is only for group_sum")
+        if self.rank is not None and self.op not in ("group_sum", "top"):
+            raise ValueError("rank is only for group_sum and top")
+        if self.pick is not None and self.op != "top":
+            raise ValueError("pick is only for top")
         if self.op == "diff" and self.minus is None and self.tag is not None:
             raise ValueError("diff without minus uses both tags: no tag filter")
         return self

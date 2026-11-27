@@ -6,6 +6,7 @@ LLM_NUM_CTX; the merged result is validated again against the whole map.
 
 import json
 import re
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable
 from itertools import groupby
@@ -18,6 +19,7 @@ from doc_intel.llm.gateway import RETRY_ECHO_CHARS, LLMClient, Messages, complet
 from doc_intel.llm.prompts import load_prompt
 from doc_intel.templates.anchors import has_letter
 from doc_intel.templates.schemas import (
+    SLOT_NUMBER,
     WRITE_MODE_KINDS,
     Anchor,
     AnchorMap,
@@ -30,7 +32,7 @@ from doc_intel.templates.schemas import (
 
 log = structlog.get_logger()
 
-IR_BUILDER_VERSION = 5  # bump when build_ir output changes, so library templates are re-extracted
+IR_BUILDER_VERSION = 6  # bump when build_ir output changes, so library templates are re-extracted
 
 # Logged ids must be structural: xlsx ids hold the sheet name, sdt ids the control's tag, and an
 # unknown anchor_id is free LLM text; anything else in quotes is logged as '?'.
@@ -518,6 +520,62 @@ def _token_cells(amap: AnchorMap, fields: list[IRField], used: set[str]) -> list
     return added
 
 
+# shortcut: English/Spanish terms only, add terms per language when a template needs them.
+_NET_TERMS = tuple(
+    f" {t} "
+    for t in (
+        "net movement",
+        "net cash movement",
+        "net change",
+        "net cash flow",
+        "net flow",
+        "movimiento neto",
+        "flujo neto",
+        "variacion neta",
+    )
+)
+
+
+def _names_net_movement(f: IRField) -> bool:
+    """A number slot named a net movement: the LLM often calls it extractive, but no source
+    states a figure that is the difference of two others, so it is computed."""
+    if f.expected_type not in ("currency", "number"):
+        return False
+    return any(t in _padded(name) for name in (f.label, f.field_id) for t in _NET_TERMS)
+
+
+def _padded(name: str) -> str:
+    plain = unicodedata.normalize("NFKD", name.casefold()).encode("ascii", "ignore").decode()
+    return f" {' '.join(re.findall(r'[a-z0-9]+', plain))} "
+
+
+# shortcut: English/Spanish words only, add words per language when a template needs them.
+_RANK_WORDS = frozenset(
+    "largest top biggest highest category categories breakdown mayores principales categoria "
+    "categorias desglose".split()
+)
+
+
+def _slot_key(f: IRField) -> tuple[str, str] | None:
+    """(first word of the field_id, slot number) of a numbered slot, else None."""
+    m = SLOT_NUMBER.search(f.field_id)
+    return (f.field_id.split("_")[0], m[1]) if m else None
+
+
+def _names_ranking(f: IRField) -> bool:
+    """A numbered slot (`receipt_date_2`, `category_1_amount`) of a ranking or a breakdown: no
+    source states which row is the k-th largest or a category's total, so code computes it."""
+    names = (f.label, f.field_id, *f.section_path, f.context or "")
+    return _slot_key(f) is not None and any(_RANK_WORDS & set(_padded(n).split()) for n in names)
+
+
+def _ranking_slots(fields: list[IRField]) -> set[str]:
+    """The ranking slots whose numbered grid (same field_id first word and number) holds a number
+    or currency slot: a text-only list (`Top risks 1..3`) is not a computation."""
+    numeric = {_slot_key(f) for f in fields if f.expected_type in ("number", "currency")}
+    return {f.field_id for f in fields if _names_ranking(f) and _slot_key(f) in numeric}
+
+
 async def build_ir(
     llm: LLMClient,
     amap: AnchorMap,
@@ -558,4 +616,11 @@ async def build_ir(
     # context and card are code-set, never the LLM's
     by_id = {a.anchor_id: a for a in amap.anchors}
     fields = [_with_anchor_data(f, by_id[f.anchor_id]) for f in _caption_types(fields, by_id)]
+    ranking = _ranking_slots(fields)
+    fields = [
+        f.model_copy(update={"mode": "derived"})
+        if _names_net_movement(f) or f.field_id in ranking
+        else f
+        for f in fields
+    ]
     return TemplateIR(fields=fields, template_id=template_id, version=1, format=amap.format)
